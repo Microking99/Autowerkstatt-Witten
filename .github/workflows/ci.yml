@@ -59,10 +59,17 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @werkstatt/app export:demo
-      - run: pnpm --filter @werkstatt/app exec playwright install --with-deps chromium
-      - run: pnpm --filter @werkstatt/app e2e
+      - id: app
+        name: App vorhanden?
+        run: if [ -f apps/app/package.json ]; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.app.outputs.exists == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.app.outputs.exists == 'true'
+        run: pnpm --filter @werkstatt/app export:demo
+      - if: steps.app.outputs.exists == 'true'
+        run: pnpm --filter @werkstatt/app exec playwright install --with-deps chromium
+      - if: steps.app.outputs.exists == 'true'
+        run: pnpm --filter @werkstatt/app e2e
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
