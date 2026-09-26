@@ -27,7 +27,8 @@ API-Adresse in der Content-Security-Policy; ohne Angabe sind nur lokale Adressen
 
 | Prüfung | Ergebnis |
 |---|---|
-| Rust-Kompilierprüfung (`cargo check`) unter Linux | siehe `docs/status.md` |
+| `cargo check` für Linux (26.09.2026) | erfolgreich (Tauri 2.12.0) |
+| `cargo check --target x86_64-pc-windows-msvc` von Linux aus (26.09.2026) | erfolgreich; zwei Warnungen "GNU compiler is not supported for this target" betreffen nur die Einbettung der Windows-Ressourcen beim Querkompilieren. Kein Linken, keine ausführbare Datei. |
 | Windows-Build (NSIS) | **nicht ausgeführt** (kein Windows-Rechner in dieser Umgebung; Workflow vorbereitet) |
 | Start und Bedienung unter Windows | **nicht getestet** |
 | Signatur | **nicht eingerichtet**: Der Installer ist unsigniert, Windows SmartScreen warnt. Optionen: Azure Artifact Signing (nur für Organisationen in der EU), OV-Zertifikat, Microsoft Store (MSIX). Offene Entscheidung O-20. |
