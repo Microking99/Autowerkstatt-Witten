@@ -1,0 +1,43 @@
+# iOS- und Android-Builds über EAS (Expo Application Services). Nur manuell auslösbar.
+# Voraussetzungen (vom Inhaber einzurichten, siehe docs/status.md "Blockiert"):
+#   - Expo-Konto und Projekt, Repository-Secret EXPO_TOKEN
+#   - Apple Developer Program (iOS), Google Play Console (Android)
+# Dieser Workflow wurde noch nie ausgeführt.
+name: Mobile-Builds (EAS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Plattform"
+        type: choice
+        options: [all, ios, android]
+        default: all
+      profile:
+        description: "EAS-Profil"
+        type: choice
+        options: [preview, production]
+        default: preview
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+      - name: EAS-Build starten
+        working-directory: apps/app
+        run: eas build --platform ${{ inputs.platform }} --profile ${{ inputs.profile }} --non-interactive --no-wait
