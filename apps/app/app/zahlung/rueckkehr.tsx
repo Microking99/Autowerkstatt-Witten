@@ -2,10 +2,12 @@
  * Rückkehr vom Zahlungsanbieter. Zeigt "Zahlung wird geprüft" und fragt den Status beim
  * Server ab (refreshPaymentStatus), bis dieser die Zahlung bestätigt. Die Rückkehr selbst
  * und eine Erfolgsseite des Anbieters ändern nichts am Rechnungsstatus (R-ZAHL-4).
+ * Maßgeblich sind nur paymentStatus und openCents der Rechnung (Kunden sehen keine
+ * Zahlungsversuche). Bleibt die Bestätigung aus, sagt die Seite genau das.
  */
 import { routes } from '@werkstatt/contracts';
 import { router, useLocalSearchParams, type Href } from 'expo-router';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { AreaGuard } from '../../src/auth/guards';
 import { IS_DEMO } from '../../src/config';
@@ -35,9 +37,13 @@ function PaymentReturn() {
 
   const invoice = query.data;
   const paid = invoice ? invoice.paymentStatus === 'paid' || invoice.openCents === 0 : false;
-  const latest = invoice?.checkouts?.[0];
-  const attemptEnded = latest ? latest.status === 'failed' || latest.status === 'expired' || latest.status === 'deactivated' : false;
-  const notCompleted = !paid && (cancelledHint || attemptEnded);
+  const notCompleted = !paid && cancelledHint;
+  // Anzahl der Statusabfragen ohne Bestätigung; danach ehrlich "noch nicht bestätigt"
+  const [polls, setPolls] = useState(0);
+  useEffect(() => {
+    if (invoice) setPolls((n) => n + 1);
+  }, [invoice]);
+  const unconfirmed = !paid && !notCompleted && polls > 4;
 
   useEffect(() => {
     if (paid) announced.current = true;
@@ -110,6 +116,32 @@ function PaymentReturn() {
           </AppText>
           <View style={styles.actions}>
             <Button label="Zur Rechnung" variant="primary" onPress={backToInvoice} testID="zur-rechnung" />
+          </View>
+        </PublicPanel>
+      </PublicPage>
+    );
+  }
+
+  if (unconfirmed) {
+    return (
+      <PublicPage testID="zahlung-unbestaetigt">
+        <PublicPanel>
+          <View style={[styles.icon, { backgroundColor: t.colors.warningSoft, borderRadius: t.radius.pill }]}>
+            <Icon name="HourglassMedium" size={iconSize.xl} color={t.colors.warning} />
+          </View>
+          <AppText variant="display" role="status">
+            Noch keine Bestätigung
+          </AppText>
+          <AppText tone="muted">
+            Der Zahlungsanbieter hat bisher keine Zahlung bestätigt. Ist die Zahlung dort fehlgeschlagen oder abgebrochen, wurde nichts abgebucht und die Rechnung ist weiterhin offen. Kommt die Bestätigung später, zeigt die Rechnung sie automatisch an.
+          </AppText>
+          <AppText variant="heading" numeric>
+            Offen: {formatMoney(inv.openCents)}
+          </AppText>
+          {IS_DEMO ? <Banner tone="info" title="Demo" message="Die Bestätigung simuliert die Demo-Steuerung." action={<Button label="Demo-Steuerung" icon="Gear" onPress={openPanel} />} /> : null}
+          <View style={styles.actions}>
+            <Button label="Zur Rechnung" variant="primary" onPress={backToInvoice} testID="zur-rechnung" />
+            <Button label="Status erneut prüfen" icon="ArrowsClockwise" onPress={() => void query.refetch()} loading={query.isRefreshing} />
           </View>
         </PublicPanel>
       </PublicPage>

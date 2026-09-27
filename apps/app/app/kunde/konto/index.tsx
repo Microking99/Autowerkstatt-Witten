@@ -3,13 +3,13 @@ import { PasswordSchema, routes, safeNextPath, type NotificationEvent } from '@w
 import { router, type Href } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
-import { useSession } from '../../src/auth/session';
-import type { NotificationPreference } from '../../src/data/api';
-import { useApiMutation, useApiQuery } from '../../src/data/hooks';
-import { formatRelativeTime } from '../../src/lib/format';
-import { QueryView } from '../../src/screens/common';
-import { useTheme } from '../../src/theme';
-import { AppText, Banner, Button, Columns, KeyValueList, ListGroup, ListRow, Page, PageHeader, Section, SwitchRow, TextField, useToast } from '../../src/ui';
+import { useSession } from '../../../src/auth/session';
+import type { NotificationPreference } from '../../../src/data/api';
+import { useApiMutation, useApiQuery } from '../../../src/data/hooks';
+import { formatRelativeTime } from '../../../src/lib/format';
+import { QueryView } from '../../../src/screens/common';
+import { useTheme } from '../../../src/theme';
+import { AppText, Banner, Button, Columns, KeyValueList, ListGroup, ListRow, Page, PageHeader, Section, SwitchRow, TextField, useToast } from '../../../src/ui';
 
 const eventLabels: Partial<Record<NotificationEvent, string>> = {
   'approval.requested': 'Freigabe erbeten oder Angebot geändert',
@@ -101,6 +101,11 @@ export default function AccountScreen() {
                     ? 'Browser: Die Anmeldung endet, wenn Sie diesen Tab schließen.'
                     : 'Die Anmeldung ist im geschützten Speicher dieses Geräts abgelegt. Mitteilungen erhalten Sie als Push-Benachrichtigung, wenn Sie es erlauben.'}
                 </AppText>
+              </Section>
+
+              <Section title="Ihre Daten">
+                <AppText tone="muted">Auskunft und Kopie Ihrer Daten (DSGVO Art. 15 und 20).</AppText>
+                <Button label="Datenexport" icon="DownloadSimple" onPress={() => router.push(routes.customer.dataExport() as Href)} testID="zum-datenexport" />
               </Section>
             </>
             <>

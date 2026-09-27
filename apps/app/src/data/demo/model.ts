@@ -599,4 +599,4 @@ export interface DemoState {
 }
 
 /** Bei Änderungen am Zustandsmodell erhöhen: ältere Speicherstände werden verworfen. */
-export const DEMO_SCHEMA_VERSION = 2;
+export const DEMO_SCHEMA_VERSION = 3;

@@ -212,6 +212,13 @@ export default function WorkOrderScreen() {
                       <AppText variant="small" tone="subtle">
                         Die Bestätigung der Annahme gilt nur für die dort vereinbarten Arbeiten, nicht für spätere Zusatzarbeiten.
                       </AppText>
+                      <Button
+                        label={order.intake.confirmedAt ? 'Annahme ansehen' : 'Annahme prüfen und bestätigen'}
+                        variant={order.intake.confirmedAt ? 'secondary' : 'primary'}
+                        icon={order.intake.confirmedAt ? 'Eye' : 'Signature'}
+                        onPress={() => router.push(routes.customer.intake(order.id) as Href)}
+                        testID="annahme-oeffnen"
+                      />
                     </Section>
                   ) : null}
 
