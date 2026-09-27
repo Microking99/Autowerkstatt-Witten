@@ -114,10 +114,13 @@ export function areaForPath(path: string): 'customer' | 'mechanic' | 'workshop' 
 
 /**
  * Prüft ein `weiter`-Ziel nach der Anmeldung: nur interne, relative Pfade
- * (Schutz vor offenen Weiterleitungen).
+ * (Schutz vor offenen Weiterleitungen). Steuerzeichen und Leerraum werden abgelehnt, weil
+ * Browser Tab und Zeilenumbruch beim URL-Parsen entfernen ("/\t/boese.example" würde sonst
+ * zu "//boese.example").
  */
 export function safeNextPath(next: string | null | undefined): string | null {
   if (!next) return null;
+  if (/[\u0000-\u001f\u007f\s]/.test(next)) return null;
   if (!next.startsWith('/') || next.startsWith('//') || next.includes('://') || next.includes('\\')) return null;
   return next;
 }

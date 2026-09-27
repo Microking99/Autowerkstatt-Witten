@@ -3,7 +3,8 @@
  * Ablauf: erste Nachricht `{type:'auth', token}` (innerhalb von 10 s), danach
  * `{type:'subscribe', workOrderId}` – nur nach Rechteprüfung (canViewWorkOrder). Ereignisse:
  * neue Nachrichten (nur mit Chat-Sicht) und Statusänderungen. Die Sitzung wird regelmäßig neu
- * geprüft; widerrufene Sitzungen oder deaktivierte Konten werden getrennt.
+ * geprüft; bei Deaktivierung, Passwort-Reset und Passwortänderung trennt die API die
+ * Verbindungen des Kontos sofort (RealtimeHub.disconnectUser).
  *
  * Prozessintern: bei mehreren API-Instanzen ist PostgreSQL LISTEN/NOTIFY nötig (siehe hub.ts).
  */
@@ -39,6 +40,7 @@ export async function realtimeRoutes(app: App): Promise<void> {
       isStaff: false,
       canSeeMessages: (workOrderId) => chatVisible.get(workOrderId) === true,
       send: (event: RealtimeEvent) => send({ type: 'event', event }),
+      close: (code, reason) => socket.close(code, reason),
     };
     const authTimer = setTimeout(() => {
       if (!actor) socket.close(WS_CLOSE_UNAUTHORIZED, 'auth_timeout');
@@ -75,7 +77,9 @@ export async function realtimeRoutes(app: App): Promise<void> {
         actor = resolved.actor;
         token = parsed.token;
         subscriber.userId = actor.userId;
+        subscriber.sessionId = resolved.auth.sessionId;
         subscriber.isStaff = actor.role !== 'customer';
+        realtime.register(subscriber);
         send({ type: 'auth_ok' });
         return;
       }
@@ -110,7 +114,7 @@ export async function realtimeRoutes(app: App): Promise<void> {
     socket.on('close', () => {
       clearTimeout(authTimer);
       clearInterval(recheck);
-      realtime.unsubscribeAll(subscriber);
+      realtime.unregister(subscriber);
     });
   });
 }

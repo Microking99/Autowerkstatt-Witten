@@ -30,6 +30,8 @@ describe('Routen', () => {
     expect(safeNextPath('https://boese.example')).toBeNull();
     expect(safeNextPath('//boese.example')).toBeNull();
     expect(safeNextPath('/\\boese')).toBeNull();
+    expect(safeNextPath('/\t/boese.example')).toBeNull();
+    expect(safeNextPath('/\n/boese.example')).toBeNull();
     expect(safeNextPath(undefined)).toBeNull();
   });
 });

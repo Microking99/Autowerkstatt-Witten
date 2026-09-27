@@ -44,7 +44,15 @@ export interface CreateCheckoutRequest {
   returnUrl: string;
   /** Rückkehrseite der App nach der Zahlung (SumUp: `redirect_url`) */
   redirectUrl: string;
+  /**
+   * Ablauf des Versuchs (SumUp: `valid_until`, ISO 8601). Ohne Ablauf bliebe ein vergessener
+   * Checkout bei SumUp unbegrenzt bezahlbar (docs/zahlungen.md 2.1).
+   */
+  validUntil?: string;
 }
+
+/** Gültigkeit eines Zahlungsversuchs (docs/zahlungen.md 2.1: Vorschlag 60 Minuten). */
+export const CHECKOUT_VALIDITY_MINUTES = 60;
 
 export interface PaymentProvider {
   readonly name: 'sumup';

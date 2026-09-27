@@ -188,7 +188,7 @@ export async function authRoutes(app: App): Promise<void> {
       const { db, now: clock } = app.deps;
       const now = clock();
       const passwordHash = await hashPassword(request.body.password);
-      await db.transaction(async (tx) => {
+      const userId = await db.transaction(async (tx) => {
         const [reset] = await tx
           .update(passwordResets)
           .set({ usedAt: now })
@@ -208,7 +208,9 @@ export async function authRoutes(app: App): Promise<void> {
           entityType: 'user',
           entityId: user.id,
         });
+        return user.id;
       });
+      app.deps.realtime.disconnectUser(userId);
       return reply.code(204).send();
     },
   );
@@ -227,6 +229,7 @@ export async function authRoutes(app: App): Promise<void> {
       await revokeAllSessions(tx, user.id, now, request.auth!.sessionId);
       await audit(tx, auditContextFrom(request), { action: 'auth.password_changed', entityType: 'user', entityId: user.id });
     });
+    app.deps.realtime.disconnectUser(user.id, { exceptSessionId: request.auth!.sessionId });
     return reply.code(204).send();
   });
 }

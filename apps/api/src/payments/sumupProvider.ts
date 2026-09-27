@@ -3,7 +3,8 @@
  *
  * - `POST /v0.1/checkouts` mit `hosted_checkout: { enabled: true }`,
  *   `checkout_reference` = eigene eindeutige Referenz, `return_url` = Webhook-Adresse,
- *   `redirect_url` = Rückkehrseite der App. Beträge als Dezimal-EUR.
+ *   `redirect_url` = Rückkehrseite der App, `valid_until` = Ablauf des Versuchs.
+ *   Beträge als Dezimal-EUR.
  * - `GET /v0.1/checkouts/{id}` liefert den maßgeblichen Status.
  * - `DELETE /v0.1/checkouts/{id}` deaktiviert einen offenen Checkout.
  * - `POST /v0.1/me/refund/{transaction_id}` erstattet (ohne Anbieter-Idempotenz).
@@ -16,6 +17,7 @@
 import { z } from 'zod';
 import {
   centsToEurDecimal,
+  CHECKOUT_VALIDITY_MINUTES,
   PaymentProviderError,
   type CreateCheckoutRequest,
   type PaymentProvider,
@@ -119,6 +121,7 @@ export class SumUpPaymentProvider implements PaymentProvider {
       return_url: input.returnUrl,
       redirect_url: input.redirectUrl,
       hosted_checkout: { enabled: true },
+      valid_until: input.validUntil ?? new Date(Date.now() + CHECKOUT_VALIDITY_MINUTES * 60_000).toISOString(),
     });
     return this.parseCheckout(data);
   }

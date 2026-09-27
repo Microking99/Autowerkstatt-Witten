@@ -151,7 +151,10 @@ export async function processCheckout(
 
 /**
  * Abgleichslauf für den Hintergrund: offene (und fehlgeschlagene, weil SumUp sie noch als
- * bezahlt melden kann) Zahlungsversuche der letzten Tage beim Anbieter prüfen.
+ * bezahlt melden kann) Zahlungsversuche der letzten Tage beim Anbieter prüfen. Deaktivierte
+ * Versuche gehören dazu: Schlägt die Deaktivierung beim Anbieter fehl oder überschneidet sie
+ * sich mit der Zahlung, ist Geld eingegangen und wird als Überzahlung gebucht
+ * (docs/zahlungen.md 2.5), auch wenn der Webhook verloren ging.
  */
 export async function reconcilePendingCheckouts(
   deps: { db: Db; provider: PaymentProvider; now: () => Date },
@@ -161,7 +164,13 @@ export async function reconcilePendingCheckouts(
   const rows = await deps.db
     .select({ id: checkouts.id })
     .from(checkouts)
-    .where(and(inArray(checkouts.status, ['created', 'pending', 'failed']), isNotNull(checkouts.providerCheckoutId), gt(checkouts.createdAt, since)))
+    .where(
+      and(
+        inArray(checkouts.status, ['created', 'pending', 'failed', 'deactivated']),
+        isNotNull(checkouts.providerCheckoutId),
+        gt(checkouts.createdAt, since),
+      ),
+    )
     .limit(options.limit ?? 200);
   let recorded = 0;
   for (const r of rows) {

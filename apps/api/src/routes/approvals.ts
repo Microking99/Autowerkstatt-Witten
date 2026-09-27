@@ -109,6 +109,16 @@ function versionState(v: ApprovalVersionRow) {
   return { id: v.id, versionNo: v.versionNo, contentHash: v.contentHash, sentAt: v.sentAt ? v.sentAt.toISOString() : null, supersededAt: v.supersededAt ? v.supersededAt.toISOString() : null };
 }
 
+/**
+ * Freigaben werden nur zu Aufträgen angefragt, deren Arbeit noch aussteht (gilt für Anlage,
+ * Senden und neue Fassungen; Zurückziehen bleibt immer möglich).
+ */
+function ensureOpenForApprovals(status: string): void {
+  if (!['draft', 'open', 'in_progress', 'work_completed'].includes(status)) {
+    throw conflict('work_order_closed', 'Zu einem abgeschlossenen Auftrag können keine Freigaben angefragt werden.');
+  }
+}
+
 /** Anfrage sehen (Kunde: nicht Entwurf; Mechaniker: nie, Preise). */
 async function ensureVisible(tx: DbOrTx, actor: Actor, request: ApprovalRequestRow): Promise<void> {
   const [wo] = await tx.select().from(workOrders).where(eq(workOrders.id, request.workOrderId));
@@ -146,9 +156,7 @@ export async function approvalRoutes(app: App): Promise<void> {
       const body = request.body;
       const id = await db.transaction(async (tx) => {
         const { wo } = await loadVisibleWorkOrder(tx, actor, request.params.id);
-        if (!['draft', 'open', 'in_progress', 'work_completed'].includes(wo.status)) {
-          throw conflict('work_order_closed', 'Zu einem abgeschlossenen Auftrag können keine Freigaben angefragt werden.');
-        }
+        ensureOpenForApprovals(wo.status);
         await validateReferences(tx, wo.id, body);
         let version;
         try {
@@ -193,6 +201,7 @@ export async function approvalRoutes(app: App): Promise<void> {
     const id = await db.transaction(async (tx) => {
       const row = await loadRequest(tx, request.params.id, true);
       const { wo } = await loadVisibleWorkOrder(tx, actor, row.workOrderId);
+      ensureOpenForApprovals(wo.status);
       await validateReferences(tx, wo.id, body);
       const current = await currentVersionOf(tx, row);
       let outcome;
@@ -243,6 +252,7 @@ export async function approvalRoutes(app: App): Promise<void> {
     const id = await db.transaction(async (tx) => {
       const row = await loadRequest(tx, request.params.id, true);
       const { wo } = await loadVisibleWorkOrder(tx, actor, row.workOrderId);
+      ensureOpenForApprovals(wo.status);
       const current = await currentVersionOf(tx, row);
       const result = sendApproval({ id: row.id, status: row.status }, versionState(current), now);
       if (!result.ok) throw new HttpError(409, result.error.code.toLowerCase(), result.error.message);
