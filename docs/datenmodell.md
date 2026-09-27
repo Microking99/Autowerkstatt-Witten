@@ -183,3 +183,20 @@ wartet auf Kunden) | `decided` (alle entschieden). Zusätzlich Zähler freigegeb
 | `tire_storage` | Reifeneinlagerung: Kunde, Fahrzeug, Saison, Lagerplatz, Dimension, DOT, Profiltiefen | O-7 |
 | `loan_cars`, `loan_car_bookings` | Ersatzwagen und Buchungen je Auftrag | O-8 |
 | `checklist_templates`, `checklist_runs` | Abschlusschecklisten | O-10 |
+
+## 12. Ergänzungen aus der Umsetzung der API (P-03)
+
+Zusätzlich zu den Tabellen oben (Quelle: `apps/api/src/db/schema/`, Übergabe
+`docs/uebergaben/2026-09-26-api.md`):
+
+- `counters`: fortlaufende Kunden-, Auftrags- und Rechnungsnummern.
+- `checkouts.merchant_code`: Händlerkennung für den Abgleich mit der Anbieterantwort.
+- `message_attachments.photo_id`: Chat-Anhänge werden als Fotos (Kontext `chat`, kundensichtbar) geführt.
+- `idempotency_keys.request_hash`: gleicher Schlüssel mit anderem Inhalt wird abgelehnt.
+- `users.password_changed_at`, `invitations.revoked_at`.
+- `appointments.conflict_override_reason`, `cancelled_by`, `created_by`.
+- `work_items.not_done_reason`, `findings.reported_at`, `invoices.cancelled_at`, `invoices.created_by`, `refunds.reason`.
+- `vehicles.license_plate_normalized` (Suche), `vehicles.color`.
+- Zusätzlicher Unique-Index `service_entries (revision_of_id) WHERE revision_of_id IS NOT NULL`:
+  Korrekturen verzweigen nicht.
+- Audit-Trigger verhindert `UPDATE`, `DELETE` und `TRUNCATE` auf `audit_log`.

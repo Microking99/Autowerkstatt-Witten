@@ -18,6 +18,7 @@ import { settingsRoutes } from './settings';
 import { publicRoutes } from './public';
 import { dashboardRoutes } from './dashboard';
 import { auditRoutes } from './audit';
+import { privacyRoutes } from './privacy';
 
 /** Registriert alle Routen unter /api/v1 (Vertrag: packages/contracts/src/api.ts). */
 export async function registerRoutes(app: App): Promise<void> {
@@ -40,4 +41,5 @@ export async function registerRoutes(app: App): Promise<void> {
   await publicRoutes(app);
   await dashboardRoutes(app);
   await auditRoutes(app);
+  await privacyRoutes(app);
 }

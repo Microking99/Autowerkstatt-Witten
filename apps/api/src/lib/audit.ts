@@ -107,7 +107,8 @@ export type AuditAction =
   | 'settings.updated'
   | 'maintenance_type.saved'
   | 'resource.saved'
-  | 'export.invoices_csv';
+  | 'export.invoices_csv'
+  | 'export.customer_data';
 
 export type AuditEntityType =
   | 'auth'
