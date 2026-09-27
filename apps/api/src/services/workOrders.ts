@@ -156,6 +156,7 @@ export async function buildWorkOrderSummaries(db: DbOrTx, actor: Actor, rows: Wo
       customerId: wo.customerId,
       assigneeUserIds: assignees.filter((a) => a.workOrderId === wo.id).map((a) => a.userId),
       itemAssigneeUserIds: itemAssignees.filter((a) => a.workOrderId === wo.id).map((a) => a.userId!),
+      status: wo.status,
     };
     const status = computeStatusTriple({
       workStatus: wo.status,

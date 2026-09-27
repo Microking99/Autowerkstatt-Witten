@@ -3,7 +3,7 @@
  * (packages/domain/src/permissions/objectRules.ts), und SQL-Bedingungen für serverseitig
  * gefilterte Listen.
  */
-import { and, eq, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import type { Actor, VehicleAccessInput, WorkOrderAccessInput } from '@werkstatt/domain';
 import type { DbOrTx } from '../db/index';
 import { vehicleOwnerships, workItems, workOrderAssignees, workOrders } from '../db/schema/index';
@@ -12,7 +12,7 @@ import { canViewWorkOrder } from '@werkstatt/domain';
 
 export type WorkOrderRow = typeof workOrders.$inferSelect;
 
-export async function workOrderAccessInput(db: DbOrTx, wo: Pick<WorkOrderRow, 'id' | 'customerId'>): Promise<WorkOrderAccessInput> {
+export async function workOrderAccessInput(db: DbOrTx, wo: Pick<WorkOrderRow, 'id' | 'customerId' | 'status'>): Promise<WorkOrderAccessInput> {
   const assignees = await db.select({ userId: workOrderAssignees.userId }).from(workOrderAssignees).where(eq(workOrderAssignees.workOrderId, wo.id));
   const itemAssignees = await db
     .selectDistinct({ userId: workItems.assignedTo })
@@ -22,6 +22,8 @@ export async function workOrderAccessInput(db: DbOrTx, wo: Pick<WorkOrderRow, 'i
     customerId: wo.customerId,
     assigneeUserIds: assignees.map((a) => a.userId),
     itemAssigneeUserIds: itemAssignees.map((a) => a.userId!).filter(Boolean),
+    // Kunden sehen Aufträge im Status draft nicht (Objektregel der Geschäftslogik)
+    status: wo.status,
   };
 }
 
@@ -69,7 +71,9 @@ export async function vehicleAccessInput(db: DbOrTx, actor: Actor, vehicleId: st
  * zugewiesene. `alias` ist der Tabellenname bzw. Alias von work_orders in der Abfrage.
  */
 export function workOrderListCondition(actor: Actor): SQL | undefined {
-  if (actor.role === 'customer') return actor.customerId ? eq(workOrders.customerId, actor.customerId) : sql`false`;
+  if (actor.role === 'customer') {
+    return actor.customerId ? and(eq(workOrders.customerId, actor.customerId), ne(workOrders.status, 'draft')) : sql`false`;
+  }
   if (actor.permissions.has('workOrders.read')) return undefined;
   return sql`(
     EXISTS (SELECT 1 FROM ${workOrderAssignees} a WHERE a.work_order_id = ${workOrders.id} AND a.user_id = ${actor.userId})

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { Algorithm, hash, verify } from '@node-rs/argon2';
+import { hash, verify } from '@node-rs/argon2';
 
 /** Undurchsichtiges Token mit 256 Bit Zufall (base64url, 43 Zeichen). */
 export function randomToken(bytes = 32): string {
@@ -16,7 +16,8 @@ export function safeEqualHex(a: string, b: string): boolean {
 }
 
 /** argon2id nach OWASP-Mindestempfehlung (19 MiB, 2 Durchläufe, 1 Thread). */
-const ARGON2_OPTIONS = { algorithm: Algorithm.Argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 } as const;
+// algorithm 2 = Argon2id (Algorithm.Argon2id; const enum, hier als Zahl wegen verbatimModuleSyntax)
+const ARGON2_OPTIONS = { algorithm: 2, memoryCost: 19456, timeCost: 2, parallelism: 1 } as const;
 
 export function hashPassword(password: string): Promise<string> {
   return hash(password, ARGON2_OPTIONS);

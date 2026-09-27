@@ -4,6 +4,7 @@
  * und Feldfilter kommen aus der Geschäftslogik; jede Antwort enthält die drei getrennten Status.
  */
 import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
+import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   CompleteReviewRequestSchema,
@@ -202,7 +203,10 @@ export async function workOrderRoutes(app: App): Promise<void> {
     return page(summaries.slice(offset, offset + q.limit + 1), offset, q.limit);
   });
 
-  app.post('/work-orders', { schema: { body: CreateWorkOrderRequestSchema, response: { 201: WorkOrderDetailSchema } } }, async (request, reply) => {
+  // Erweiterung: `?draft=true` legt den Auftrag als Entwurf an (für Kunden unsichtbar, Freischalten per transition → open)
+  const CreateQuerySchema = z.object({ draft: z.enum(['true', 'false']).optional() });
+
+  app.post('/work-orders', { schema: { querystring: CreateQuerySchema, body: CreateWorkOrderRequestSchema, response: { 201: WorkOrderDetailSchema } } }, async (request, reply) => {
     const actor = requireActor(request);
     ensure(hasPermission(actor, 'workOrders.write'));
     const { db, now: clock } = app.deps;
@@ -222,7 +226,7 @@ export async function workOrderRoutes(app: App): Promise<void> {
           orderNumber: await nextOrderNumber(tx, now.getUTCFullYear()),
           customerId: body.customerId,
           vehicleId: body.vehicleId,
-          status: 'open',
+          status: request.query.draft === 'true' ? 'draft' : 'open',
           title: body.title,
           descriptionCustomer: body.descriptionCustomer ?? null,
           notesInternal: body.notesInternal ?? null,
@@ -698,22 +702,24 @@ export async function workOrderRoutes(app: App): Promise<void> {
 
   type ExecAction = 'start' | 'pause' | 'finish' | 'not-done';
 
-  async function executeItem(
-    request: Parameters<Parameters<typeof app.post>[2]>[0] & { params: { id: string } },
-    action: ExecAction,
-    body: Record<string, unknown>,
-  ) {
+  async function executeItem(request: FastifyRequest, itemId: string, action: ExecAction, body: Record<string, unknown>) {
     const actor = requireActor(request);
     const { db, now: clock } = app.deps;
     const now = clock();
     const events: PendingEvents = [];
     const item = await db.transaction(async (tx) => {
-      const [current] = await tx.select().from(workItems).where(eq(workItems.id, request.params.id)).for('update');
+      const [current] = await tx.select().from(workItems).where(eq(workItems.id, itemId)).for('update');
       ensureFound(current);
       const [wo] = await tx.select().from(workOrders).where(eq(workOrders.id, current!.workOrderId));
       const { access } = await loadVisibleWorkOrder(tx, actor, current!.workOrderId);
-      void access;
-      ensure(canExecuteWorkItem(actor, { assignedToUserId: current!.assignedTo, authorization: current!.authorization, workOrderStatus: wo!.status }));
+      ensure(
+        canExecuteWorkItem(actor, {
+          assignedToUserId: current!.assignedTo,
+          workOrderAssigneeUserIds: access.assigneeUserIds,
+          authorization: current!.authorization,
+          workOrderStatus: wo!.status,
+        }),
+      );
       const state = { authorization: current!.authorization, executionStatus: current!.executionStatus, maintenanceTypeId: current!.maintenanceTypeId };
       let result: WorkItemTransitionResult;
       if (action === 'start') result = startItem(state, { now });
@@ -761,17 +767,17 @@ export async function workOrderRoutes(app: App): Promise<void> {
     return workItemForActor(dtos.find((d) => d.id === item.id)!, actor);
   }
 
-  app.post('/work-items/:id/start', { schema: { params: ItemParamsSchema, response: { 200: WorkItemSchema } } }, (request) => executeItem(request, 'start', {}));
-  app.post('/work-items/:id/pause', { schema: { params: ItemParamsSchema, response: { 200: WorkItemSchema } } }, (request) => executeItem(request, 'pause', {}));
+  app.post('/work-items/:id/start', { schema: { params: ItemParamsSchema, response: { 200: WorkItemSchema } } }, (request) => executeItem(request, request.params.id, 'start', {}));
+  app.post('/work-items/:id/pause', { schema: { params: ItemParamsSchema, response: { 200: WorkItemSchema } } }, (request) => executeItem(request, request.params.id, 'pause', {}));
   app.post(
     '/work-items/:id/finish',
     { schema: { params: ItemParamsSchema, body: FinishWorkItemRequestSchema, response: { 200: WorkItemSchema } } },
-    (request) => executeItem(request, 'finish', (request.body ?? {}) as Record<string, unknown>),
+    (request) => executeItem(request, request.params.id, 'finish', (request.body ?? {}) as Record<string, unknown>),
   );
   app.post(
     '/work-items/:id/not-done',
     { schema: { params: ItemParamsSchema, body: NotDoneWorkItemRequestSchema, response: { 200: WorkItemSchema } } },
-    (request) => executeItem(request, 'not-done', request.body as Record<string, unknown>),
+    (request) => executeItem(request, request.params.id, 'not-done', request.body as Record<string, unknown>),
   );
 
   app.post('/work-items/:id/parts', { schema: { params: ItemParamsSchema, body: PartUsedInputSchema, response: { 201: WorkItemSchema } } }, async (request, reply) => {
@@ -781,8 +787,15 @@ export async function workOrderRoutes(app: App): Promise<void> {
       const [current] = await tx.select().from(workItems).where(eq(workItems.id, request.params.id));
       ensureFound(current);
       const [wo] = await tx.select().from(workOrders).where(eq(workOrders.id, current!.workOrderId));
-      await loadVisibleWorkOrder(tx, actor, current!.workOrderId);
-      ensure(canExecuteWorkItem(actor, { assignedToUserId: current!.assignedTo, authorization: current!.authorization, workOrderStatus: wo!.status }));
+      const { access } = await loadVisibleWorkOrder(tx, actor, current!.workOrderId);
+      ensure(
+        canExecuteWorkItem(actor, {
+          assignedToUserId: current!.assignedTo,
+          workOrderAssigneeUserIds: access.assigneeUserIds,
+          authorization: current!.authorization,
+          workOrderStatus: wo!.status,
+        }),
+      );
       await tx.insert(partsUsed).values({
         workItemId: current!.id,
         partNumber: request.body.partNumber ?? null,
