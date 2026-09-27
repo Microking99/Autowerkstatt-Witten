@@ -2,6 +2,10 @@
 # Voraussetzungen (vom Inhaber einzurichten, siehe docs/status.md "Blockiert"):
 #   - Expo-Konto und Projekt, Repository-Secret EXPO_TOKEN
 #   - Apple Developer Program (iOS), Google Play Console (Android)
+#   - Für "preview"/"production": EXPO_PUBLIC_API_URL als EAS-Umgebungsvariable (API-Adresse)
+# Profile (apps/app/eas.json): "demo" = installierbare App mit Beispieldaten (klickbarer
+# Entwurf auf echten Geräten, interne Verteilung), "preview" = interne Testversion gegen die
+# API, "production" = Store-Version.
 # Dieser Workflow wurde noch nie ausgeführt.
 name: Mobile-Builds (EAS)
 
@@ -16,8 +20,8 @@ on:
       profile:
         description: "EAS-Profil"
         type: choice
-        options: [preview, production]
-        default: preview
+        options: [demo, preview, production]
+        default: demo
 
 permissions:
   contents: read
