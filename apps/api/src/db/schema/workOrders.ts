@@ -206,6 +206,12 @@ export const intakes = pgTable('intakes', {
   notesInternal: text('notes_internal'),
   notesCustomer: text('notes_customer'),
   confirmedAt: tstz('confirmed_at'),
+  /**
+   * Zeitpunkt der ersten Bestätigung. Bleibt auch erhalten, wenn eine spätere Änderung die
+   * Bestätigung ungültig macht: Ab dann entstehen neue oder geänderte Leistungen nur noch über
+   * eine Freigabeanfrage (R-ANN-3).
+   */
+  firstConfirmedAt: tstz('first_confirmed_at'),
   confirmationMethod: intakeConfirmationMethodEnum('confirmation_method').notNull().default('none'),
   confirmedByUserId: uuid('confirmed_by_user_id').references(() => users.id),
   /** SHA-256 des kanonischen, kundenbestimmten Inhalts zum Zeitpunkt der Bestätigung */

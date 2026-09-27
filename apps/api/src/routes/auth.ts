@@ -62,7 +62,9 @@ export async function authRoutes(app: App): Promise<void> {
       if (user.lockedUntil && user.lockedUntil > now) {
         await verifyAgainstDummy(request.body.password);
         await audit(db, { ...ctx, actorUserId: null }, { action: 'auth.login_failed', entityType: 'user', entityId: user.id, data: { reason: 'locked' } });
-        throw new HttpError(429, API_ERROR_CODES.tooManyAttempts, 'Zu viele Fehlversuche. Bitte später erneut versuchen.');
+        // Gleiche Antwort wie bei falschen Daten: Die Sperre darf nicht verraten, ob ein Konto
+        // zu dieser E-Mail-Adresse existiert (Review R09c). Die Sperre selbst bleibt wirksam.
+        throw new HttpError(401, API_ERROR_CODES.invalidCredentials, INVALID_CREDENTIALS);
       }
       const valid = await verifyPassword(user.passwordHash, request.body.password);
       if (!valid) {
@@ -189,7 +191,7 @@ export async function authRoutes(app: App): Promise<void> {
       const { db, now: clock } = app.deps;
       const now = clock();
       const passwordHash = await hashPassword(request.body.password);
-      await db.transaction(async (tx) => {
+      const userId = await db.transaction(async (tx) => {
         const [reset] = await tx
           .update(passwordResets)
           .set({ usedAt: now })
@@ -209,7 +211,9 @@ export async function authRoutes(app: App): Promise<void> {
           entityType: 'user',
           entityId: user.id,
         });
+        return user.id;
       });
+      app.deps.realtime.disconnectUser(userId);
       return reply.code(204).send();
     },
   );
@@ -228,6 +232,7 @@ export async function authRoutes(app: App): Promise<void> {
       await revokeAllSessions(tx, user.id, now, request.auth!.sessionId);
       await audit(tx, auditContextFrom(request), { action: 'auth.password_changed', entityType: 'user', entityId: user.id });
     });
+    app.deps.realtime.disconnectUser(user.id, { exceptSessionId: request.auth!.sessionId });
     return reply.code(204).send();
   });
 }

@@ -3,7 +3,7 @@
  * Kundenentscheidung, gebunden an Version und Inhalts-Hash. Mitarbeiter können nie im Namen
  * des Kunden entscheiden. Ein "Ja" im Chat ist keine Freigabe.
  */
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import { ApprovalDecisionRequestSchema, ApprovalDraftInputSchema, ApprovalRequestSchema, type ApprovalDraftInput, API_ERROR_CODES } from '@werkstatt/contracts';
 import {
@@ -109,6 +109,16 @@ function versionState(v: ApprovalVersionRow) {
   return { id: v.id, versionNo: v.versionNo, contentHash: v.contentHash, sentAt: v.sentAt ? v.sentAt.toISOString() : null, supersededAt: v.supersededAt ? v.supersededAt.toISOString() : null };
 }
 
+/**
+ * Freigaben werden nur zu Aufträgen angefragt, deren Arbeit noch aussteht (gilt für Anlage,
+ * Senden und neue Fassungen; Zurückziehen bleibt immer möglich).
+ */
+function ensureOpenForApprovals(status: string): void {
+  if (!['draft', 'open', 'in_progress', 'work_completed'].includes(status)) {
+    throw conflict(API_ERROR_CODES.workOrderClosed, 'Zu einem abgeschlossenen Auftrag können keine Freigaben angefragt werden.');
+  }
+}
+
 /** Anfrage sehen (Kunde: nicht Entwurf; Mechaniker: nie, Preise). */
 async function ensureVisible(tx: DbOrTx, actor: Actor, request: ApprovalRequestRow): Promise<void> {
   const [wo] = await tx.select().from(workOrders).where(eq(workOrders.id, request.workOrderId));
@@ -146,9 +156,7 @@ export async function approvalRoutes(app: App): Promise<void> {
       const body = request.body;
       const id = await db.transaction(async (tx) => {
         const { wo } = await loadVisibleWorkOrder(tx, actor, request.params.id);
-        if (!['draft', 'open', 'in_progress', 'work_completed'].includes(wo.status)) {
-          throw conflict(API_ERROR_CODES.workOrderClosed, 'Zu einem abgeschlossenen Auftrag können keine Freigaben angefragt werden.');
-        }
+        ensureOpenForApprovals(wo.status);
         await validateReferences(tx, wo.id, body);
         let version;
         try {
@@ -193,7 +201,20 @@ export async function approvalRoutes(app: App): Promise<void> {
     const id = await db.transaction(async (tx) => {
       const row = await loadRequest(tx, request.params.id, true);
       const { wo } = await loadVisibleWorkOrder(tx, actor, row.workOrderId);
+      ensureOpenForApprovals(wo.status);
       await validateReferences(tx, wo.id, body);
+      if (row.status !== 'draft') {
+        // Sobald aus einer Anfrage Arbeit begonnen wurde, sind ihre Positionen nicht mehr
+        // austauschbar: Änderungen brauchen dann eine eigene, neue Freigabeanfrage.
+        const started = await tx
+          .select({ id: workItems.id })
+          .from(workItems)
+          .where(and(eq(workItems.approvalRequestId, row.id), ne(workItems.executionStatus, 'planned')))
+          .limit(1);
+        if (started.length > 0) {
+          throw conflict(API_ERROR_CODES.approvalInExecution, 'Aus dieser Anfrage wurden bereits Arbeiten begonnen. Änderungen bitte als neue Freigabeanfrage senden.');
+        }
+      }
       const current = await currentVersionOf(tx, row);
       let outcome;
       try {
@@ -243,6 +264,7 @@ export async function approvalRoutes(app: App): Promise<void> {
     const id = await db.transaction(async (tx) => {
       const row = await loadRequest(tx, request.params.id, true);
       const { wo } = await loadVisibleWorkOrder(tx, actor, row.workOrderId);
+      ensureOpenForApprovals(wo.status);
       const current = await currentVersionOf(tx, row);
       const result = sendApproval({ id: row.id, status: row.status }, versionState(current), now);
       if (!result.ok) throw new HttpError(409, result.error.code.toLowerCase(), result.error.message);

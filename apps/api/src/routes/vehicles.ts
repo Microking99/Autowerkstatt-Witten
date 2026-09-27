@@ -277,7 +277,21 @@ export async function vehicleRoutes(app: App): Promise<void> {
       .from(odometerReadings)
       .where(eq(odometerReadings.vehicleId, request.params.id))
       .orderBy(desc(odometerReadings.recordedAt), desc(odometerReadings.createdAt));
-    return rows.map(toOdometerDto);
+    const dtos = rows.map(toOdometerDto);
+    if (actor.role !== 'customer') return dtos;
+    // Kunden sehen den Auftragsbezug nur bei eigenen Aufträgen (nicht bei denen eines Vorbesitzers)
+    const woIds = [...new Set(dtos.map((d) => d.workOrderId).filter((x): x is string => x !== null))];
+    const own = new Set(
+      woIds.length > 0
+        ? (
+            await db
+              .select({ id: workOrders.id })
+              .from(workOrders)
+              .where(and(inArray(workOrders.id, woIds), eq(workOrders.customerId, actor.customerId!), ne(workOrders.status, 'draft')))
+          ).map((r) => r.id)
+        : [],
+    );
+    return dtos.map((d) => (d.workOrderId !== null && !own.has(d.workOrderId) ? { ...d, workOrderId: null } : d));
   });
 
   app.post(

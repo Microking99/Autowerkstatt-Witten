@@ -18,14 +18,51 @@ export type RealtimeAudience = 'all' | 'staff';
 
 export interface RealtimeSubscriber {
   userId: string;
+  /** Sitzung, mit der sich die Verbindung angemeldet hat */
+  sessionId?: string;
   isStaff: boolean;
   /** Darf der Abonnent Chat-Ereignisse sehen (Recht messages.customerChat bzw. Kunde)? */
   canSeeMessages: (workOrderId: string) => boolean;
   send: (event: RealtimeEvent) => void;
+  /** Verbindung schließen (z. B. nach Deaktivierung des Kontos) */
+  close?: (code: number, reason: string) => void;
+  /**
+   * Prüft das Abonnement eines Auftrags erneut (z. B. nach geänderter Zuweisung) und beendet es,
+   * wenn die Sicht nicht mehr besteht.
+   */
+  revalidate?: (workOrderId: string) => Promise<void>;
 }
 
 export class RealtimeHub {
   private readonly byWorkOrder = new Map<string, Set<RealtimeSubscriber>>();
+  /** Angemeldete Verbindungen (auch ohne Abonnement), damit sie sofort getrennt werden können */
+  private readonly connections = new Set<RealtimeSubscriber>();
+
+  register(subscriber: RealtimeSubscriber): void {
+    this.connections.add(subscriber);
+  }
+
+  unregister(subscriber: RealtimeSubscriber): void {
+    this.connections.delete(subscriber);
+    this.unsubscribeAll(subscriber);
+  }
+
+  /**
+   * Trennt sofort alle Verbindungen eines Kontos (Deaktivierung, Passwort-Reset) bzw. alle außer
+   * der angegebenen Sitzung (Passwortänderung). Abonnements enden damit ebenfalls.
+   */
+  disconnectUser(userId: string, options: { exceptSessionId?: string } = {}): void {
+    for (const sub of [...this.connections]) {
+      if (sub.userId !== userId) continue;
+      if (options.exceptSessionId !== undefined && sub.sessionId === options.exceptSessionId) continue;
+      this.unregister(sub);
+      try {
+        sub.close?.(4401, 'session_ended');
+      } catch {
+        // Verbindung bereits geschlossen
+      }
+    }
+  }
 
   subscribe(workOrderId: string, subscriber: RealtimeSubscriber): void {
     let set = this.byWorkOrder.get(workOrderId);
@@ -48,6 +85,16 @@ export class RealtimeHub {
       set.delete(subscriber);
       if (set.size === 0) this.byWorkOrder.delete(id);
     }
+  }
+
+  /**
+   * Zugriff auf einen Auftrag hat sich geändert (Zuweisung, Status): alle Abonnements dieses
+   * Auftrags neu prüfen. Nicht mehr berechtigte Abonnements enden sofort (Review R14c).
+   */
+  async revalidateWorkOrder(workOrderId: string): Promise<void> {
+    const set = this.byWorkOrder.get(workOrderId);
+    if (!set) return;
+    await Promise.all([...set].map((sub) => sub.revalidate?.(workOrderId).catch(() => undefined)));
   }
 
   subscriberCount(workOrderId: string): number {

@@ -124,7 +124,7 @@ export class FakePaymentProvider implements PaymentProvider {
       merchant_code: this.merchantCode,
       status: 'PENDING',
       transactions: [],
-      valid_until: new Date(Date.now() + 30 * 60_000).toISOString(),
+      valid_until: input.validUntil ?? new Date(Date.now() + 30 * 60_000).toISOString(),
       hosted_checkout_url: `https://checkout.fake-provider.invalid/pay/${id}`,
     };
     this.checkouts.set(id, checkout);

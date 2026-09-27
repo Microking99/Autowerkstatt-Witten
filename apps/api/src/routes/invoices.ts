@@ -37,7 +37,7 @@ import { randomToken } from '../lib/crypto';
 import { HttpError, conflict, forbidden, unprocessable } from '../lib/errors';
 import { IdParamsSchema, ensure, ensureFound, requireActor } from '../lib/http';
 import { enqueueNotification, notificationTargets } from '../notifications/outbox';
-import { PaymentProviderError } from '../payments/provider';
+import { CHECKOUT_VALIDITY_MINUTES, PaymentProviderError } from '../payments/provider';
 import { customerDisplayName } from '../services/customers';
 import { invoiceDtoContext, loadInvoiceBundle, loadInvoiceBundles, paymentStatusOf, toInvoiceDtos, type InvoiceRow } from '../services/invoices';
 import { notifyPaymentConfirmed, processCheckout } from '../services/payments';
@@ -307,6 +307,7 @@ export async function invoiceRoutes(app: App): Promise<void> {
           description: `Rechnung ${locked!.invoiceNumber ?? ''} Autowerkstatt Witten`.trim(),
           returnUrl: `${config.API_PUBLIC_URL.replace(/\/+$/, '')}/api/v1/webhooks/sumup`,
           redirectUrl: `${config.APP_BASE_URL.replace(/\/+$/, '')}${routes.paymentReturn(locked!.id)}`,
+          validUntil: new Date(now.getTime() + CHECKOUT_VALIDITY_MINUTES * 60_000).toISOString(),
         });
       } catch (err) {
         if (err instanceof PaymentProviderError) {
@@ -351,7 +352,12 @@ export async function invoiceRoutes(app: App): Promise<void> {
       const { db, now, payments: provider, config } = app.deps;
       const row = await loadVisibleInvoice(db, actor, request.params.id);
       if (provider) {
-        const open = await db.select().from(checkouts).where(and(eq(checkouts.invoiceId, row.id), inArray(checkouts.status, ['created', 'pending', 'failed'])));
+        // auch deaktivierte Versuche: Wurde ein alter Versuch trotzdem bezahlt (Überschneidung), wird
+        // die Zahlung gebucht und als Überzahlung sichtbar (docs/zahlungen.md 2.5)
+        const open = await db
+          .select()
+          .from(checkouts)
+          .where(and(eq(checkouts.invoiceId, row.id), inArray(checkouts.status, ['created', 'pending', 'failed', 'deactivated'])));
         const minAge = config.PAYMENT_REFRESH_MIN_SECONDS * 1000;
         for (const c of open) {
           if (c.lastCheckedAt && now().getTime() - c.lastCheckedAt.getTime() < minAge) continue;

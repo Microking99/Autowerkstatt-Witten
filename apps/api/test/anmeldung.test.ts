@@ -38,7 +38,8 @@ describe('Anmeldung', () => {
     for (let i = 0; i < 5; i++) {
       expectStatus(await call(h, 'POST', '/auth/login', { body: { email: staff.email, password: `falsch-${i}-xxxx` } }), 401);
     }
-    expectStatus(await call(h, 'POST', '/auth/login', { body: { email: staff.email, password: TEST_PASSWORD } }), 429, 'too_many_attempts');
+    // Gesperrt: gleiche Antwort wie bei falschen Daten (keine Auskunft über die Existenz des Kontos)
+    expectStatus(await call(h, 'POST', '/auth/login', { body: { email: staff.email, password: TEST_PASSWORD } }), 401, 'invalid_credentials');
     h.clock.advance(16 * 60_000);
     expectOk(await call(h, 'POST', '/auth/login', { body: { email: staff.email, password: TEST_PASSWORD } }), LoginResponseSchema);
     h.clock.advance(-16 * 60_000);

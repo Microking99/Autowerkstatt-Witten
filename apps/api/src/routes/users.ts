@@ -47,9 +47,19 @@ export async function toStaffUser(db: DbOrTx, user: UserRow): Promise<StaffUser>
   };
 }
 
-/** Aktive Admins, die users.manage wirksam besitzen. */
+/**
+ * Aktive Admins, die users.manage wirksam besitzen. Innerhalb einer Transaktion aufrufen:
+ * Die Zeilen der aktiven Admins werden gesperrt (feste Reihenfolge), damit zwei gleichzeitige
+ * Änderungen (z. B. zwei Admins deaktivieren sich gegenseitig) nacheinander geprüft werden und
+ * nie der letzte aktive Admin verloren geht.
+ */
 export async function countActiveAdmins(db: DbOrTx): Promise<number> {
-  const admins = await db.select().from(users).where(and(eq(users.role, 'admin'), eq(users.status, 'active')));
+  const admins = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.role, 'admin'), eq(users.status, 'active')))
+    .orderBy(asc(users.id))
+    .for('update');
   let count = 0;
   for (const a of admins) {
     const overrides = await loadOverrides(db, a.id);
@@ -159,7 +169,7 @@ export async function userRoutes(app: App): Promise<void> {
     ensure(hasPermission(actor, 'users.manage'));
     const { db, now: clock } = app.deps;
     const now = clock();
-    return db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       const target = await loadStaff(tx, request.params.id);
       const check = canDisableUser({
         targetUser: { id: target.id, role: target.role, status: target.status, overrides: await loadOverrides(tx, target.id) },
@@ -171,6 +181,9 @@ export async function userRoutes(app: App): Promise<void> {
       await audit(tx, auditContextFrom(request), { action: 'user.disabled', entityType: 'user', entityId: target.id });
       return toStaffUser(tx, updated!);
     });
+    // Echtzeitverbindungen sofort trennen (nicht erst bei der nächsten Sitzungsprüfung)
+    app.deps.realtime.disconnectUser(result.id);
+    return result;
   });
 
   app.post('/users/:id/enable', { schema: { params: IdParamsSchema, response: { 200: StaffUserSchema } } }, async (request) => {

@@ -48,15 +48,38 @@ export async function currentOwnerCustomerId(db: DbOrTx, vehicleId: string): Pro
   return row?.customerId ?? null;
 }
 
-/** Ist der Mitarbeiter einem Auftrag (oder einer Position) zu diesem Fahrzeug zugewiesen? */
-export async function isAssignedViaWorkOrder(db: DbOrTx, userId: string, vehicleId: string): Promise<boolean> {
-  const rows = await db.execute<{ one: number }>(sql`
-    SELECT 1 AS one FROM ${workOrders} wo
-    WHERE wo.vehicle_id = ${vehicleId} AND (
+/**
+ * Aufträge, deren Zuweisung einem Mitarbeiter ohne Leserecht Zugriff auf Fahrzeugakte,
+ * Servicehistorie und interne Dokumente gibt: nur laufende Aufträge. Nach fachlichem Abschluss,
+ * Abholung oder Stornierung endet dieser Zugriff (Review, Frage 3).
+ */
+const ACTIVE_ASSIGNMENT_STATUSES = sql`('draft', 'open', 'in_progress', 'work_completed')`;
+
+/** SQL: IDs der aktiven Aufträge, denen der Mitarbeiter (oder einer ihrer Positionen) zugewiesen ist. */
+function activeAssignedWorkOrderIds(userId: string): SQL {
+  return sql`SELECT wo.id FROM ${workOrders} wo
+    WHERE wo.status IN ${ACTIVE_ASSIGNMENT_STATUSES} AND (
       EXISTS (SELECT 1 FROM ${workOrderAssignees} a WHERE a.work_order_id = wo.id AND a.user_id = ${userId})
       OR EXISTS (SELECT 1 FROM ${workItems} i WHERE i.work_order_id = wo.id AND i.assigned_to = ${userId})
-    ) LIMIT 1`);
+    )`;
+}
+
+/** Ist der Mitarbeiter einem aktiven Auftrag (oder einer Position) zu diesem Fahrzeug zugewiesen? */
+export async function isAssignedViaWorkOrder(db: DbOrTx, userId: string, vehicleId: string): Promise<boolean> {
+  const rows = await db.execute<{ one: number }>(sql`
+    SELECT 1 AS one FROM ${workOrders} w
+    WHERE w.vehicle_id = ${vehicleId} AND w.id IN (${activeAssignedWorkOrderIds(userId)}) LIMIT 1`);
   return rows.rows.length > 0;
+}
+
+/** Aktive zugewiesene Aufträge und deren Fahrzeuge eines Mitarbeiters (für Dokumentrechte). */
+export async function activeAssignmentScope(db: DbOrTx, userId: string): Promise<{ workOrderIds: Set<string>; vehicleIds: Set<string> }> {
+  const rows = await db.execute<{ id: string; vehicle_id: string }>(sql`
+    SELECT w.id, w.vehicle_id FROM ${workOrders} w WHERE w.id IN (${activeAssignedWorkOrderIds(userId)})`);
+  return {
+    workOrderIds: new Set(rows.rows.map((r) => r.id)),
+    vehicleIds: new Set(rows.rows.map((r) => r.vehicle_id)),
+  };
 }
 
 export async function vehicleAccessInput(db: DbOrTx, actor: Actor, vehicleId: string): Promise<VehicleAccessInput> {

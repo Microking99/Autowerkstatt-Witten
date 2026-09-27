@@ -47,6 +47,7 @@ export const API_ERROR_CODES = {
   emailTaken: 'email_taken',
   accountExists: 'account_exists',
   noAccount: 'no_account',
+  notDisabled: 'not_disabled',
   permissionChangeRejected: 'permission_change_rejected',
   customerHasNoPermissions: 'customer_has_no_permissions',
   unknownPermission: 'unknown_permission',
@@ -104,6 +105,7 @@ export const API_ERROR_CODES = {
   /** Nach bestätigter Annahme: weitere Arbeiten nur über eine Freigabeanfrage (R-ANN-3). */
   approvalRequired: 'approval_required',
   approvalBound: 'approval_bound',
+  approvalInExecution: 'approval_in_execution',
   itemFinished: 'item_finished',
   invalidWorkItem: 'invalid_work_item',
   notAuthorized: 'not_authorized',

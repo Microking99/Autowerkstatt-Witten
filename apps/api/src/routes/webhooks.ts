@@ -27,9 +27,12 @@ export async function webhookRoutes(app: App): Promise<void> {
       const eventType = typeof payload.event_type === 'string' ? payload.event_type.slice(0, 100) : 'unknown';
       const dedupeKey = checkoutId ? `sumup:${eventType}:${checkoutId}` : `sumup:invalid:${sha256Hex(JSON.stringify(payload))}`;
 
+      // Nur die dokumentierten Felder speichern: Der Inhalt ist unsigniert und von außen frei
+      // wählbar (keine Kartendaten, keine beliebigen Daten im Protokoll, R-ZAHL-10).
+      const stored = { event_type: eventType, id: checkoutId };
       const [event] = await db
         .insert(providerEvents)
-        .values({ provider: 'sumup', eventType, providerObjectId: checkoutId, payload, dedupeKey, firstReceivedAt: now, lastReceivedAt: now })
+        .values({ provider: 'sumup', eventType, providerObjectId: checkoutId, payload: stored, dedupeKey, firstReceivedAt: now, lastReceivedAt: now })
         .onConflictDoUpdate({
           target: providerEvents.dedupeKey,
           set: { receiveCount: sql`${providerEvents.receiveCount} + 1`, lastReceivedAt: now },

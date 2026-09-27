@@ -107,15 +107,16 @@ wie Sitzungstoken oder Freigabelink werden nicht gespeichert).
 ## Zahlungen
 
 - `POST /invoices/:id/checkout` legt über `planCheckout` (Geschäftslogik) höchstens einen neuen
-  gehosteten Checkout an, verwendet einen passenden offenen wieder und deaktiviert veraltete.
-  Der Rechnungsstatus ändert sich dabei **nicht**.
-- `POST /webhooks/sumup` speichert das Ereignis (dedupliziert, Empfangszähler), fragt den
+  gehosteten Checkout an (mit `valid_until` = 60 Minuten), verwendet einen passenden offenen
+  wieder und deaktiviert veraltete. Der Rechnungsstatus ändert sich dabei **nicht**.
+- `POST /webhooks/sumup` speichert das Ereignis (nur `event_type` und `id`; dedupliziert, Empfangszähler), fragt den
   Checkout beim Anbieter ab, prüft ihn mit `verifyProviderCheckout` (Betrag, Währung, Händler,
   Referenz, Rechnung) und bucht idempotent (Transaktion mit Zeilensperre auf der Rechnung plus
   Unique `(provider, provider_transaction_id)`). Abweichungen werden als `payment.mismatch`
   protokolliert, nicht gebucht. Antwort an den Anbieter nach dem Speichern immer 204.
 - Rückkehrseite: `POST /invoices/:id/payment-status/refresh` (gedrosselt); Hintergrundlauf
-  `reconcilePendingCheckouts()` prüft offene und fehlgeschlagene Versuche der letzten 7 Tage.
+  `reconcilePendingCheckouts()` prüft offene, fehlgeschlagene und deaktivierte Versuche der
+  letzten 7 Tage (ein trotz Deaktivierung bezahlter Versuch wird als Überzahlung gebucht).
 - Manuelle Zahlung (`payments.recordManual`) und Erstattung (`payments.refund`, eigene
   Idempotenz über `idempotencyKey`, nie mehr als erstattbar).
 - **SumUp ist nur mit dem Fake-Anbieter getestet.** Der echte Adapter

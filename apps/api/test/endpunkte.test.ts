@@ -252,8 +252,10 @@ describe('Aufträge im Detail', () => {
     expect(afterWithdraw.items.find((i) => i.id === approvalItem.id)!.authorization).toBe('withdrawn');
 
     const klima = wo.items[0]!;
-    const patchedItem = expectOk(await call(h, 'PATCH', `/work-items/${klima.id}`, { token: w.service.token, body: { description: 'inkl. Desinfektion' } }), WorkItemSchema);
-    expect(patchedItem).toMatchObject({ quantity: 1, unit: 'Std', description: 'inkl. Desinfektion' });
+    // Umfang einer bestätigten Leistung ändert sich nur über eine Freigabe (R-ANN-3)
+    expectStatus(await call(h, 'PATCH', `/work-items/${klima.id}`, { token: w.service.token, body: { description: 'inkl. Desinfektion' } }), 409, 'approval_required');
+    const patchedItem = expectOk(await call(h, 'PATCH', `/work-items/${klima.id}`, { token: w.service.token, body: { assignedTo: w.mechanic.id } }), WorkItemSchema);
+    expect(patchedItem).toMatchObject({ quantity: 1, unit: 'Std' });
     expectOk(await call(h, 'POST', `/work-items/${klima.id}/start`, { token: w.mechanic.token }), WorkItemSchema);
     expectOk(await call(h, 'POST', `/work-items/${klima.id}/pause`, { token: w.mechanic.token }), WorkItemSchema);
     const part = expectOk(

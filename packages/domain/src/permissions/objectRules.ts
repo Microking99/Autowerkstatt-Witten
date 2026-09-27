@@ -269,6 +269,12 @@ export interface DocumentAccessInput {
   publishedAt: string | null;
   /** Art; Mechaniker sehen nie Angebote/Rechnungen (Preise). */
   kind?: DocumentKind;
+  /**
+   * Nur für Mechaniker: Das Dokument gehört zu einem aktiven Auftrag (oder dessen Fahrzeug), dem
+   * der Mechaniker zugewiesen ist. Ohne diese Angabe sieht ein Mechaniker kein Dokument, auch
+   * nicht mit `documents.readInternal` (Review, Frage 2).
+   */
+  actorAssignedViaActiveWorkOrder?: boolean;
 }
 
 /**
@@ -276,7 +282,8 @@ export interface DocumentAccessInput {
  * - Kunde: `visibility = customer` UND veröffentlicht UND `customerId` = eigener. Interne nie.
  * - Admin/Service: interne Dokumente nur mit `documents.readInternal`; Kundendokumente mit
  *   einem der Dokumentrechte (`documents.readInternal`, `documents.write`, `documents.publish`).
- * - Mechaniker: nur mit zugewiesenem `documents.readInternal`, nie Angebote oder Rechnungen.
+ * - Mechaniker: nur mit zugewiesenem `documents.readInternal`, nur zu aktiven, ihm zugewiesenen
+ *   Aufträgen (bzw. deren Fahrzeug), nie Angebote oder Rechnungen.
  */
 export function canViewDocument(actor: Actor, doc: DocumentAccessInput): Decision {
   const pre = precheck(actor);
@@ -289,7 +296,7 @@ export function canViewDocument(actor: Actor, doc: DocumentAccessInput): Decisio
   if (actor.role === 'mechanic') {
     if (!staffHas(actor, 'documents.readInternal')) return deny(actor, 'MISSING_PERMISSION');
     if (doc.kind === 'invoice' || doc.kind === 'offer') return deny(actor, 'ROLE_NOT_ALLOWED');
-    return ALLOW;
+    return doc.actorAssignedViaActiveWorkOrder === true ? ALLOW : deny(actor, 'NOT_ASSIGNED');
   }
   if (doc.visibility === 'internal') {
     return staffHas(actor, 'documents.readInternal') ? ALLOW : deny(actor, 'MISSING_PERMISSION');

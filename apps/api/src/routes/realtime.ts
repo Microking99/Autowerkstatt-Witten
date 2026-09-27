@@ -3,7 +3,8 @@
  * Ablauf: erste Nachricht `{type:'auth', token}` (innerhalb von 10 s), danach
  * `{type:'subscribe', workOrderId}` – nur nach Rechteprüfung (canViewWorkOrder). Ereignisse:
  * neue Nachrichten (nur mit Chat-Sicht) und Statusänderungen. Die Sitzung wird regelmäßig neu
- * geprüft; widerrufene Sitzungen oder deaktivierte Konten werden getrennt.
+ * geprüft; bei Deaktivierung, Passwort-Reset und Passwortänderung trennt die API die
+ * Verbindungen des Kontos sofort (RealtimeHub.disconnectUser).
  *
  * Prozessintern: bei mehreren API-Instanzen ist PostgreSQL LISTEN/NOTIFY nötig (siehe hub.ts).
  */
@@ -39,15 +40,34 @@ export async function realtimeRoutes(app: App): Promise<void> {
       isStaff: false,
       canSeeMessages: (workOrderId) => chatVisible.get(workOrderId) === true,
       send: (event: RealtimeEvent) => send({ type: 'event', event }),
+      close: (code, reason) => socket.close(code, reason),
+      revalidate: async (workOrderId) => {
+        const current = actor;
+        if (!current) return;
+        const loaded = await loadWorkOrder(db, workOrderId);
+        const allowed = loaded ? canViewWorkOrder(current, loaded.access).allowed : false;
+        if (!allowed) {
+          realtime.unsubscribe(workOrderId, subscriber);
+          chatVisible.delete(workOrderId);
+          send({ type: 'unsubscribed', workOrderId, reason: 'access_revoked' });
+          return;
+        }
+        chatVisible.set(workOrderId, canViewMessages(current, loaded!.access).allowed);
+      },
     };
     const authTimer = setTimeout(() => {
       if (!actor) socket.close(WS_CLOSE_UNAUTHORIZED, 'auth_timeout');
     }, AUTH_TIMEOUT_MS);
     const recheck = setInterval(() => {
       if (!token) return;
-      void resolveSession(db, token, now()).then((resolved) => {
-        if (!resolved) socket.close(WS_CLOSE_UNAUTHORIZED, 'session_ended');
-        else actor = resolved.actor;
+      void resolveSession(db, token, now()).then(async (resolved) => {
+        if (!resolved) {
+          socket.close(WS_CLOSE_UNAUTHORIZED, 'session_ended');
+          return;
+        }
+        actor = resolved.actor;
+        // Rechte können sich geändert haben: alle Abonnements neu prüfen
+        for (const workOrderId of [...chatVisible.keys()]) await subscriber.revalidate?.(workOrderId);
       });
     }, RECHECK_MS);
 
@@ -75,7 +95,9 @@ export async function realtimeRoutes(app: App): Promise<void> {
         actor = resolved.actor;
         token = parsed.token;
         subscriber.userId = actor.userId;
+        subscriber.sessionId = resolved.auth.sessionId;
         subscriber.isStaff = actor.role !== 'customer';
+        realtime.register(subscriber);
         send({ type: 'auth_ok' });
         return;
       }
@@ -110,7 +132,7 @@ export async function realtimeRoutes(app: App): Promise<void> {
     socket.on('close', () => {
       clearTimeout(authTimer);
       clearInterval(recheck);
-      realtime.unsubscribeAll(subscriber);
+      realtime.unregister(subscriber);
     });
   });
 }

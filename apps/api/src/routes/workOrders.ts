@@ -44,11 +44,13 @@ import {
   markNotDone,
   pauseItem,
   startItem,
+  withdrawApproval,
   type Actor,
   type WorkItemTransitionResult,
 } from '@werkstatt/domain';
 import type { DbOrTx } from '../db/index';
 import {
+  approvalRequests,
   auditLog,
   customers,
   files,
@@ -112,6 +114,12 @@ const ListQuerySchema = PageQuerySchema.extend({
 
 const AssigneesSchema = z.object({ assigneeIds: z.array(IdSchema).max(20) });
 const WorkItemUpdateSchema = patchSchema(WorkItemInputSchema);
+
+/** Felder, die Umfang oder Preis einer vereinbarten Leistung bestimmen (R-ANN-3). */
+const AGREED_SCOPE_FIELDS = ['kind', 'title', 'description', 'quantity', 'unit', 'unitPriceCents', 'vatRateBp'] as const;
+function touchesAgreedScope(body: Record<string, unknown>): boolean {
+  return AGREED_SCOPE_FIELDS.some((f) => body[f] !== undefined);
+}
 // Vertrag: UpdateWorkOrderRequestSchema; ohne Standardwerte, damit fehlende Felder unverändert bleiben
 const WorkOrderPatchSchema = patchSchema(CreateWorkOrderRequestSchema.omit({ customerId: true, vehicleId: true, items: true }));
 const ItemParamsSchema = IdParamsSchema;
@@ -341,6 +349,34 @@ export async function workOrderRoutes(app: App): Promise<void> {
           reason: request.body.reason ?? null,
           extra: to === 'cancelled' ? { cancelledAt: now, cancelReason: request.body.reason ?? null } : undefined,
         });
+        if (to === 'cancelled') {
+          // Offene Freigabeanfragen eines stornierten Auftrags werden zurückgezogen: Der Kunde soll
+          // nichts mehr entscheiden, was ohnehin nicht ausgeführt wird (Review, Frage 4).
+          const open = await tx
+            .select()
+            .from(approvalRequests)
+            // Nur gesendete Anfragen: Entwürfe bleiben unsichtbare Entwürfe und können nach der
+            // Stornierung ohnehin nicht mehr gesendet werden.
+            .where(and(eq(approvalRequests.workOrderId, current.id), eq(approvalRequests.status, 'pending_customer')))
+            .for('update');
+          for (const req of open) {
+            const reqItems = await tx.select().from(workItems).where(eq(workItems.approvalRequestId, req.id));
+            const result = withdrawApproval(
+              { id: req.id, status: req.status },
+              reqItems.map((i) => ({ id: i.id, approvalRequestId: i.approvalRequestId, authorization: i.authorization })),
+            );
+            if (!result.ok) continue;
+            await tx.update(approvalRequests).set({ status: 'withdrawn' }).where(eq(approvalRequests.id, req.id));
+            for (const c of result.value.changes) await tx.update(workItems).set({ authorization: c.to }).where(eq(workItems.id, c.itemId));
+            await audit(tx, auditContextFrom(request), {
+              action: 'approval.withdrawn',
+              entityType: 'approval_request',
+              entityId: req.id,
+              data: { workOrderId: current.id, reason: 'work_order_cancelled' },
+            });
+            events.push({ type: 'approval.updated', workOrderId: current.id, approvalRequestId: req.id });
+          }
+        }
         const [fresh] = await tx.select().from(workOrders).where(eq(workOrders.id, current.id));
         return fresh!;
       });
@@ -534,6 +570,8 @@ export async function workOrderRoutes(app: App): Promise<void> {
       await audit(tx, auditContextFrom(request), { action: 'work_order.assignees_changed', entityType: 'work_order', entityId: current.id, data: { workOrderId: current.id, assigneeIds: ids } });
       return current;
     });
+    // Nach dem Speichern: Echtzeit-Abos entzogener Mitarbeiter sofort beenden
+    await app.deps.realtime.revalidateWorkOrder(wo.id);
     return buildWorkOrderDetail(db, actor, wo, now());
   });
 
@@ -612,7 +650,13 @@ export async function workOrderRoutes(app: App): Promise<void> {
         if (!(intake!.confirmedAt && intake!.contentHash === current)) {
           await tx
             .update(intakes)
-            .set({ confirmedAt: now, confirmationMethod: request.body.method, confirmedByUserId: actor.userId, contentHash: current })
+            .set({
+              confirmedAt: now,
+              firstConfirmedAt: intake!.firstConfirmedAt ?? now,
+              confirmationMethod: request.body.method,
+              confirmedByUserId: actor.userId,
+              contentHash: current,
+            })
             .where(eq(intakes.id, intake!.id));
           await audit(tx, auditContextFrom(request), {
             action: 'intake.confirmed',
@@ -640,9 +684,10 @@ export async function workOrderRoutes(app: App): Promise<void> {
       if (!['draft', 'open', 'in_progress', 'work_completed'].includes(wo.status)) {
         throw conflict(API_ERROR_CODES.workOrderClosed, 'Zu einem abgeschlossenen Auftrag können keine Positionen hinzugefügt werden.');
       }
-      const [intake] = await tx.select({ confirmedAt: intakes.confirmedAt }).from(intakes).where(eq(intakes.workOrderId, wo.id));
-      if (intake?.confirmedAt) {
-        // R-ANN-3: Die bestätigte Annahme deckt keine späteren Zusatzarbeiten
+      const [intake] = await tx.select({ firstConfirmedAt: intakes.firstConfirmedAt }).from(intakes).where(eq(intakes.workOrderId, wo.id));
+      if (intake?.firstConfirmedAt) {
+        // R-ANN-3: Die bestätigte Annahme deckt keine späteren Zusatzarbeiten. Das gilt dauerhaft,
+        // auch wenn eine spätere Änderung die Bestätigung ungültig gemacht hat.
         throw conflict(API_ERROR_CODES.approvalRequired, 'Die Annahme ist bestätigt. Weitere Arbeiten bitte als Freigabeanfrage an den Kunden senden.');
       }
       const body = request.body;
@@ -691,6 +736,13 @@ export async function workOrderRoutes(app: App): Promise<void> {
       }
       if (current!.executionStatus === 'done' || current!.executionStatus === 'not_done') {
         throw conflict(API_ERROR_CODES.itemFinished, 'Abgeschlossene Positionen können nicht mehr geändert werden.');
+      }
+      if (current!.origin === 'intake' && touchesAgreedScope(request.body)) {
+        const [intake] = await tx.select({ firstConfirmedAt: intakes.firstConfirmedAt }).from(intakes).where(eq(intakes.workOrderId, current!.workOrderId));
+        if (intake?.firstConfirmedAt) {
+          // R-ANN-3: Umfang und Preis bestätigter Leistungen ändern sich nur über eine Freigabe
+          throw conflict(API_ERROR_CODES.approvalRequired, 'Die Annahme ist bestätigt. Änderungen an Umfang oder Preis bitte als Freigabeanfrage an den Kunden senden.');
+        }
       }
       if (request.body.assignedTo) await assertAssignableStaff(tx, [request.body.assignedTo]);
       const [updated] = await tx.update(workItems).set(request.body).where(eq(workItems.id, current!.id)).returning();

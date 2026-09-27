@@ -69,6 +69,10 @@ Rechte sagen, **was** jemand tun darf; Objektregeln sagen, **woran**. Beide müs
 ### Mechaniker
 - Sieht Aufträge nur, wenn er dem Auftrag oder einer Position zugewiesen ist (außer mit
   `workOrders.read`).
+- Fahrzeugakte, Servicehistorie und (mit `documents.readInternal`) interne Dokumente sieht er
+  nur über **laufende** Aufträge, denen er zugewiesen ist (Status `draft`, `open`,
+  `in_progress`, `work_completed`). Nach Abschluss, Abholung oder Stornierung endet dieser
+  Zugriff.
 - Sieht zu diesen Aufträgen: Fahrzeugdaten, Annahme (inkl. interner Hinweise), Positionen,
   Feststellungen, Fotos, Checklisten, bisherige Servicehistorie des Fahrzeugs.
 - Sieht keine Preise, Rechnungen, Zahlungen und keine Kontaktdaten des Kunden (nur Anzeigename).
