@@ -71,6 +71,13 @@ export default function WorkOrderList() {
     const days = period === 'heute' ? 1 : 7;
     return Math.abs(ref - now) <= days * 86_400_000;
   });
+  // Telefon: Filter zuerst eingeklappt, damit die Liste sichtbar bleibt
+  const collapsible = device === 'phone';
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const resetFilters = () => {
+    setSearch('');
+    set({ arbeit: undefined, freigabe: undefined, zahlung: undefined, mechaniker: undefined, abholbereit: undefined, suche: undefined, zeitraum: undefined });
+  };
   const activeFilters = [freigabe, zahlung, params.mechaniker, params.abholbereit, params.suche, period !== 'alle' ? period : undefined].filter(Boolean).length + (arbeit !== 'offen' ? 1 : 0);
 
   return (
@@ -93,83 +100,90 @@ export default function WorkOrderList() {
             placeholder="Auftragsnummer oder Arbeit"
           />
         </View>
-        <FilterChips
-          label="Arbeitsstatus"
-          value={arbeit}
-          onChange={(v) => set({ arbeit: v })}
-          options={[
-            { value: 'offen', label: 'Laufend' },
-            { value: 'entwurf', label: workOrderStatusLabels.draft.label },
-            { value: 'erledigt', label: workOrderStatusLabels.work_completed.label },
-            { value: 'abgeschlossen', label: workOrderStatusLabels.completed.label },
-            { value: 'abgeholt', label: workOrderStatusLabels.picked_up.label },
-            { value: 'storniert', label: workOrderStatusLabels.cancelled.label },
-            { value: 'alle', label: 'Alle' },
-          ]}
-        />
-        <Row wrap gap={12}>
-          <View style={styles.select}>
-            <Select
-              label="Freigabe"
-              value={freigabe ?? 'alle'}
-              onChange={(v) => set({ freigabe: v === 'alle' ? undefined : v })}
-              options={[{ value: 'alle', label: 'Alle' }, ...(['pending', 'decided', 'none'] as const).map((s) => ({ value: s, label: approvalOverviewLabels[s].label }))]}
-              testID="filter-freigabe"
+        {collapsible ? (
+          <Row wrap gap={8}>
+            <Button
+              label={filtersOpen ? 'Filter ausblenden' : `Filter${activeFilters > 0 ? ` (${activeFilters} aktiv)` : ''}`}
+              icon="Funnel"
+              onPress={() => setFiltersOpen((v) => !v)}
+              testID="filter-oeffnen"
             />
-          </View>
-          <View style={styles.select}>
-            <Select
-              label="Zahlung"
-              value={zahlung ?? 'alle'}
-              onChange={(v) => set({ zahlung: v === 'alle' ? undefined : v })}
-              options={[{ value: 'alle', label: 'Alle' }, ...(Object.keys(paymentStatusLabels) as PaymentStatus[]).map((s) => ({ value: s, label: paymentStatusLabels[s].label }))]}
-              testID="filter-zahlung"
-            />
-          </View>
-          <View style={styles.select}>
-            <Select
-              label="Mechaniker"
-              value={params.mechaniker ?? 'alle'}
-              onChange={(v) => set({ mechaniker: v === 'alle' ? undefined : v })}
-              options={[{ value: 'alle', label: 'Alle' }, ...mechanics]}
-              testID="filter-mechaniker"
-            />
-          </View>
-          <View style={styles.select}>
-            <Select
-              label="Zeitraum (geplant bzw. geändert)"
-              value={period}
-              onChange={(v) => set({ zeitraum: v === 'alle' ? undefined : v })}
+            {!filtersOpen && activeFilters > 0 ? <Button label="Zurücksetzen" variant="quiet" icon="X" onPress={resetFilters} /> : null}
+          </Row>
+        ) : null}
+        {collapsible && !filtersOpen ? null : (
+          <>
+            <FilterChips
+              label="Arbeitsstatus"
+              showLabel
+              value={arbeit}
+              onChange={(v) => set({ arbeit: v })}
               options={[
+                { value: 'offen', label: 'Laufend' },
+                { value: 'entwurf', label: workOrderStatusLabels.draft.label },
+                { value: 'erledigt', label: workOrderStatusLabels.work_completed.label },
+                { value: 'abgeschlossen', label: workOrderStatusLabels.completed.label },
+                { value: 'abgeholt', label: workOrderStatusLabels.picked_up.label },
+                { value: 'storniert', label: workOrderStatusLabels.cancelled.label },
                 { value: 'alle', label: 'Alle' },
-                { value: 'heute', label: 'Heute' },
-                { value: 'woche', label: '7 Tage' },
               ]}
             />
-          </View>
-        </Row>
-        <Row wrap>
-          <FilterChips
-            label="Abholbereit"
-            value={params.abholbereit === 'ja' ? 'ja' : 'alle'}
-            onChange={(v) => set({ abholbereit: v === 'ja' ? 'ja' : undefined })}
-            options={[
-              { value: 'alle', label: 'Alle' },
-              { value: 'ja', label: 'Nur abholbereit' },
-            ]}
-          />
-          {activeFilters > 0 ? (
-            <Button
-              label="Filter zurücksetzen"
-              variant="quiet"
-              icon="X"
-              onPress={() => {
-                setSearch('');
-                set({ arbeit: undefined, freigabe: undefined, zahlung: undefined, mechaniker: undefined, abholbereit: undefined, suche: undefined, zeitraum: undefined });
-              }}
-            />
-          ) : null}
-        </Row>
+            <Row wrap gap={12}>
+              <View style={styles.select}>
+                <Select
+                  label="Freigabe"
+                  value={freigabe ?? 'alle'}
+                  onChange={(v) => set({ freigabe: v === 'alle' ? undefined : v })}
+                  options={[{ value: 'alle', label: 'Alle' }, ...(['pending', 'decided', 'none'] as const).map((s) => ({ value: s, label: approvalOverviewLabels[s].label }))]}
+                  testID="filter-freigabe"
+                />
+              </View>
+              <View style={styles.select}>
+                <Select
+                  label="Zahlung"
+                  value={zahlung ?? 'alle'}
+                  onChange={(v) => set({ zahlung: v === 'alle' ? undefined : v })}
+                  options={[{ value: 'alle', label: 'Alle' }, ...(Object.keys(paymentStatusLabels) as PaymentStatus[]).map((s) => ({ value: s, label: paymentStatusLabels[s].label }))]}
+                  testID="filter-zahlung"
+                />
+              </View>
+              <View style={styles.select}>
+                <Select
+                  label="Mechaniker"
+                  value={params.mechaniker ?? 'alle'}
+                  onChange={(v) => set({ mechaniker: v === 'alle' ? undefined : v })}
+                  options={[{ value: 'alle', label: 'Alle' }, ...mechanics]}
+                  testID="filter-mechaniker"
+                />
+              </View>
+              <View style={styles.select}>
+                <Select
+                  label="Zeitraum (geplant bzw. geändert)"
+                  value={period}
+                  onChange={(v) => set({ zeitraum: v === 'alle' ? undefined : v })}
+                  options={[
+                    { value: 'alle', label: 'Alle' },
+                    { value: 'heute', label: 'Heute' },
+                    { value: 'woche', label: '7 Tage' },
+                  ]}
+                />
+              </View>
+            </Row>
+            <Row wrap>
+              <FilterChips
+                label="Abholbereit"
+                showLabel
+                value={params.abholbereit === 'ja' ? 'ja' : 'alle'}
+                onChange={(v) => set({ abholbereit: v === 'ja' ? 'ja' : undefined })}
+                options={[
+                  { value: 'alle', label: 'Alle' },
+                  { value: 'ja', label: 'Nur abholbereit' },
+                ]}
+              />
+              {activeFilters > 0 ? <Button label="Filter zurücksetzen" variant="quiet" icon="X" onPress={resetFilters} /> : null}
+            </Row>
+          </>
+        )}
       </View>
       <QueryView query={list}>
         {() =>

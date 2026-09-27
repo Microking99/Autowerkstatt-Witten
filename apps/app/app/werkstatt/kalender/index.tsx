@@ -28,6 +28,8 @@ const HOUR_PX = 56;
 interface Column {
   key: string;
   label: string;
+  /** Art der Ressource, nur wenn der Name sie nicht schon nennt */
+  hint?: string;
   match: (a: Appointment) => boolean;
   newParams: Record<string, string>;
 }
@@ -36,6 +38,7 @@ export default function CalendarScreen() {
   const t = useTheme();
   const can = useCan();
   const { device } = useBreakpoint();
+  const phone = device === 'phone';
   const params = useLocalSearchParams<{ ansicht?: string; datum?: string; gruppe?: string }>();
   const view: View_ = params.ansicht === 'woche' ? 'woche' : 'tag';
   const group: Group = params.gruppe === 'mitarbeiter' ? 'mitarbeiter' : 'buehne';
@@ -88,10 +91,10 @@ export default function CalendarScreen() {
         }
       />
       <Row wrap gap={12} style={styles.toolbar}>
-        <Row gap={8}>
-          <Button label={view === 'woche' ? 'Vorige Woche' : 'Vortag'} icon="CaretLeft" onPress={() => go(addDays(day, -step))} accessibilityHint="Pfeiltaste links" />
+        <Row gap={8} wrap style={styles.navRow}>
+          <Button label={view === 'woche' ? (phone ? 'Vorwoche' : 'Vorige Woche') : 'Vortag'} icon="CaretLeft" onPress={() => go(addDays(day, -step))} accessibilityHint="Pfeiltaste links" />
           <Button label="Heute" onPress={() => go(new Date())} accessibilityHint="Taste T" />
-          <Button label={view === 'woche' ? 'Nächste Woche' : 'Nächster Tag'} iconRight="CaretRight" onPress={() => go(addDays(day, step))} accessibilityHint="Pfeiltaste rechts" />
+          <Button label={view === 'woche' ? (phone ? 'Folgewoche' : 'Nächste Woche') : phone ? 'Folgetag' : 'Nächster Tag'} iconRight="CaretRight" onPress={() => go(addDays(day, step))} accessibilityHint="Pfeiltaste rechts" />
         </Row>
         <View style={styles.segment}>
           <SegmentedControl label="Zeitraum" value={view} onChange={(v) => set({ ansicht: v })} options={[{ value: 'tag', label: 'Tag' }, { value: 'woche', label: 'Woche' }]} />
@@ -100,13 +103,13 @@ export default function CalendarScreen() {
           <SegmentedControl label="Gruppierung" value={group} onChange={(v) => set({ gruppe: v })} options={[{ value: 'buehne', label: 'Hebebühne' }, { value: 'mitarbeiter', label: 'Mitarbeiter' }]} />
         </View>
       </Row>
-      <Legend />
+      {phone ? null : <Legend />}
       <QueryView query={query} loading="cards">
         {({ appointments, resources, conflicts }) => {
           const columns: Column[] =
             group === 'buehne'
               ? [
-                  ...resources.map((r: Resource) => ({ key: r.id, label: `${r.name} (${resourceKindLabels[r.kind]})`, match: (a: Appointment) => a.resourceId === r.id, newParams: { buehne: r.id } })),
+                  ...resources.map((r: Resource) => ({ key: r.id, label: r.name, hint: r.name.toLowerCase().includes(resourceKindLabels[r.kind].toLowerCase()) ? undefined : resourceKindLabels[r.kind], match: (a: Appointment) => a.resourceId === r.id, newParams: { buehne: r.id } })),
                   { key: 'ohne', label: 'Ohne Bühne', match: (a: Appointment) => !a.resourceId, newParams: {} },
                 ]
               : [
@@ -114,7 +117,10 @@ export default function CalendarScreen() {
                   { key: 'ohne', label: 'Nicht zugewiesen', match: (a: Appointment) => (a.assigneeIds ?? []).length === 0, newParams: {} },
                 ];
           if (view === 'woche' || device === 'phone') {
-            const days = view === 'woche' ? Array.from({ length: 6 }, (_, i) => addDays(from, i)) : [day];
+            // Sonntag nur, wenn dort Termine liegen (Werkstatt geschlossen)
+            const sunday = addDays(from, 6);
+            const weekLength = appointments.some((a) => sameDay(new Date(a.startsAt), sunday)) ? 7 : 6;
+            const days = view === 'woche' ? Array.from({ length: weekLength }, (_, i) => addDays(from, i)) : [day];
             return <DayLists days={days} appointments={appointments} conflicts={conflicts} columns={columns} nameOf={nameOf} />;
           }
           return <DayGrid day={day} appointments={appointments} conflicts={conflicts} columns={columns} nameOf={nameOf} canCreate={can('appointments.write')} />;
@@ -141,6 +147,7 @@ function Legend() {
 function AppointmentBlock({ a, conflicts, nameOf, compact }: { a: Appointment; conflicts: SchedulingConflict[]; nameOf: Map<string, string>; compact?: boolean }) {
   const t = useTheme();
   const hasConflict = conflicts.length > 0;
+  const severe = conflicts.some((c) => c.kind.endsWith('double_booked'));
   const tone = a.status === 'confirmed' ? t.colors.accent : a.status === 'requested' || a.status === 'proposed' ? t.colors.warning : t.colors.borderStrong;
   const names = (a.assigneeIds ?? []).map((id) => nameOf.get(id) ?? 'Mitarbeiter').join(', ');
   const label = `${formatTime(a.startsAt)} bis ${formatTime(a.endsAt)} Uhr, ${appointmentKindLabels[a.kind]}, ${a.customerDisplayName}, ${keepPlates(a.vehicleLabel)}, ${appointmentStatusLabels[a.status].label}${hasConflict ? `, Konflikt: ${conflicts.map((c) => conflictLabels[c.kind].label).join(', ')}` : ''}`;
@@ -162,10 +169,10 @@ function AppointmentBlock({ a, conflicts, nameOf, compact }: { a: Appointment; c
         s.pressed ? { opacity: 0.85 } : null,
       ]}
     >
-      <AppText variant="small" numeric style={{ fontWeight: '600' }} numberOfLines={1}>
+      <AppText variant="small" numeric style={[styles.noShrink, { fontWeight: '600' }]} numberOfLines={1}>
         {formatTime(a.startsAt)}-{formatTime(a.endsAt)} {appointmentKindLabels[a.kind]}
       </AppText>
-      <AppText variant="small" numberOfLines={compact ? 1 : 2}>
+      <AppText variant="small" style={styles.noShrink} numberOfLines={compact ? 1 : 2}>
         {a.customerDisplayName}, {keepPlates(a.vehicleLabel)}
       </AppText>
       {!compact && names ? (
@@ -173,15 +180,29 @@ function AppointmentBlock({ a, conflicts, nameOf, compact }: { a: Appointment; c
           {names}
         </AppText>
       ) : null}
-      {a.status !== 'confirmed' ? <AppText variant="caption" tone="warning">{appointmentStatusLabels[a.status].label}</AppText> : null}
-      {conflicts.map((c, i) => (
-        <View key={`${c.kind}-${i}`} style={styles.conflict}>
-          <Icon name={conflictLabels[c.kind].icon} size={iconSize.sm} color={c.kind.endsWith('double_booked') ? t.colors.danger : t.colors.warning} />
-          <AppText variant="caption" style={{ color: t.colors.text, flexShrink: 1 }} numberOfLines={2}>
-            {conflictLabels[c.kind].label}
+      {a.status !== 'confirmed' ? (
+        <AppText variant="caption" tone={a.status === 'requested' || a.status === 'proposed' ? 'warning' : 'muted'}>
+          {appointmentStatusLabels[a.status].label}
+        </AppText>
+      ) : null}
+      {compact && conflicts.length > 1 ? (
+        // Schmal: eine Zeile mit Anzahl; die einzelnen Konflikte stehen im Termin
+        <View style={styles.conflict}>
+          <Icon name="Warning" size={iconSize.sm} color={severe ? t.colors.danger : t.colors.warning} />
+          <AppText variant="caption" style={styles.conflictText} numberOfLines={1}>
+            {conflicts.length} Konflikte
           </AppText>
         </View>
-      ))}
+      ) : (
+        conflicts.map((c, i) => (
+          <View key={`${c.kind}-${i}`} style={styles.conflict}>
+            <Icon name={conflictLabels[c.kind].icon} size={iconSize.sm} color={c.kind.endsWith('double_booked') ? t.colors.danger : t.colors.warning} />
+            <AppText variant="caption" style={styles.conflictText} numberOfLines={compact ? 1 : 2}>
+              {conflictLabels[c.kind].label}
+            </AppText>
+          </View>
+        ))
+      )}
     </Pressable>
   );
 }
@@ -198,9 +219,14 @@ function DayGrid({ day, appointments, conflicts, columns, nameOf, canCreate }: {
         <View style={styles.timeCol} />
         {columns.map((c) => (
           <View key={c.key} style={styles.col}>
-            <AppText variant="caption" tone="muted" numberOfLines={2}>
+            <AppText variant="small" style={{ fontWeight: '600' }} numberOfLines={1}>
               {c.label}
             </AppText>
+            {c.hint ? (
+              <AppText variant="caption" tone="subtle" numberOfLines={1}>
+                {c.hint}
+              </AppText>
+            ) : null}
           </View>
         ))}
       </View>
@@ -215,14 +241,7 @@ function DayGrid({ day, appointments, conflicts, columns, nameOf, canCreate }: {
           ))}
         </View>
         {columns.map((c) => {
-          const items = todays.filter(c.match).sort((a, b) => (a.startsAt < b.startsAt ? -1 : 1));
-          // Überlappende Termine nebeneinander (Doppelbelegung sichtbar)
-          const lanes: Appointment[][] = [];
-          for (const a of items) {
-            const lane = lanes.find((l) => l[l.length - 1]!.endsAt <= a.startsAt);
-            if (lane) lane.push(a);
-            else lanes.push([a]);
-          }
+          const placed = layoutLanes(todays.filter(c.match));
           return (
             <View key={c.key} style={[styles.col, { borderLeftColor: t.colors.border }]}>
               {hours.map((h) => (
@@ -238,23 +257,50 @@ function DayGrid({ day, appointments, conflicts, columns, nameOf, canCreate }: {
                   style={(s: PressState) => [styles.slot, { height: HOUR_PX, borderTopColor: t.colors.border }, s.hovered && canCreate ? { backgroundColor: t.colors.accentSoft } : null]}
                 />
               ))}
-              {lanes.map((lane, li) =>
-                lane.map((a) => {
-                  const top = Math.max(0, (hoursOf(a.startsAt) - START_HOUR) * HOUR_PX);
-                  const bottom = Math.min(height, (hoursOf(a.endsAt) - START_HOUR) * HOUR_PX);
-                  return (
-                    <View key={a.id} style={[styles.abs, { top, height: Math.max(40, bottom - top), left: `${(li / lanes.length) * 100}%`, width: `${100 / lanes.length}%` }]}>
-                      <AppointmentBlock a={a} conflicts={conflicts.get(a.id) ?? []} nameOf={nameOf} compact={bottom - top < 90} />
-                    </View>
-                  );
-                }),
-              )}
+              {placed.map(({ a, lane, lanes }) => {
+                const top = Math.max(0, (hoursOf(a.startsAt) - START_HOUR) * HOUR_PX);
+                const bottom = Math.min(height, (hoursOf(a.endsAt) - START_HOUR) * HOUR_PX);
+                return (
+                  <View key={a.id} style={[styles.abs, { top, height: Math.max(40, bottom - top), left: `${(lane / lanes) * 100}%`, width: `${100 / lanes}%` }]}>
+                    <AppointmentBlock a={a} conflicts={conflicts.get(a.id) ?? []} nameOf={nameOf} compact={bottom - top < 90 || lanes > 1} />
+                  </View>
+                );
+              })}
             </View>
           );
         })}
       </View>
     </View>
   );
+}
+
+/**
+ * Überlappende Termine nebeneinander (Doppelbelegung sichtbar). Nur Termine, die sich
+ * tatsächlich überschneiden, teilen sich die Breite; alle anderen nutzen die volle Spalte.
+ */
+function layoutLanes(items: Appointment[]): { a: Appointment; lane: number; lanes: number }[] {
+  const sorted = [...items].sort((x, y) => (x.startsAt < y.startsAt ? -1 : x.startsAt > y.startsAt ? 1 : x.endsAt < y.endsAt ? 1 : -1));
+  const out: { a: Appointment; lane: number; lanes: number }[] = [];
+  let cluster: { a: Appointment; lane: number }[] = [];
+  let laneEnds: string[] = [];
+  let clusterEnd = '';
+  const close = () => {
+    for (const c of cluster) out.push({ ...c, lanes: laneEnds.length });
+    cluster = [];
+    laneEnds = [];
+  };
+  for (const a of sorted) {
+    if (cluster.length > 0 && a.startsAt >= clusterEnd) close();
+    let lane = laneEnds.findIndex((end) => end <= a.startsAt);
+    if (lane === -1) {
+      lane = laneEnds.length;
+      laneEnds.push(a.endsAt);
+    } else laneEnds[lane] = a.endsAt;
+    cluster.push({ a, lane });
+    clusterEnd = cluster.length === 1 || a.endsAt > clusterEnd ? a.endsAt : clusterEnd;
+  }
+  close();
+  return out;
 }
 
 function DayLists({ days, appointments, conflicts, columns, nameOf }: { days: Date[]; appointments: Appointment[]; conflicts: Map<string, SchedulingConflict[]>; columns: Column[]; nameOf: Map<string, string> }) {
@@ -276,7 +322,7 @@ function DayLists({ days, appointments, conflicts, columns, nameOf }: { days: Da
               items.map((a) => (
                 <View key={a.id} style={styles.weekItem}>
                   <AppText variant="caption" tone="muted" numberOfLines={1}>
-                    {columns.filter((c) => c.key !== 'ohne' && c.match(a)).map((c) => c.label.replace(/ \(.*\)$/, '')).join(', ') || 'ohne Zuordnung'}
+                    {columns.filter((c) => c.key !== 'ohne' && c.match(a)).map((c) => c.label).join(', ') || 'ohne Zuordnung'}
                   </AppText>
                   <AppointmentBlock a={a} conflicts={conflicts.get(a.id) ?? []} nameOf={nameOf} />
                 </View>
@@ -292,7 +338,7 @@ function DayLists({ days, appointments, conflicts, columns, nameOf }: { days: Da
                       icon="CalendarBlank"
                       title={`${formatTime(a.startsAt)}-${formatTime(a.endsAt)} Uhr, ${appointmentKindLabels[a.kind]}`}
                       subtitle={`${a.customerDisplayName}, ${keepPlates(a.vehicleLabel)}`}
-                      meta={columns.filter((col) => col.key !== 'ohne' && col.match(a)).map((col) => col.label.replace(/ \(.*\)$/, '')).join(', ') || null}
+                      meta={columns.filter((col) => col.key !== 'ohne' && col.match(a)).map((col) => col.label).join(', ') || null}
                       onPress={() => router.push(routes.workshop.appointment(a.id) as Href)}
                       testID={`termin-${a.id}`}
                     >
@@ -316,10 +362,11 @@ function DayLists({ days, appointments, conflicts, columns, nameOf }: { days: Da
 
 const styles = StyleSheet.create({
   toolbar: { alignItems: 'center' },
-  segment: { minWidth: 220 },
+  navRow: { flexShrink: 1, maxWidth: '100%' },
+  segment: { minWidth: 260, flexGrow: 1, maxWidth: 320 },
   legend: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   grid: { borderWidth: 1, overflow: 'hidden' },
-  gridHead: { flexDirection: 'row', borderBottomWidth: 1, minHeight: 44, alignItems: 'center' },
+  gridHead: { flexDirection: 'row', borderBottomWidth: 1, minHeight: 48, alignItems: 'center', paddingVertical: 6 },
   gridBody: { flexDirection: 'row' },
   timeCol: { width: 64 },
   hourLabel: { paddingHorizontal: 8, paddingTop: 2 },
@@ -327,7 +374,9 @@ const styles = StyleSheet.create({
   slot: { borderTopWidth: 1 },
   abs: { position: 'absolute', paddingHorizontal: 3, paddingVertical: 2 },
   block: { flex: 1, borderWidth: 1, borderLeftWidth: 4, padding: 6, gap: 2, overflow: 'hidden' },
-  conflict: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  conflict: { flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 },
+  conflictText: { flexShrink: 1 },
+  noShrink: { flexShrink: 0 },
   week: { gap: 16 },
   weekRow: { flexDirection: 'row', alignItems: 'flex-start' },
   weekDay: { flex: 1, minWidth: 0, gap: 8 },

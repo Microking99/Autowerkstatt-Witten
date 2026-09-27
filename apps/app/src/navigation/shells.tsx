@@ -323,6 +323,7 @@ export function WorkshopShell() {
   const unread = conversations.data?.reduce((s, c) => s + c.unreadCount, 0) ?? 0;
   const { primary: basePrimary, rest, extras } = workshopItems(user?.role === 'admin');
   const primary = basePrimary.map((i) => (i.key === 'nachrichten' ? { ...i, badge: unread } : i));
+  const [extrasOpen, setExtrasOpen] = useState(() => extras.some((i) => i.match(path)));
   const canMechanic = user?.permissions.includes('workItems.execute');
 
   // PC-Tastatur (docs/ansichten-und-routen.md): Strg+K Schnellsuche, Alt+1 bis Alt+8 Hauptbereiche
@@ -356,12 +357,20 @@ export function WorkshopShell() {
             {primary.map((item, index) => (
               <SidebarItem key={item.key} item={item} hint={index < 8 ? `Alt+${index + 1}` : undefined} />
             ))}
-            <AppText variant="caption" tone="subtle" style={styles.sideGroup}>
-              Ergänzungen, Details offen
-            </AppText>
-            {extras.map((item) => (
-              <SidebarItem key={item.key} item={item} />
-            ))}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: extrasOpen }}
+              accessibilityLabel="Ergänzungen (offen)"
+              testID="nav-ergaenzungen"
+              onPress={() => setExtrasOpen((v) => !v)}
+              style={(s: PressState) => [styles.sideItem, styles.sideGroup, { borderRadius: t.radius.control }, s.hovered ? { backgroundColor: t.colors.surfaceSunken } : null]}
+            >
+              <Icon name={extrasOpen ? 'CaretDown' : 'CaretRight'} size={iconSize.sm} color={t.colors.textSubtle} />
+              <AppText variant="small" tone="subtle" style={styles.fill} numberOfLines={1}>
+                Ergänzungen (offen)
+              </AppText>
+            </Pressable>
+            {extrasOpen ? extras.map((item) => <SidebarItem key={item.key} item={item} />) : null}
           </ScrollView>
           <View style={[styles.sideFooter, { borderTopColor: t.colors.border }]}>
             {canMechanic ? (
@@ -471,8 +480,8 @@ const styles = StyleSheet.create({
   account: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, paddingHorizontal: 12, minHeight: 44 },
   sidebar: { width: 248, borderRightWidth: 1, paddingHorizontal: 12, paddingTop: 16, paddingBottom: 12, gap: 16 },
   sideList: { gap: 2 },
-  sideItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, minHeight: 44 },
+  sideItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, minHeight: 42 },
   sideFooter: { borderTopWidth: 1, paddingTop: 12, gap: 2 },
-  sideGroup: { paddingHorizontal: 12, paddingTop: 16, paddingBottom: 4 },
+  sideGroup: { marginTop: 8, minHeight: 36, gap: 8 },
   searchButton: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, paddingHorizontal: 12, minHeight: 44 },
 });

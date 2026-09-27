@@ -77,10 +77,15 @@ export interface FilterOption<T extends string> {
 }
 
 /** Filter-Chips (Einfachauswahl), umbrechend. */
-export function FilterChips<T extends string>({ options, value, onChange, label }: { options: FilterOption<T>[]; value: T; onChange: (v: T) => void; label: string }) {
+export function FilterChips<T extends string>({ options, value, onChange, label, showLabel }: { options: FilterOption<T>[]; value: T; onChange: (v: T) => void; label: string; /** Beschriftung sichtbar vor den Chips (bei mehreren Filtergruppen) */ showLabel?: boolean }) {
   const t = useTheme();
   return (
     <View accessibilityRole="radiogroup" aria-label={label} style={styles.chips}>
+      {showLabel ? (
+        <AppText variant="small" tone="muted" style={styles.chipsLabel}>
+          {label}
+        </AppText>
+      ) : null}
       {options.map((o) => {
         const selected = o.value === value;
         return (
@@ -264,7 +269,8 @@ const styles = StyleSheet.create({
   tabs: { gap: 4 },
   tab: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, minHeight: 48, borderBottomWidth: 3 },
   count: { minWidth: 24, paddingHorizontal: 6, alignItems: 'center' },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
+  chipsLabel: { minWidth: 116 },
   chip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, paddingHorizontal: 14, minHeight: 40 },
   table: { borderWidth: 1, overflow: 'hidden' },
   tr: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, minHeight: 52 },

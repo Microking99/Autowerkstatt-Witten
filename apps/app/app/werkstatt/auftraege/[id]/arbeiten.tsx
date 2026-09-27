@@ -81,7 +81,7 @@ function Works({ order }: { order: WorkOrderDetail }) {
           tone="info"
           title="Annahme bestätigt"
           message="Neue Positionen und Änderungen an Umfang oder Preis vereinbarter Leistungen gehen nur über eine Freigabeanfrage. Zuweisung, Wartungsart und Intervall bleiben änderbar."
-          action={can('approvals.request') && !closed ? <Button label="Freigabeanfrage erstellen" icon="PaperPlaneRight" onPress={() => router.push(routes.workshop.newApproval(order.id) as Href)} /> : undefined}
+          action={can('approvals.request') && !closed ? <Button label="Freigabe anfragen" icon="PaperPlaneRight" onPress={() => router.push(routes.workshop.newApproval(order.id) as Href)} /> : undefined}
         />
       ) : null}
       <Section
@@ -353,7 +353,7 @@ function ItemSheet({ order, item, types, confirmedIntake, onClose }: { order: Wo
           tone="warning"
           title="Nur über Freigabe möglich"
           message={save.error?.message}
-          action={<Button label="Freigabeanfrage erstellen" icon="PaperPlaneRight" onPress={() => { onClose(); router.push(routes.workshop.newApproval(order.id) as Href); }} />}
+          action={<Button label="Freigabe anfragen" icon="PaperPlaneRight" onPress={() => { onClose(); router.push(routes.workshop.newApproval(order.id) as Href); }} />}
         />
       ) : (
         <ActionError error={save.error} />

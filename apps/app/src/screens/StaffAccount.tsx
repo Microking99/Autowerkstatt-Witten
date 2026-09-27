@@ -7,7 +7,9 @@ import { router, type Href } from 'expo-router';
 import { useState, type ReactNode } from 'react';
 import { useSession } from '../auth/session';
 import { useApiMutation } from '../data/hooks';
-import { AppText, Banner, Button, Columns, ConfirmDialog, KeyValueList, Page, PageHeader, Section, TextField, useToast } from '../ui';
+import { View } from 'react-native';
+import { useTheme } from '../theme';
+import { AppText, Banner, Button, Columns, ConfirmDialog, Icon, iconSize, KeyValueList, Page, PageHeader, Row, Section, TextField, useToast } from '../ui';
 
 export function StaffAccount({ home, homeLabel, unsynced = 0, extra, testID }: { home: string; homeLabel: string; unsynced?: number; extra?: ReactNode; testID?: string }) {
   const toast = useToast();
@@ -16,6 +18,8 @@ export function StaffAccount({ home, homeLabel, unsynced = 0, extra, testID }: {
   const [next, setNext] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [confirmOut, setConfirmOut] = useState(false);
+  const [showRights, setShowRights] = useState(false);
+  const t = useTheme();
   const change = useApiMutation((api) => api.changePassword({ currentPassword: current, newPassword: next }));
   const nextError = submitted && !PasswordSchema.safeParse(next).success ? 'Mindestens 10 Zeichen.' : null;
   async function out() {
@@ -38,9 +42,20 @@ export function StaffAccount({ home, homeLabel, unsynced = 0, extra, testID }: {
               { label: 'Name', value: user?.displayName ?? '' },
               { label: 'E-Mail-Adresse', value: user?.email ?? '' },
               { label: 'Rolle', value: user ? roleLabels[user.role] : '' },
-              { label: 'Rechte', value: user ? user.permissions.map((p) => permissionLabels[p]).join(', ') : '' },
+              { label: 'Rechte', value: user ? `${user.permissions.length} Rechte` : '' },
             ]}
           />
+          <Button label={showRights ? 'Rechte ausblenden' : 'Rechte anzeigen'} variant="quiet" icon={showRights ? 'CaretDown' : 'CaretRight'} onPress={() => setShowRights((v) => !v)} testID="rechte-anzeigen" />
+          {showRights && user ? (
+            <View style={{ gap: 6 }} testID="rechte-liste">
+              {user.permissions.map((p) => (
+                <Row key={p} gap={8} style={{ alignItems: 'flex-start' }}>
+                  <Icon name="Check" size={iconSize.sm} color={t.colors.success} />
+                  <AppText variant="small" style={{ flex: 1 }}>{permissionLabels[p]}</AppText>
+                </Row>
+              ))}
+            </View>
+          ) : null}
           <AppText variant="small" tone="subtle">Rolle und Rechte ändert der Inhaber unter Benutzer.</AppText>
         </Section>
         <Section title="Passwort ändern">

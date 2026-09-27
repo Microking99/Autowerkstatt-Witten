@@ -8,6 +8,7 @@ import { View } from 'react-native';
 import { useApiQuery } from '../../src/data/hooks';
 import { formatDateTime } from '../../src/lib/format';
 import { NotAvailableView, QueryView } from '../../src/screens/common';
+import { auditActionLabel, auditEntityLabel, summarizeAuditData } from '../../src/screens/workshop/auditLabels';
 import { useCan } from '../../src/screens/workshop/shared';
 import { AppText, DataTable, EmptyState, FilterChips, Page, PageHeader } from '../../src/ui';
 
@@ -23,17 +24,10 @@ const AREAS = [
   { value: 'service_entry', label: 'Servicehistorie' },
   { value: 'vehicle', label: 'Fahrzeuge' },
   { value: 'customer', label: 'Kunden' },
+  { value: 'appointment', label: 'Termine' },
   { value: 'user', label: 'Benutzer' },
   { value: 'auth', label: 'Anmeldungen' },
 ] as const;
-
-function summarize(data: Record<string, unknown>): string {
-  const keys = Object.keys(data).filter((k) => !/id$/i.test(k) || k === 'orderNumber');
-  return keys
-    .slice(0, 4)
-    .map((k) => `${k}: ${typeof data[k] === 'object' ? JSON.stringify(data[k]) : String(data[k])}`)
-    .join(', ');
-}
 
 export default function AuditScreen() {
   const can = useCan();
@@ -55,15 +49,15 @@ export default function AuditScreen() {
               keyboardNav
               rows={entries}
               rowKey={(e) => e.id}
-              mobileTitle={(e) => e.action}
+              mobileTitle={(e) => auditActionLabel(e.action)}
               mobileSubtitle={(e) => `${e.actorDisplayName ?? 'System'}${e.actorRole ? ` (${roleLabels[e.actorRole]})` : ''}`}
               mobileMeta={(e) => formatDateTime(e.occurredAt)}
               columns={[
                 { key: 'zeit', header: 'Zeitpunkt', render: (e) => <AppText variant="small" numeric>{formatDateTime(e.occurredAt)}</AppText>, sortValue: (e) => e.occurredAt, width: 170 },
                 { key: 'wer', header: 'Wer', render: (e) => <View><AppText variant="small">{e.actorDisplayName ?? 'System'}</AppText>{e.actorRole ? <AppText variant="caption" tone="muted">{roleLabels[e.actorRole]}</AppText> : null}</View>, sortValue: (e) => e.actorDisplayName ?? '', flex: 1.2 },
-                { key: 'aktion', header: 'Aktion', render: (e) => <AppText variant="small" code>{e.action}</AppText>, sortValue: (e) => e.action, flex: 1.6 },
-                { key: 'objekt', header: 'Objekt', render: (e) => <AppText variant="small" tone="muted">{e.entityType}</AppText>, flex: 0.9 },
-                { key: 'daten', header: 'Angaben', render: (e) => <AppText variant="small" tone="muted" numberOfLines={3}>{summarize(e.data)}</AppText>, flex: 2.4 },
+                { key: 'aktion', header: 'Aktion', render: (e) => <AppText variant="small" style={{ fontWeight: '600' }}>{auditActionLabel(e.action)}</AppText>, sortValue: (e) => auditActionLabel(e.action), flex: 1.6 },
+                { key: 'objekt', header: 'Objekt', render: (e) => <AppText variant="small" tone="muted">{auditEntityLabel(e.entityType)}</AppText>, sortValue: (e) => auditEntityLabel(e.entityType), flex: 0.9 },
+                { key: 'daten', header: 'Angaben', render: (e) => <AppText variant="small" tone="muted" numberOfLines={3}>{summarizeAuditData(e.data) || 'ohne weitere Angaben'}</AppText>, flex: 2.4 },
               ]}
             />
           )

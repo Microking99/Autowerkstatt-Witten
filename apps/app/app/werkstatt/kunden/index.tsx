@@ -47,6 +47,7 @@ export default function CustomerList() {
         </View>
         <FilterChips
           label="App-Zugang"
+          showLabel
           value={zugang}
           onChange={(v) => router.setParams({ zugang: v === 'alle' ? undefined : v })}
           options={[
@@ -59,6 +60,7 @@ export default function CustomerList() {
         />
         <FilterChips
           label="Offene Posten"
+          showLabel
           value={offen ? 'ja' : 'alle'}
           onChange={(v) => router.setParams({ offen: v === 'ja' ? 'ja' : undefined })}
           options={[

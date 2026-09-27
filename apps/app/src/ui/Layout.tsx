@@ -179,6 +179,9 @@ export function ListRow({
   children?: ReactNode;
 }) {
   const t = useTheme();
+  const { device } = useBreakpoint();
+  // Telefon: Zusatz (meist ein Status) unter den Text, damit der Titel nicht abgeschnitten wird
+  const stackRight = device === 'phone';
   const content = (
     <>
       {icon ? (
@@ -201,8 +204,9 @@ export function ListRow({
           </AppText>
         ) : null}
         {children}
+        {right && stackRight ? <View style={styles.rowRightStacked}>{right}</View> : null}
       </View>
-      {right ? <View style={styles.rowRight}>{right}</View> : null}
+      {right && !stackRight ? <View style={styles.rowRight}>{right}</View> : null}
       {onPress ? <Icon name="CaretRight" size={iconSize.md} color={t.colors.textSubtle} /> : null}
     </>
   );
@@ -295,6 +299,7 @@ const styles = StyleSheet.create({
   rowIcon: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   rowText: { flex: 1, gap: 2, minWidth: 0 },
   rowRight: { flexShrink: 1, maxWidth: '45%', alignItems: 'flex-end' },
+  rowRightStacked: { paddingTop: 4, gap: 6 },
   group: { borderWidth: 1, overflow: 'hidden' },
   kv: { borderWidth: 1, flexDirection: 'row', flexWrap: 'wrap', overflow: 'hidden' },
   kvItem: { paddingHorizontal: 16, paddingVertical: 12, gap: 2 },

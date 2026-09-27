@@ -63,6 +63,7 @@ export default function InvoiceList() {
       <View style={{ gap: 12 }}>
         <FilterChips
           label="Zahlung"
+          showLabel
           value={overdue ? 'ueberfaellig' : paymentKey}
           onChange={(v) => router.setParams(v === 'ueberfaellig' ? { ueberfaellig: 'ja', zahlung: undefined } : { zahlung: v === 'alle' ? undefined : v, ueberfaellig: undefined })}
           options={[
@@ -75,6 +76,7 @@ export default function InvoiceList() {
         />
         <FilterChips
           label="Rechnungsstatus"
+          showLabel
           value={status ?? 'alle'}
           onChange={(v) => router.setParams({ status: v === 'alle' ? undefined : v })}
           options={[
@@ -102,7 +104,7 @@ export default function InvoiceList() {
               mobileMeta={(i) => (i.dueDate ? `Fällig ${formatDate(i.dueDate)}` : null)}
               mobileRight={(i) => <StatusChip status={i.overdue ? overdueLabel : paymentStatusLabels[i.paymentStatus]} />}
               columns={[
-                { key: 'nr', header: 'Rechnung', render: (i) => <AppText variant="bodyStrong" numeric numberOfLines={1}>{i.invoiceNumber ?? 'Entwurf'}</AppText>, sortValue: (i) => i.invoiceNumber ?? '', width: 130 },
+                { key: 'nr', header: 'Rechnung', render: (i) => <AppText variant="bodyStrong" numeric numberOfLines={1}>{i.invoiceNumber ?? 'Entwurf'}</AppText>, sortValue: (i) => i.invoiceNumber ?? '', width: 158 },
                 { key: 'kunde', header: 'Kunde, Auftrag', render: (i) => <View><AppText>{i.customerDisplayName}</AppText><AppText variant="small" tone="muted">{i.orderNumber ?? 'ohne Auftrag'}</AppText></View>, sortValue: (i) => i.customerDisplayName, flex: 1.6 },
                 { key: 'betrag', header: 'Betrag', align: 'right', render: (i) => <AppText numeric>{formatMoney(i.totalGrossCents)}</AppText>, sortValue: (i) => i.totalGrossCents, flex: 0.9 },
                 { key: 'offen', header: 'Offen', align: 'right', render: (i) => <AppText numeric tone={i.openCents > 0 ? 'warning' : 'muted'}>{formatMoney(i.openCents)}</AppText>, sortValue: (i) => i.openCents, flex: 0.9 },

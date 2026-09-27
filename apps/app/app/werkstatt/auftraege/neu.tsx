@@ -166,6 +166,32 @@ export default function NewWorkOrder() {
 function Stepper({ step, onJump, enabled }: { step: Step; onJump: (s: Step) => void; enabled: (s: Step) => boolean }) {
   const t = useTheme();
   const { device } = useBreakpoint();
+  if (device === 'phone') {
+    // Telefon: vier gleich breite Schaltflächen, darunter der aktuelle Schritt in Worten
+    return (
+      <View accessibilityRole="progressbar" aria-label={`Schritt ${step} von 4`} style={styles.stepperPhone}>
+        <View style={styles.stepRowPhone}>
+          {STEPS.map((s) => (
+            <View key={s.step} style={styles.stepCellPhone}>
+              <Button
+                label={String(s.step)}
+                accessibilityLabel={`Schritt ${s.step}: ${s.label}${s.step === step ? ', aktuell' : s.step < step ? ', erledigt' : ''}`}
+                variant={s.step === step ? 'primary' : 'secondary'}
+                icon={s.step < step ? 'Check' : undefined}
+                disabled={!enabled(s.step)}
+                onPress={() => onJump(s.step)}
+                fullWidth
+                testID={`schritt-${s.step}`}
+              />
+            </View>
+          ))}
+        </View>
+        <AppText variant="small" tone="muted">
+          Schritt {step} von 4: {STEPS.find((x) => x.step === step)?.label}
+        </AppText>
+      </View>
+    );
+  }
   return (
     <View accessibilityRole="progressbar" aria-label={`Schritt ${step} von 4`} style={styles.stepper}>
       {STEPS.map((s) => {
@@ -174,7 +200,7 @@ function Stepper({ step, onJump, enabled }: { step: Step; onJump: (s: Step) => v
         return (
           <View key={s.step} style={styles.stepItem}>
             <Button
-              label={device === 'phone' ? String(s.step) : `${s.step}. ${s.label}`}
+              label={`${s.step}. ${s.label}`}
               accessibilityLabel={`Schritt ${s.step}: ${s.label}${current ? ', aktuell' : done ? ', erledigt' : ''}`}
               variant={current ? 'primary' : 'secondary'}
               icon={done ? 'Check' : undefined}
@@ -182,7 +208,6 @@ function Stepper({ step, onJump, enabled }: { step: Step; onJump: (s: Step) => v
               onPress={() => onJump(s.step)}
               testID={`schritt-${s.step}`}
             />
-            {device === 'phone' && current ? <AppText variant="bodyStrong">{s.label}</AppText> : null}
             {s.step < 4 ? <View style={[styles.stepLine, { backgroundColor: done ? t.colors.accent : t.colors.border }]} /> : null}
           </View>
         );
@@ -314,6 +339,8 @@ function Wizard({
 }
 
 function CustomerStep({ draft, set }: { draft: WizardDraft; set: (p: Partial<WizardDraft>) => void }) {
+  const chipFor = (c: CustomerSummary) =>
+    draft.customer?.id === c.id ? <StatusChip status={{ label: 'Gewählt', tone: 'success', icon: 'Check' }} /> : <StatusChip status={customerAccessLabels[c.accessStatus]} />;
   const [q, setQ] = useState('');
   const [creating, setCreating] = useState(false);
   const list = useApiQuery(`werkstatt:wizard:kunden:${q.trim()}`, (a) => a.listCustomers({ q: q.trim() || undefined }));
@@ -333,7 +360,7 @@ function CustomerStep({ draft, set }: { draft: WizardDraft; set: (p: Partial<Wiz
               icon={c.kind === 'business' ? 'Storefront' : 'UserCircle'}
               title={c.displayName}
               subtitle={[c.customerNumber, c.phone, c.email].filter(Boolean).join(', ')}
-              right={draft.customer?.id === c.id ? <StatusChip status={{ label: 'Gewählt', tone: 'success', icon: 'Check' }} /> : <StatusChip status={customerAccessLabels[c.accessStatus]} />}
+              right={chipFor(c)}
               onPress={() => pick(c)}
               testID={`kunde-waehlen-${c.customerNumber}`}
             />
@@ -508,6 +535,9 @@ const styles = StyleSheet.create({
   stepper: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
   stepItem: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   stepLine: { width: 24, height: 2 },
+  stepperPhone: { gap: 6 },
+  stepRowPhone: { flexDirection: 'row', gap: 8 },
+  stepCellPhone: { flex: 1, minWidth: 0 },
   nav: { justifyContent: 'space-between' },
   between: { justifyContent: 'space-between' },
   alignStart: { alignItems: 'flex-start' },
