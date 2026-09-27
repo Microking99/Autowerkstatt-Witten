@@ -1,10 +1,12 @@
 /**
  * Mitarbeiterverwaltung (Recht users.manage): einladen, Rolle/Rechte ändern, deaktivieren.
  * Regeln (letzter aktiver Admin, zuweisbare Rechte) entscheidet die Geschäftslogik.
+ * Zuweisbare Mitarbeiter (`GET /staff/assignable`) für alle, die Aufträge oder Termine planen
+ * (workOrders.write oder appointments.write), ohne E-Mail-Adressen und Rechte.
  */
 import { and, asc, eq, inArray, ne } from 'drizzle-orm';
 import { z } from 'zod';
-import { InviteStaffRequestSchema, StaffUserSchema, UpdateStaffRequestSchema, type StaffUser, API_ERROR_CODES } from '@werkstatt/contracts';
+import { AssignableStaffSchema, InviteStaffRequestSchema, StaffUserSchema, UpdateStaffRequestSchema, type AssignableStaff, type StaffUser, API_ERROR_CODES } from '@werkstatt/contracts';
 import {
   canDisableUser,
   effectivePermissions,
@@ -73,7 +75,26 @@ async function loadStaff(db: DbOrTx, id: string): Promise<UserRow> {
   return ensureFound(user);
 }
 
+/** Wie `assertAssignableStaff` in routes/workOrders.ts: Werkstattrollen, aktiv oder eingeladen. */
+export const ASSIGNABLE_ROLES = ['admin', 'service', 'mechanic'] as const;
+export const ASSIGNABLE_STATUSES = ['active', 'invited'] as const;
+
 export async function userRoutes(app: App): Promise<void> {
+  app.get('/staff/assignable', { schema: { response: { 200: z.array(AssignableStaffSchema) } } }, async (request) => {
+    const actor = requireActor(request);
+    // Aufträge (workOrders.write) oder Termine (appointments.write) planen; Kunden: 404 wie andere Mitarbeiterrouten
+    const orders = hasPermission(actor, 'workOrders.write');
+    ensure(orders.allowed ? orders : hasPermission(actor, 'appointments.write'));
+    const { db } = app.deps;
+    const rows = await db
+      .select({ id: users.id, displayName: users.displayName, role: users.role })
+      .from(users)
+      .where(and(inArray(users.role, [...ASSIGNABLE_ROLES]), inArray(users.status, [...ASSIGNABLE_STATUSES])));
+    return rows
+      .map((u): AssignableStaff => ({ userId: u.id, displayName: u.displayName, role: u.role as AssignableStaff['role'] }))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'de') || a.userId.localeCompare(b.userId));
+  });
+
   app.get('/users', { schema: { response: { 200: z.array(StaffUserSchema) } } }, async (request) => {
     ensure(hasPermission(requireActor(request), 'users.manage'));
     const { db } = app.deps;

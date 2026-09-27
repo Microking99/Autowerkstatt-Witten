@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ApprovalRequest, ApprovalVersion, Invoice, WorkOrderDetail } from '@werkstatt/contracts';
 import { IDS, admin, customerA, mechanic, service, tid } from '../testing/fixtures';
-import { redactApprovalRequestForActor, redactInvoiceForActor, redactWorkOrderForActor } from './redaction';
+import { redactApprovalRequestForActor, redactInvoiceForActor, redactWorkItemForActor, redactWorkOrderForActor } from './redaction';
 
 function workOrderDetail(): WorkOrderDetail {
   return {
@@ -45,6 +45,9 @@ function workOrderDetail(): WorkOrderDetail {
         doneAt: null,
         doneOdometerKm: null,
         resultNotes: null,
+        trackedMinutes: 42,
+        runningSince: '2026-09-26T07:30:00.000Z',
+        parts: [{ id: tid(711), partNumber: 'OF-123', description: 'Ölfilter', quantity: 1, unitPriceCents: 1_234, recordedAt: '2026-09-26T07:45:00.000Z' }],
       },
     ],
     intake: {
@@ -81,6 +84,31 @@ describe('Feldfilter Auftrag', () => {
     expect(r.intake?.notesInternal).toBe('Kunde ist Stammkunde (intern)');
     expect(JSON.stringify(r)).not.toContain('8990');
     expect(JSON.stringify(r)).not.toContain('50000');
+  });
+
+  it('Mechaniker: Teile ohne Preis, laufende Zeit sichtbar', () => {
+    const r = redactWorkOrderForActor(workOrderDetail(), mechanic());
+    expect(r.items[0]?.runningSince).toBe('2026-09-26T07:30:00.000Z');
+    expect(r.items[0]?.parts).toEqual([{ id: tid(711), partNumber: 'OF-123', description: 'Ölfilter', quantity: 1, recordedAt: '2026-09-26T07:45:00.000Z' }]);
+    expect(JSON.stringify(r)).not.toContain('1234');
+    // Einzelne Position (Antwort auf Start, Teil erfassen) gleich gefiltert
+    const single = redactWorkItemForActor(workOrderDetail().items[0]!, mechanic());
+    expect('unitPriceCents' in single).toBe(false);
+    expect(single.parts?.[0] && 'unitPriceCents' in single.parts[0]).toBe(false);
+  });
+
+  it('Kunde: keine laufende Zeiterfassung und keine verbauten Teile', () => {
+    const r = redactWorkOrderForActor(workOrderDetail(), customerA());
+    expect('runningSince' in r.items[0]!).toBe(false);
+    expect('parts' in r.items[0]!).toBe(false);
+    expect(JSON.stringify(r)).not.toContain('Ölfilter');
+    const single = redactWorkItemForActor(workOrderDetail().items[0]!, customerA());
+    expect('runningSince' in single || 'parts' in single).toBe(false);
+  });
+
+  it('Service: Teile mit Preis', () => {
+    const r = redactWorkOrderForActor(workOrderDetail(), service());
+    expect(r.items[0]?.parts?.[0]?.unitPriceCents).toBe(1_234);
   });
 
   it('Kunde: keine internen Notizen und keine internen Annahmehinweise, Preise sichtbar', () => {

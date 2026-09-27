@@ -13,24 +13,39 @@ function omit<T extends object, K extends keyof T>(value: T, keys: readonly K[])
 }
 
 /**
+ * Position für die Rolle filtern (auch einzeln, z. B. als Antwort auf Start oder Teil erfassen).
+ * - Mechaniker: kein Positionspreis und keine Teilepreise (`unitPriceCents`).
+ * - Kunde: keine laufende Zeiterfassung (`runningSince`) und keine verbauten Teile (`parts`).
+ * - Admin/Service: unverändert.
+ */
+export function redactWorkItemForActor(item: WorkItem, actor: Pick<Actor, 'role'>): WorkItem {
+  if (actor.role === 'mechanic') {
+    const rest = omit(item, ['unitPriceCents']);
+    return item.parts ? { ...rest, parts: item.parts.map((p) => omit(p, ['unitPriceCents'])) } : rest;
+  }
+  if (actor.role === 'customer') return omit(item, ['runningSince', 'parts']);
+  return item.parts ? { ...item, parts: item.parts.map((p) => ({ ...p })) } : { ...item };
+}
+
+/**
  * Auftrag für die Rolle filtern.
- * - Mechaniker: keine Preise (`unitPriceCents` je Position), keine Kostenrahmen
+ * - Mechaniker: keine Preise (`unitPriceCents` je Position und je Teil), keine Kostenrahmen
  *   (`costLimitCents` am Auftrag und in der Annahme). Interne Hinweise bleiben sichtbar.
- * - Kunde: keine internen Notizen (`notesInternal`) und keine internen Annahmehinweise
- *   (`intake.notesInternal`).
+ * - Kunde: keine internen Notizen (`notesInternal`), keine internen Annahmehinweise
+ *   (`intake.notesInternal`), keine laufende Zeiterfassung und keine verbauten Teile je Position.
  * - Admin/Service: unverändert.
  */
 export function redactWorkOrderForActor(detail: WorkOrderDetail, actor: Pick<Actor, 'role'>): WorkOrderDetail {
+  const items: WorkItem[] = detail.items.map((item) => redactWorkItemForActor(item, actor));
   if (actor.role === 'mechanic') {
-    const items: WorkItem[] = detail.items.map((item) => omit(item, ['unitPriceCents']));
     const intake: Intake | null = detail.intake ? omit(detail.intake, ['costLimitCents']) : null;
     return { ...omit(detail, ['costLimitCents']), items, intake };
   }
   if (actor.role === 'customer') {
     const intake: Intake | null = detail.intake ? omit(detail.intake, ['notesInternal']) : null;
-    return { ...omit(detail, ['notesInternal']), items: detail.items.map((i) => ({ ...i })), intake };
+    return { ...omit(detail, ['notesInternal']), items, intake };
   }
-  return { ...detail, items: detail.items.map((i) => ({ ...i })), intake: detail.intake ? { ...detail.intake } : null };
+  return { ...detail, items, intake: detail.intake ? { ...detail.intake } : null };
 }
 
 /**

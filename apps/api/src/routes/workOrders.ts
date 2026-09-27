@@ -19,8 +19,10 @@ import {
   NotDoneWorkItemRequestSchema,
   PageSchema,
   PartUsedInputSchema,
+  PauseWorkItemRequestSchema,
   PhotoSchema,
   SetVisibilityRequestSchema,
+  StartWorkItemRequestSchema,
   TimelineEntrySchema,
   WorkItemInputSchema,
   WorkItemSchema,
@@ -41,8 +43,10 @@ import {
   deriveServiceEntries,
   finishItem,
   hasPermission,
+  lastRecordedTime,
   markNotDone,
   pauseItem,
+  resolveOccurredAt,
   startItem,
   withdrawApproval,
   type Actor,
@@ -60,6 +64,7 @@ import {
   partsUsed,
   photos,
   serviceEntries,
+  timeEntries,
   users,
   workItems,
   workOrderAssignees,
@@ -94,6 +99,7 @@ import {
   type PendingEvents,
 } from '../services/workOrderOps';
 import { loadAttachableFile } from './files';
+import { ASSIGNABLE_ROLES, ASSIGNABLE_STATUSES } from './users';
 import { recordOdometer } from './vehicles';
 import type { App } from '../types';
 
@@ -172,7 +178,7 @@ async function assertAssignableStaff(db: DbOrTx, ids: string[]): Promise<void> {
   const rows = await db
     .select({ id: users.id })
     .from(users)
-    .where(and(inArray(users.id, unique), inArray(users.role, ['admin', 'service', 'mechanic']), inArray(users.status, ['active', 'invited'])));
+    .where(and(inArray(users.id, unique), inArray(users.role, [...ASSIGNABLE_ROLES]), inArray(users.status, [...ASSIGNABLE_STATUSES])));
   if (rows.length !== unique.length) throw unprocessable(API_ERROR_CODES.invalidAssignee, 'Mindestens ein zugewiesener Mitarbeiter ist unbekannt oder deaktiviert.');
 }
 
@@ -757,11 +763,18 @@ export async function workOrderRoutes(app: App): Promise<void> {
 
   type ExecAction = 'start' | 'pause' | 'finish' | 'not-done';
 
+  /**
+   * Start, Pause, Abschluss, "nicht durchgeführt". Optional `occurredAt` (Zeitpunkt der Erfassung
+   * auf dem Gerät, Offline-Warteschlange): gilt für den Zeitabschnitt, `doneAt` und den km-Stand,
+   * wenn er die Grenzen der Geschäftslogik einhält (`resolveOccurredAt`), sonst 422
+   * `invalid_occurred_at`. Ohne `occurredAt` gilt die Serverzeit.
+   */
   async function executeItem(request: FastifyRequest, itemId: string, action: ExecAction, body: Record<string, unknown>) {
     const actor = requireActor(request);
     const { db, now: clock } = app.deps;
     const now = clock();
     const events: PendingEvents = [];
+    const occurredAt = typeof body.occurredAt === 'string' ? body.occurredAt : undefined;
     const item = await db.transaction(async (tx) => {
       const [current] = await tx.select().from(workItems).where(eq(workItems.id, itemId)).for('update');
       ensureFound(current);
@@ -775,26 +788,36 @@ export async function workOrderRoutes(app: App): Promise<void> {
           workOrderStatus: wo!.status,
         }),
       );
+      // Zeitpunkt des Vorgangs: Gerätezeit (geprüft nach dem Übergang) oder Serverzeit
+      const candidate = occurredAt ? new Date(occurredAt) : now;
       const state = { authorization: current!.authorization, executionStatus: current!.executionStatus, maintenanceTypeId: current!.maintenanceTypeId };
       let result: WorkItemTransitionResult;
-      if (action === 'start') result = startItem(state, { now });
-      else if (action === 'pause') result = pauseItem(state, { now });
+      if (action === 'start') result = startItem(state, { now: candidate });
+      else if (action === 'pause') result = pauseItem(state, { now: candidate });
       else if (action === 'finish') {
         const hasKmKey = Object.prototype.hasOwnProperty.call(body, 'odometerKm');
         const km = (body.odometerKm as number | null | undefined) ?? null;
         result = finishItem(state, {
-          now,
+          now: candidate,
           odometerKm: km,
           // ausdrücklich `odometerKm: null` = km-Stand unbekannt
           odometerUnknown: hasKmKey && body.odometerKm === null,
           resultNotes: (body.resultNotes as string | null | undefined) ?? null,
         });
-      } else result = markNotDone(state, { now, reason: String(body.reason ?? '') });
+      } else result = markNotDone(state, { now: candidate, reason: String(body.reason ?? '') });
+      // Erst der Übergang (z. B. inzwischen abgelehnt), dann der Zeitpunkt: Der Grund, warum etwas
+      // gar nicht geht, ist für die Warteschlange wichtiger als eine abweichende Geräteuhr.
       if (!result.ok) throw transitionError(result);
+      const entries = await tx.select({ startedAt: timeEntries.startedAt, endedAt: timeEntries.endedAt }).from(timeEntries).where(eq(timeEntries.workItemId, current!.id));
+      const resolved = resolveOccurredAt({ occurredAt, now, lastRecordedAt: lastRecordedTime(entries) });
+      if (!resolved.ok) {
+        throw unprocessable(API_ERROR_CODES.invalidOccurredAt, resolved.error.message, { reason: resolved.error.reason, lastRecordedAt: resolved.error.lastRecordedAt });
+      }
+      const at = resolved.value.at;
       const t = result.value;
       const patch: Partial<typeof workItems.$inferInsert> = { executionStatus: t.executionStatus };
       if (action === 'finish') {
-        patch.doneAt = t.doneAt ? new Date(t.doneAt) : now;
+        patch.doneAt = t.doneAt ? new Date(t.doneAt) : at;
         patch.doneBy = actor.userId;
         patch.doneOdometerKm = t.doneOdometerKm;
         patch.resultNotes = t.resultNotes;
@@ -809,11 +832,17 @@ export async function workOrderRoutes(app: App): Promise<void> {
       if (t.timeEntry.action === 'open') await openTimeEntry(tx, current!.id, actor.userId, new Date(t.timeEntry.at));
       if (t.timeEntry.action === 'close') await closeTimeEntries(tx, current!.id, new Date(t.timeEntry.at));
       if (action === 'finish' && t.doneOdometerKm !== null) {
-        await recordOdometer(tx, { vehicleId: wo!.vehicleId, valueKm: t.doneOdometerKm, recordedAt: now, source: 'work_completion', workOrderId: wo!.id, recordedBy: actor.userId });
+        await recordOdometer(tx, { vehicleId: wo!.vehicleId, valueKm: t.doneOdometerKm, recordedAt: at, source: 'work_completion', workOrderId: wo!.id, recordedBy: actor.userId });
       }
       const ctx = auditContextFrom(request);
       const auditAction = ({ start: 'work_item.started', pause: 'work_item.paused', finish: 'work_item.finished', 'not-done': 'work_item.not_done' } as const)[action];
-      await audit(tx, ctx, { action: auditAction, entityType: 'work_item', entityId: current!.id, data: { workOrderId: current!.workOrderId } });
+      await audit(tx, ctx, {
+        action: auditAction,
+        entityType: 'work_item',
+        entityId: current!.id,
+        // Gerätezeit nachvollziehbar, wenn sie von der Serverzeit (Zeitpunkt des Protokolleintrags) abweicht
+        data: { workOrderId: current!.workOrderId, ...(resolved.value.fromDevice && at.getTime() !== now.getTime() ? { occurredAt: at.toISOString() } : {}) },
+      });
       await autoAdvanceWorkOrder(tx, current!.workOrderId, actor, ctx, events);
       return updated!;
     });
@@ -822,8 +851,17 @@ export async function workOrderRoutes(app: App): Promise<void> {
     return workItemForActor(dtos.find((d) => d.id === item.id)!, actor);
   }
 
-  app.post('/work-items/:id/start', { schema: { params: ItemParamsSchema, response: { 200: WorkItemSchema } } }, (request) => executeItem(request, request.params.id, 'start', {}));
-  app.post('/work-items/:id/pause', { schema: { params: ItemParamsSchema, response: { 200: WorkItemSchema } } }, (request) => executeItem(request, request.params.id, 'pause', {}));
+  // Körper freiwillig (bestehende Clients senden keinen): { occurredAt? }
+  app.post(
+    '/work-items/:id/start',
+    { schema: { params: ItemParamsSchema, body: StartWorkItemRequestSchema.nullish(), response: { 200: WorkItemSchema } } },
+    (request) => executeItem(request, request.params.id, 'start', (request.body ?? {}) as Record<string, unknown>),
+  );
+  app.post(
+    '/work-items/:id/pause',
+    { schema: { params: ItemParamsSchema, body: PauseWorkItemRequestSchema.nullish(), response: { 200: WorkItemSchema } } },
+    (request) => executeItem(request, request.params.id, 'pause', (request.body ?? {}) as Record<string, unknown>),
+  );
   app.post(
     '/work-items/:id/finish',
     { schema: { params: ItemParamsSchema, body: FinishWorkItemRequestSchema, response: { 200: WorkItemSchema } } },

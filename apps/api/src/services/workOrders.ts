@@ -3,11 +3,12 @@
  * Feldfilter je Rolle über die Geschäftslogik (`redactWorkOrderForActor`).
  */
 import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
-import type { Intake, WorkItem, WorkOrderDetail, WorkOrderSummary } from '@werkstatt/contracts';
+import type { Intake, PartUsed, WorkItem, WorkOrderDetail, WorkOrderSummary } from '@werkstatt/contracts';
 import {
   berlinDateOf,
   canViewMessages,
   computeStatusTriple,
+  redactWorkItemForActor,
   redactWorkOrderForActor,
   trackedMinutes,
   type Actor,
@@ -22,6 +23,7 @@ import {
   intakes,
   invoices,
   messages,
+  partsUsed,
   timeEntries,
   users,
   vehicles,
@@ -45,7 +47,36 @@ export async function userNames(db: DbOrTx, ids: string[]): Promise<Map<string, 
   return new Map(rows.map((r) => [r.id, r.displayName]));
 }
 
-export function toWorkItemDto(item: WorkItemRow, names: Map<string, string>, minutes: number): WorkItem {
+type PartRow = typeof partsUsed.$inferSelect;
+type TimeEntryRow = typeof timeEntries.$inferSelect;
+
+export function toPartDto(row: PartRow): PartUsed {
+  return {
+    id: row.id,
+    partNumber: row.partNumber,
+    description: row.description,
+    quantity: row.quantity,
+    unitPriceCents: row.unitPriceCents,
+    recordedAt: row.createdAt.toISOString(),
+  };
+}
+
+/** Beginn des offenen Zeitabschnitts (`ended_at IS NULL`), bei mehreren der früheste; sonst null. */
+export function runningSinceOf(entries: readonly Pick<TimeEntryRow, 'startedAt' | 'endedAt'>[]): string | null {
+  const open = entries.filter((e) => e.endedAt === null).map((e) => e.startedAt.getTime());
+  return open.length > 0 ? new Date(Math.min(...open)).toISOString() : null;
+}
+
+/**
+ * Position als DTO (Mitarbeitersicht). Laufende Zeit (`runningSince`) und Teile (`parts`)
+ * filtert `workItemForActor` bzw. `redactWorkOrderForActor` je Rolle.
+ */
+export function toWorkItemDto(
+  item: WorkItemRow,
+  names: Map<string, string>,
+  minutes: number,
+  extra: { runningSince: string | null; parts: PartUsed[] } = { runningSince: null, parts: [] },
+): WorkItem {
   return {
     id: item.id,
     workOrderId: item.workOrderId,
@@ -69,14 +100,17 @@ export function toWorkItemDto(item: WorkItemRow, names: Map<string, string>, min
     doneOdometerKm: item.doneOdometerKm,
     resultNotes: item.resultNotes,
     trackedMinutes: minutes,
+    runningSince: extra.runningSince,
+    parts: extra.parts,
   };
 }
 
-/** Position für die Rolle: Mechaniker ohne Preise (gleiche Regel wie im Auftrag). */
+/**
+ * Position für die Rolle (gleiche Regel wie im Auftrag, Geschäftslogik): Mechaniker ohne
+ * Positions- und Teilepreise, Kunden ohne laufende Zeit und ohne Teile.
+ */
 export function workItemForActor(item: WorkItem, actor: Actor): WorkItem {
-  if (actor.role !== 'mechanic') return item;
-  const { unitPriceCents: _p, ...rest } = item;
-  return rest;
+  return redactWorkItemForActor(item, actor);
 }
 
 export function toIntakeDto(row: IntakeRow, items: readonly WorkItemRow[]): Intake {
@@ -195,17 +229,21 @@ export async function loadItemsWithMinutes(db: DbOrTx, workOrderId: string, now:
   const rows = await db.select().from(workItems).where(eq(workItems.workOrderId, workOrderId)).orderBy(asc(workItems.position));
   const ids = rows.map((r) => r.id);
   const entries = ids.length > 0 ? await db.select().from(timeEntries).where(inArray(timeEntries.workItemId, ids)) : [];
+  // Verbaute Teile, älteste zuerst (bei gleichem Zeitpunkt stabil nach ID)
+  const parts = ids.length > 0 ? await db.select().from(partsUsed).where(inArray(partsUsed.workItemId, ids)).orderBy(asc(partsUsed.createdAt), asc(partsUsed.id)) : [];
   const names = await userNames(db, rows.map((r) => r.assignedTo ?? ''));
-  const dtos = rows.map((r) =>
-    toWorkItemDto(
+  const dtos = rows.map((r) => {
+    const own = entries.filter((e) => e.workItemId === r.id);
+    return toWorkItemDto(
       r,
       names,
       trackedMinutes(
-        entries.filter((e) => e.workItemId === r.id).map((e) => ({ startedAt: e.startedAt, endedAt: e.endedAt })),
+        own.map((e) => ({ startedAt: e.startedAt, endedAt: e.endedAt })),
         now,
       ),
-    ),
-  );
+      { runningSince: runningSinceOf(own), parts: parts.filter((p) => p.workItemId === r.id).map(toPartDto) },
+    );
+  });
   return { rows, dtos };
 }
 
