@@ -59,11 +59,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # Immer installieren: sonst fehlt der pnpm-Speicher und das Cache-Speichern schlägt fehl.
+      - run: pnpm install --frozen-lockfile
       - id: app
         name: App vorhanden?
         run: if [ -f apps/app/package.json ]; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
-      - if: steps.app.outputs.exists == 'true'
-        run: pnpm install --frozen-lockfile
       - if: steps.app.outputs.exists == 'true'
         run: pnpm --filter @werkstatt/app export:demo
       - if: steps.app.outputs.exists == 'true'
