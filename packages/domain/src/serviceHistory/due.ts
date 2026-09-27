@@ -193,7 +193,8 @@ export function evaluateMaintenanceDue(input: {
     ...base,
     governingLimit: governing,
     basis,
-    estimatedCurrentKm: km.estimatedCurrentKm,
+    // Schätzung nur, wenn eine Kilometergrenze sie braucht (reine Zeitintervalle wie HU: keine)
+    estimatedCurrentKm: dueKm !== null ? km.estimatedCurrentKm : null,
     state,
     explanation: texts(lead),
   };

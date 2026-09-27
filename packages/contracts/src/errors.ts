@@ -107,6 +107,7 @@ export const API_ERROR_CODES = {
   approvalBound: 'approval_bound',
   approvalInExecution: 'approval_in_execution',
   itemFinished: 'item_finished',
+  invalidOccurredAt: 'invalid_occurred_at',
   invalidWorkItem: 'invalid_work_item',
   notAuthorized: 'not_authorized',
   invalidStatus: 'invalid_status',

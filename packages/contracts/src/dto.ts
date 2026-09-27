@@ -83,6 +83,14 @@ export const StaffUserSchema = z.object({
 });
 export type StaffUser = z.infer<typeof StaffUserSchema>;
 
+/** Für Zuweisungen (Aufträge, Positionen, Termine): aktive bzw. eingeladene Werkstattmitarbeiter */
+export const AssignableStaffSchema = z.object({
+  userId: IdSchema,
+  displayName: z.string(),
+  role: z.enum(['admin', 'service', 'mechanic']),
+});
+export type AssignableStaff = z.infer<typeof AssignableStaffSchema>;
+
 // ---------------------------------------------------------------------------
 // Kunden und Fahrzeuge
 // ---------------------------------------------------------------------------
@@ -218,6 +226,18 @@ export type SchedulingConflict = z.infer<typeof SchedulingConflictSchema>;
 // Aufträge
 // ---------------------------------------------------------------------------
 
+/** Verbautes Teil einer Position (nur für Mitarbeiter) */
+export const PartUsedSchema = z.object({
+  id: IdSchema,
+  partNumber: z.string().nullable(),
+  description: z.string(),
+  quantity: z.number(),
+  /** Fehlt für Mechaniker. */
+  unitPriceCents: CentsSchema.nullable().optional(),
+  recordedAt: IsoDateTimeSchema,
+});
+export type PartUsed = z.infer<typeof PartUsedSchema>;
+
 export const WorkItemSchema = z.object({
   id: IdSchema,
   workOrderId: IdSchema,
@@ -242,6 +262,10 @@ export const WorkItemSchema = z.object({
   doneOdometerKm: z.number().int().nullable(),
   resultNotes: z.string().nullable(),
   trackedMinutes: z.number().int().optional(),
+  /** Beginn der laufenden Zeiterfassung (nur bei `in_progress`), sonst null. Fehlt für Kunden. */
+  runningSince: IsoDateTimeSchema.nullable().optional(),
+  /** Verbaute Teile, älteste zuerst. Fehlt für Kunden. */
+  parts: z.array(PartUsedSchema).optional(),
 });
 export type WorkItem = z.infer<typeof WorkItemSchema>;
 

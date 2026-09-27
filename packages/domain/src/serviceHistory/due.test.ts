@@ -67,6 +67,16 @@ describe('Abnahme: Fälligkeit mit kombinierten Intervallen', () => {
     expect(due?.explanation).toContain('nicht beurteilbar');
   });
 
+  it('reines Zeitintervall (z. B. HU): keine km-Schätzung, auch wenn genug Kilometerstände vorliegen', () => {
+    const due = evaluateMaintenanceDue({
+      entry: entry({ intervalKm: null, nextDueKm: null, intervalMonths: 24, nextDueDate: '2027-01-10' }),
+      odometerReadings: [reading(80_000, '2024-01-10T10:00:00Z')],
+      today: '2025-09-01',
+    });
+    expect(due).toMatchObject({ governingLimit: 'date', basis: 'date', state: 'ok', dueKm: null, estimatedCurrentKm: null });
+    expect(due?.explanation).not.toContain('geschätzt');
+  });
+
   it('nur km-Intervall und keine Daten → unknown', () => {
     const due = evaluateMaintenanceDue({ entry: entry({ intervalMonths: null, nextDueDate: null }), odometerReadings: [], today: '2025-09-01' });
     expect(due).toMatchObject({ governingLimit: 'km', basis: 'unknown', state: 'unknown', dueKm: 115_000, dueDate: null });

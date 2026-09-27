@@ -204,7 +204,21 @@ export const ConfirmIntakeRequestSchema = z.object({
   contentHash: z.string().length(64),
 });
 
+/**
+ * Zeitpunkt der Erfassung auf dem Gerät (Offline-Warteschlange, ADR-011). Ohne Angabe gilt die
+ * Serverzeit. Die API nimmt ihn nur an, wenn er höchstens 5 Minuten in der Zukunft und höchstens
+ * 72 Stunden zurück liegt und nicht vor dem letzten erfassten Zeitpunkt dieser Position;
+ * sonst 422 `invalid_occurred_at`. Gilt nur für Zeiten, nie für Freigaben oder Zahlungen.
+ */
+export const OccurredAtSchema = IsoDateTimeSchema.optional();
+export const OCCURRED_AT_MAX_FUTURE_MS = 5 * 60_000;
+export const OCCURRED_AT_MAX_PAST_MS = 72 * 3_600_000;
+
+export const StartWorkItemRequestSchema = z.object({ occurredAt: OccurredAtSchema });
+export const PauseWorkItemRequestSchema = z.object({ occurredAt: OccurredAtSchema });
+
 export const FinishWorkItemRequestSchema = z.object({
+  occurredAt: OccurredAtSchema,
   odometerKm: z.number().int().min(0).nullable().optional(),
   resultNotes: optionalText(4000),
   /** gewähltes Intervall für die Servicehistorie (Standard aus Wartungsart) */
@@ -212,7 +226,7 @@ export const FinishWorkItemRequestSchema = z.object({
   intervalMonths: z.number().int().positive().nullable().optional(),
 });
 
-export const NotDoneWorkItemRequestSchema = z.object({ reason: requiredText(500) });
+export const NotDoneWorkItemRequestSchema = z.object({ reason: requiredText(500), occurredAt: OccurredAtSchema });
 
 export const PartUsedInputSchema = z.object({
   partNumber: optionalText(60),

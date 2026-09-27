@@ -37,8 +37,9 @@ export const endpoints = {
   resetPassword: e('POST', '/auth/password/reset', 'Passwort mit Token setzen, alle Sitzungen beenden', 'public'),
   changePassword: e('POST', '/auth/password/change', 'Passwort ändern'),
 
-  // Mitarbeiter (users.manage)
+  // Mitarbeiter (users.manage; zuweisbare Mitarbeiter mit workOrders.write oder appointments.write)
   listUsers: e('GET', '/users', 'Mitarbeiter → StaffUser[]'),
+  listAssignableStaff: e('GET', '/staff/assignable', 'Zuweisbare Mitarbeiter (aktiv oder eingeladen, Werkstattrollen) → AssignableStaff[]'),
   inviteUser: e('POST', '/users/invite', 'Mitarbeiter einladen → StaffUser'),
   getUser: e('GET', '/users/:id', 'Mitarbeiter → StaffUser'),
   updateUser: e('PATCH', '/users/:id', 'Rolle/Rechte/Name ändern → StaffUser'),
@@ -107,8 +108,8 @@ export const endpoints = {
   confirmIntake: e('POST', '/work-orders/:id/intake/confirm', 'Annahme bestätigen lassen → Intake'),
   addWorkItem: e('POST', '/work-orders/:id/items', 'Position hinzufügen (vereinbart) → WorkItem'),
   updateWorkItem: e('PATCH', '/work-items/:id', 'Position ändern (nicht bei freigabepflichtigen, dafür neue Version) → WorkItem'),
-  startWorkItem: e('POST', '/work-items/:id/start', 'Arbeit starten → WorkItem'),
-  pauseWorkItem: e('POST', '/work-items/:id/pause', 'Arbeit pausieren → WorkItem'),
+  startWorkItem: e('POST', '/work-items/:id/start', 'Arbeit starten (optional occurredAt vom Gerät) → WorkItem'),
+  pauseWorkItem: e('POST', '/work-items/:id/pause', 'Arbeit pausieren (optional occurredAt vom Gerät) → WorkItem'),
   finishWorkItem: e('POST', '/work-items/:id/finish', 'Arbeit abschließen → WorkItem'),
   notDoneWorkItem: e('POST', '/work-items/:id/not-done', 'Als nicht durchgeführt markieren → WorkItem'),
   addPart: e('POST', '/work-items/:id/parts', 'Verbautes Teil erfassen'),
