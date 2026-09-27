@@ -65,6 +65,10 @@ jobs:
         name: App vorhanden?
         run: if [ -f apps/app/package.json ]; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
       - if: steps.app.outputs.exists == 'true'
+        name: Native JS-Bundles (iOS/Android, Hermes) erzeugen – kein nativer Build
+        working-directory: apps/app
+        run: npx expo export --platform android --platform ios --output-dir dist-native
+      - if: steps.app.outputs.exists == 'true'
         run: pnpm --filter @werkstatt/app export:demo
       - if: steps.app.outputs.exists == 'true'
         run: pnpm --filter @werkstatt/app exec playwright install --with-deps chromium
