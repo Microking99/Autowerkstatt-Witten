@@ -87,7 +87,8 @@ function BottomTabs({ items, onMore, moreActive, tall }: { items: NavItem[]; onM
               <Icon name={item.icon} size={iconSize.lg} color={color} />
               {item.badge ? <Badge count={item.badge} /> : null}
             </View>
-            <AppText variant="caption" numberOfLines={1} style={{ color, fontSize: 12, lineHeight: 16, fontWeight: '500' }}>
+            {/* Schmale Telefone: nativ leicht verkleinern statt kürzen (z. B. "Nachrichten" bei 320 pt) */}
+            <AppText variant="caption" numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85} style={{ color, fontSize: 12, lineHeight: 16, fontWeight: '500' }}>
               {item.label}
             </AppText>
           </Pressable>
