@@ -46,7 +46,7 @@ export async function authRoutes(app: App): Promise<void> {
 
   app.post(
     '/auth/login',
-    { schema: { body: LoginRequestSchema, response: { 200: LoginResponseSchema } }, config: authRateLimit('email') },
+    { schema: { body: LoginRequestSchema, response: { 200: LoginResponseSchema } }, config: { ...authRateLimit('email'), idempotency: false } },
     async (request) => {
       const { db, now: clock } = app.deps;
       const now = clock();
@@ -114,7 +114,7 @@ export async function authRoutes(app: App): Promise<void> {
 
   app.post(
     '/auth/invitations/accept',
-    { schema: { body: AcceptInvitationRequestSchema, response: { 200: LoginResponseSchema } }, config: authRateLimit('ip') },
+    { schema: { body: AcceptInvitationRequestSchema, response: { 200: LoginResponseSchema } }, config: { ...authRateLimit('ip'), idempotency: false } },
     async (request) => {
       const { db, now: clock } = app.deps;
       const now = clock();

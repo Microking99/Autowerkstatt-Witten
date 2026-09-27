@@ -1,10 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import type WebSocket from 'ws';
 import { CustomerDetailSchema, FileRefSchema, MessageSchema, WorkOrderDetailSchema } from '@werkstatt/contracts';
 import { maskUrlForLog } from '../src/app';
 import { ConfigError, loadConfig } from '../src/config';
-import { auditLog, customers, devices, notifications } from '../src/db/schema/index';
+import { auditLog, customers, devices, idempotencyKeys, notifications } from '../src/db/schema/index';
 import { sha256Hex } from '../src/lib/crypto';
 import { LogPushSender, type Mailer } from '../src/notifications/channels';
 import { MAX_DELIVERY_ATTEMPTS, backoffDelayMs, deliverPendingNotifications } from '../src/notifications/delivery';
@@ -38,6 +39,21 @@ describe('Idempotency-Key', () => {
     expect(other.json().id).not.toBe(first.id);
     // ungültiger Schlüssel
     expectStatus(await call(h, 'POST', '/customers', { token: w.service.token, body, headers: { 'idempotency-key': 'x' } }), 400, 'invalid_idempotency_key');
+  });
+
+  it('Antworten mit Geheimnissen (Freigabelink, Sitzungstoken) werden nicht gespeichert', async () => {
+    const { customer, vehicleId } = await customerWithVehicle(h, 'Geheim');
+    const res = await call(h, 'POST', `/vehicles/${vehicleId}/shares`, {
+      token: customer.token,
+      headers: { 'idempotency-key': 'share-geheim-0001' },
+      body: { label: 'x', serviceEntryIds: [randomUUID()], expiresAt: new Date(Date.now() + 86_400_000).toISOString() },
+    });
+    expect(res.statusCode).toBe(422);
+    const login = await call(h, 'POST', '/auth/login', { token: customer.token, headers: { 'idempotency-key': 'login-geheim-0001' }, body: { email: customer.email, password: 'Test-Passwort-123' } });
+    expect(login.statusCode).toBe(200);
+    const stored = await h.db.select().from(idempotencyKeys).where(eq(idempotencyKeys.userId, customer.id));
+    expect(stored).toHaveLength(0);
+    expect(JSON.stringify(await h.db.select().from(idempotencyKeys))).not.toContain(login.json().token);
   });
 
   it('auch Fehlerantworten (4xx) werden wiederholt geliefert, Nachricht über clientMessageId nur einmal', async () => {

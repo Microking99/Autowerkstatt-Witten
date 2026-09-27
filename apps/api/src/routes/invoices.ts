@@ -343,7 +343,7 @@ export async function invoiceRoutes(app: App): Promise<void> {
     '/invoices/:id/payment-status/refresh',
     {
       schema: { params: IdParamsSchema, response: { 200: InvoiceSchema } },
-      config: { rateLimit: { max: 30, timeWindow: '1 minute', keyGenerator: (req: { ip: string; headers: Record<string, unknown> }) => `${req.ip}|${String(req.headers.authorization ?? '')}` } },
+      config: { rateLimit: { max: 30, timeWindow: '1 minute', keyGenerator: (req) => `${req.ip}|${req.actor?.userId ?? ''}` } },
     },
     async (request) => {
       const actor = requireActor(request);

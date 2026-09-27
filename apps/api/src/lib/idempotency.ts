@@ -4,6 +4,8 @@
  * demselben Schlüssel unverändert zurückgegeben (Schutz bei Verbindungsabbrüchen und für die
  * Offline-Warteschlange). Serverfehler (5xx) werden nicht gespeichert, damit ein erneuter
  * Versuch möglich bleibt. Gleicher Schlüssel mit anderem Inhalt → 422.
+ * Routen mit `config: { idempotency: false }` (Antwort enthält ein Geheimnis) werden nicht
+ * gespeichert.
  */
 import { and, eq, lt } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -33,6 +35,8 @@ function requestHash(request: FastifyRequest): string {
 export function registerIdempotency(app: FastifyInstance): void {
   app.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
     if (!WRITE_METHODS.has(request.method)) return;
+    // Antworten mit Geheimnissen (Sitzungstoken, einmaliger Freigabelink) werden nie gespeichert
+    if ((request.routeOptions.config as { idempotency?: boolean } | undefined)?.idempotency === false) return;
     const raw = request.headers['idempotency-key'];
     if (raw === undefined || !request.actor) return;
     const key = Array.isArray(raw) ? raw[0] : raw;

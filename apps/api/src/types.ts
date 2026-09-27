@@ -35,6 +35,10 @@ export interface IdempotencyState {
 }
 
 declare module 'fastify' {
+  interface FastifyContextConfig {
+    /** false: Antwort nicht für Idempotency-Key speichern (enthält Geheimnisse) */
+    idempotency?: boolean;
+  }
   interface FastifyInstance {
     deps: AppDeps;
   }

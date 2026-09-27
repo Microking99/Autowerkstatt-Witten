@@ -34,6 +34,7 @@ import {
   WorkshopSettingsSchema,
   endpoints,
 } from '@werkstatt/contracts';
+import { partDemands, workshopSettings } from '../src/db/schema/index';
 import { SAMPLE_PDF, SAMPLE_PNG, call, createHarness, createStaff, expectOk, expectStatus, uploadFile, type Harness } from './support/harness';
 import { createAndSendApproval, createWorkOrder, customerWithVehicle, issueInvoice, item, line, setupWorkshop, type Workshop } from './support/scenario';
 
@@ -183,6 +184,24 @@ describe('Termine', () => {
     expect(list.map((a) => a.id)).toEqual([request.id]);
     const confirmBooked = await call(h, 'POST', `/appointments/${first.id}/confirm`, { token: w.service.token, body: {} });
     expectStatus(confirmBooked, 409);
+  });
+
+  it('fehlende Teile und Öffnungszeiten werden als Konflikt gemeldet', async () => {
+    await h.db.update(workshopSettings).set({ openingHours: [{ weekday: 1, opens: '08:00', closes: '17:00' }] });
+    const { customer, vehicleId } = await customerWithVehicle(h, 'Teile');
+    const wo = await createWorkOrder(h, w.service.token, { customerId: customer.customerId!, vehicleId });
+    // Teilebedarf hat im Vertrag noch keinen Endpunkt; hier direkt angelegt
+    await h.db.insert(partDemands).values({ workOrderId: wo.id, description: 'Zahnriemensatz', status: 'ordered' });
+    const conflicts = expectOk(
+      await call(h, 'POST', '/appointments/conflicts', {
+        token: w.service.token,
+        // Sonntag 03:00 Uhr Berliner Zeit: außerhalb der Öffnungszeiten (Test-Werkstatt: Mo 08-17 Uhr)
+        body: { startsAt: '2027-06-06T01:00:00.000Z', endsAt: '2027-06-06T02:00:00.000Z', assigneeIds: [], workOrderId: wo.id },
+      }),
+      z.array(SchedulingConflictSchema),
+    );
+    expect(conflicts.map((c) => c.kind).sort()).toEqual(['outside_opening_hours', 'parts_missing']);
+    expect(conflicts.find((c) => c.kind === 'parts_missing')!.message).toContain('Zahnriemensatz');
   });
 });
 

@@ -592,7 +592,7 @@ export async function vehicleRoutes(app: App): Promise<void> {
 
   app.post(
     '/vehicles/:id/shares',
-    { schema: { params: IdParamsSchema, body: CreateVehicleShareRequestSchema, response: { 201: VehicleShareSchema } } },
+    { schema: { params: IdParamsSchema, body: CreateVehicleShareRequestSchema, response: { 201: VehicleShareSchema } }, config: { idempotency: false } },
     async (request, reply) => {
       const actor = requireActor(request);
       const { db, now: clock } = app.deps;
