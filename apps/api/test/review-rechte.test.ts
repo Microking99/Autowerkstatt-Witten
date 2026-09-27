@@ -412,7 +412,7 @@ describe('R09 Konten und Sitzungen', () => {
     expectStatus(await call(h, 'GET', '/auth/me', { token: customer.token }), 401);
   });
 
-  it.fails('Anmeldung verrät nicht über die Sperre, ob eine E-Mail-Adresse existiert (BEFUND, offen)', async () => {
+  it('Anmeldung verrät nicht über die Sperre, ob eine E-Mail-Adresse existiert (behoben)', async () => {
     const known = await createCustomer(h, 'Enumeration');
     const unknown = `niemand.${randomUUID()}@beispiel.test`;
     let lastKnown = 0;
@@ -606,7 +606,7 @@ describe('R14 Echtzeit (WebSocket)', () => {
     expect(await custClosed).toBe(4401);
   });
 
-  it.fails('entzogene Zuweisung beendet das Abo des Mechanikers (BEFUND, offen)', async () => {
+  it('entzogene Zuweisung beendet das Abo des Mechanikers (behoben)', async () => {
     const { customer, vehicleId } = await customerWithVehicle(h, 'WsZuweisung');
     const mech = await createStaff(h, 'mechanic');
     const wo = await createWorkOrder(h, w.service.token, { customerId: customer.customerId!, vehicleId, assigneeIds: [mech.id] });
@@ -617,5 +617,33 @@ describe('R14 Echtzeit (WebSocket)', () => {
     await call(h, 'PATCH', `/work-orders/${wo.id}`, { token: w.service.token, body: { title: 'geändert' } });
     expect(await event).toBeNull();
     m.ws.terminate();
+  });
+});
+
+describe('Mechaniker: Zugriff nur über aktive Zuweisungen (Review, Fragen 2 und 3)', () => {
+  it('interne Dokumente nur zu aktiven zugewiesenen Aufträgen; nach Abschluss keine Fahrzeugakte mehr', async () => {
+    const { customer, vehicleId } = await customerWithVehicle(h, 'MechScope');
+    const other = await customerWithVehicle(h, 'MechScopeFremd');
+    const mech = await createStaff(h, 'mechanic', { overrides: [{ permission: 'documents.readInternal', granted: true }] });
+    const wo = await createWorkOrder(h, w.service.token, { customerId: customer.customerId!, vehicleId, assigneeIds: [mech.id], items: [item('Prüfung')] });
+    const otherWo = await createWorkOrder(h, w.service.token, { customerId: other.customer.customerId!, vehicleId: other.vehicleId, items: [item('Fremd')] });
+    const pdf = expectOk(await uploadFile(h, w.service.token, 'intern.pdf', 'application/pdf', SAMPLE_PDF), FileRefSchema, 201);
+    const own = expectOk(await call(h, 'POST', '/documents', { token: w.service.token, body: { kind: 'report', title: 'Eigener Bericht', fileId: pdf.id, workOrderId: wo.id } }), DocumentSchema, 201);
+    const pdf2 = expectOk(await uploadFile(h, w.service.token, 'fremd.pdf', 'application/pdf', SAMPLE_PDF), FileRefSchema, 201);
+    const foreign = expectOk(
+      await call(h, 'POST', '/documents', { token: w.service.token, body: { kind: 'report', title: 'Fremder Bericht', fileId: pdf2.id, workOrderId: otherWo.id } }),
+      DocumentSchema,
+      201,
+    );
+    const list = expectOk(await call(h, 'GET', '/documents', { token: mech.token }), z.array(DocumentSchema));
+    expect(list.map((d) => d.id)).toContain(own.id);
+    expect(list.map((d) => d.id)).not.toContain(foreign.id);
+    expectStatus(await call(h, 'GET', `/documents/${foreign.id}/download`, { token: mech.token }), 403);
+    expect((await call(h, 'GET', `/documents/${own.id}/download`, { token: mech.token })).statusCode).toBe(200);
+    expect((await call(h, 'GET', `/vehicles/${vehicleId}`, { token: mech.token })).statusCode).toBe(200);
+    // Nach Stornierung endet der Zugriff über diese Zuweisung
+    expectOk(await call(h, 'POST', `/work-orders/${wo.id}/transition`, { token: w.service.token, body: { to: 'cancelled', reason: 'Test' } }), WorkOrderDetailSchema);
+    expectStatus(await call(h, 'GET', `/documents/${own.id}/download`, { token: mech.token }), 403);
+    expectStatus(await call(h, 'GET', `/vehicles/${vehicleId}`, { token: mech.token }), 403);
   });
 });

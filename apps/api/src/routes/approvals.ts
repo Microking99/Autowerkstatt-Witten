@@ -3,7 +3,7 @@
  * Kundenentscheidung, gebunden an Version und Inhalts-Hash. Mitarbeiter können nie im Namen
  * des Kunden entscheiden. Ein "Ja" im Chat ist keine Freigabe.
  */
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import { ApprovalDecisionRequestSchema, ApprovalDraftInputSchema, ApprovalRequestSchema, type ApprovalDraftInput } from '@werkstatt/contracts';
 import {
@@ -203,6 +203,18 @@ export async function approvalRoutes(app: App): Promise<void> {
       const { wo } = await loadVisibleWorkOrder(tx, actor, row.workOrderId);
       ensureOpenForApprovals(wo.status);
       await validateReferences(tx, wo.id, body);
+      if (row.status !== 'draft') {
+        // Sobald aus einer Anfrage Arbeit begonnen wurde, sind ihre Positionen nicht mehr
+        // austauschbar: Änderungen brauchen dann eine eigene, neue Freigabeanfrage.
+        const started = await tx
+          .select({ id: workItems.id })
+          .from(workItems)
+          .where(and(eq(workItems.approvalRequestId, row.id), ne(workItems.executionStatus, 'planned')))
+          .limit(1);
+        if (started.length > 0) {
+          throw conflict('approval_in_execution', 'Aus dieser Anfrage wurden bereits Arbeiten begonnen. Änderungen bitte als neue Freigabeanfrage senden.');
+        }
+      }
       const current = await currentVersionOf(tx, row);
       let outcome;
       try {

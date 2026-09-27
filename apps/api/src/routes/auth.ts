@@ -61,7 +61,9 @@ export async function authRoutes(app: App): Promise<void> {
       if (user.lockedUntil && user.lockedUntil > now) {
         await verifyAgainstDummy(request.body.password);
         await audit(db, { ...ctx, actorUserId: null }, { action: 'auth.login_failed', entityType: 'user', entityId: user.id, data: { reason: 'locked' } });
-        throw new HttpError(429, 'too_many_attempts', 'Zu viele Fehlversuche. Bitte später erneut versuchen.');
+        // Gleiche Antwort wie bei falschen Daten: Die Sperre darf nicht verraten, ob ein Konto
+        // zu dieser E-Mail-Adresse existiert (Review R09c). Die Sperre selbst bleibt wirksam.
+        throw new HttpError(401, 'invalid_credentials', INVALID_CREDENTIALS);
       }
       const valid = await verifyPassword(user.passwordHash, request.body.password);
       if (!valid) {

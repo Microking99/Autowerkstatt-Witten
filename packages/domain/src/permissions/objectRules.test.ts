@@ -339,11 +339,13 @@ describe('Dokumente', () => {
     expect(allowed(canViewDocument(noInternal, customerDoc))).toBe(true);
   });
 
-  it('Mechaniker: nichts ohne zugewiesenes Recht; mit Recht nie Angebote oder Rechnungen', () => {
-    const report = { customerId: IDS.customerA, visibility: 'internal' as const, publishedAt: null, kind: 'report' as const };
+  it('Mechaniker: nichts ohne zugewiesenes Recht; mit Recht nur zu aktiven eigenen Aufträgen, nie Angebote oder Rechnungen', () => {
+    const report = { customerId: IDS.customerA, visibility: 'internal' as const, publishedAt: null, kind: 'report' as const, actorAssignedViaActiveWorkOrder: true };
     expect(reasonOf(canViewDocument(mechanic(), report))).toBe('MISSING_PERMISSION');
     const m = mechanic([grant('documents.readInternal')]);
     expect(allowed(canViewDocument(m, report))).toBe(true);
+    expect(reasonOf(canViewDocument(m, { ...report, actorAssignedViaActiveWorkOrder: false }))).toBe('NOT_ASSIGNED');
+    expect(reasonOf(canViewDocument(m, { ...report, actorAssignedViaActiveWorkOrder: undefined }))).toBe('NOT_ASSIGNED');
     expect(reasonOf(canViewDocument(m, { ...report, kind: 'invoice' }))).toBe('ROLE_NOT_ALLOWED');
     expect(reasonOf(canViewDocument(m, { ...report, kind: 'offer' }))).toBe('ROLE_NOT_ALLOWED');
   });

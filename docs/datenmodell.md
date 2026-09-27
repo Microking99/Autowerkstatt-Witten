@@ -190,6 +190,7 @@ Zusätzlich zu den Tabellen oben (Quelle: `apps/api/src/db/schema/`, Übergabe
 `docs/uebergaben/2026-09-26-api.md`):
 
 - `counters`: fortlaufende Kunden-, Auftrags- und Rechnungsnummern.
+- `intakes.first_confirmed_at`: erste Bestätigung der Annahme; ab dann neue oder geänderte Leistungen nur über Freigabe (R-ANN-3).
 - `checkouts.merchant_code`: Händlerkennung für den Abgleich mit der Anbieterantwort.
 - `message_attachments.photo_id`: Chat-Anhänge werden als Fotos (Kontext `chat`, kundensichtbar) geführt.
 - `idempotency_keys.request_hash`: gleicher Schlüssel mit anderem Inhalt wird abgelehnt.

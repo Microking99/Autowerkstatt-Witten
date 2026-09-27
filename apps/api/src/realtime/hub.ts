@@ -26,6 +26,11 @@ export interface RealtimeSubscriber {
   send: (event: RealtimeEvent) => void;
   /** Verbindung schließen (z. B. nach Deaktivierung des Kontos) */
   close?: (code: number, reason: string) => void;
+  /**
+   * Prüft das Abonnement eines Auftrags erneut (z. B. nach geänderter Zuweisung) und beendet es,
+   * wenn die Sicht nicht mehr besteht.
+   */
+  revalidate?: (workOrderId: string) => Promise<void>;
 }
 
 export class RealtimeHub {
@@ -80,6 +85,16 @@ export class RealtimeHub {
       set.delete(subscriber);
       if (set.size === 0) this.byWorkOrder.delete(id);
     }
+  }
+
+  /**
+   * Zugriff auf einen Auftrag hat sich geändert (Zuweisung, Status): alle Abonnements dieses
+   * Auftrags neu prüfen. Nicht mehr berechtigte Abonnements enden sofort (Review R14c).
+   */
+  async revalidateWorkOrder(workOrderId: string): Promise<void> {
+    const set = this.byWorkOrder.get(workOrderId);
+    if (!set) return;
+    await Promise.all([...set].map((sub) => sub.revalidate?.(workOrderId).catch(() => undefined)));
   }
 
   subscriberCount(workOrderId: string): number {

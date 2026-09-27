@@ -13,6 +13,7 @@ import { unprocessable } from '../lib/errors';
 import { IdParamsSchema, ensure, ensureFound, requireActor } from '../lib/http';
 import { contentDisposition } from '../storage/fileSignature';
 import { loadAttachableFile, toFileRef } from './files';
+import { activeAssignmentScope } from '../services/access';
 import type { App } from '../types';
 
 type DocumentRow = typeof documents.$inferSelect;
@@ -54,14 +55,30 @@ export async function toDocumentDtos(db: DbOrTx, rows: DocumentRow[]): Promise<D
   });
 }
 
-function accessInput(d: DocumentRow) {
-  return { customerId: d.customerId, visibility: d.visibility, publishedAt: d.publishedAt ? d.publishedAt.toISOString() : null, kind: d.kind };
+type AssignmentScope = { workOrderIds: Set<string>; vehicleIds: Set<string> } | null;
+
+function accessInput(d: DocumentRow, scope: AssignmentScope = null) {
+  return {
+    customerId: d.customerId,
+    visibility: d.visibility,
+    publishedAt: d.publishedAt ? d.publishedAt.toISOString() : null,
+    kind: d.kind,
+    // Mechaniker: nur Dokumente aktiver, zugewiesener Aufträge bzw. deren Fahrzeuge
+    actorAssignedViaActiveWorkOrder: scope
+      ? (d.workOrderId !== null && scope.workOrderIds.has(d.workOrderId)) || (d.vehicleId !== null && scope.vehicleIds.has(d.vehicleId))
+      : undefined,
+  };
+}
+
+/** Zuweisungsbereich nur für Mechaniker (andere Rollen brauchen ihn nicht). */
+async function scopeFor(db: DbOrTx, actor: Actor): Promise<AssignmentScope> {
+  return actor.role === 'mechanic' ? activeAssignmentScope(db, actor.userId) : null;
 }
 
 async function loadVisibleDocument(db: DbOrTx, actor: Actor, id: string): Promise<DocumentRow> {
   const [row] = await db.select().from(documents).where(and(eq(documents.id, id), isNull(documents.deletedAt)));
   ensureFound(row);
-  ensure(canViewDocument(actor, accessInput(row!)));
+  ensure(canViewDocument(actor, accessInput(row!, await scopeFor(db, actor))));
   return row!;
 }
 
@@ -106,9 +123,10 @@ export async function documentRoutes(app: App): Promise<void> {
     if (q.kind) conditions.push(eq(documents.kind, q.kind));
     const rows = await db.select().from(documents).where(and(...conditions)).orderBy(desc(documents.createdAt)).limit(500);
     // Objektregel zusätzlich je Dokument (Geschäftslogik)
+    const scope = await scopeFor(db, actor);
     return toDocumentDtos(
       db,
-      rows.filter((d) => canViewDocument(actor, accessInput(d)).allowed),
+      rows.filter((d) => canViewDocument(actor, accessInput(d, scope)).allowed),
     );
   });
 
@@ -160,7 +178,7 @@ export async function documentRoutes(app: App): Promise<void> {
     const doc = await db.transaction(async (tx) => {
       const [current] = await tx.select().from(documents).where(and(eq(documents.id, request.params.id), isNull(documents.deletedAt))).for('update');
       ensureFound(current);
-      ensure(canViewDocument(actor, accessInput(current!)));
+      ensure(canViewDocument(actor, accessInput(current!, await scopeFor(tx, actor))));
       const file = await loadAttachableFile(tx, actor, request.body.fileId);
       const [max] = await tx.select({ n: sql<number>`coalesce(max(${documentVersions.versionNo}), 0)::int` }).from(documentVersions).where(eq(documentVersions.documentId, current!.id));
       const [v] = await tx

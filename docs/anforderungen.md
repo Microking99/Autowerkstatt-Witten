@@ -71,7 +71,7 @@ Kennzeichnung:
 |---|---|
 | R-ANN-1 [K] | Erfassung: Kundenbeanstandung, Kilometerstand, vorhandene Schäden, Fotos, vereinbarte Leistungen, ggf. Kostenrahmen. |
 | R-ANN-2 [K] | Interne Hinweise und kundenbestimmte Inhalte sind getrennt. |
-| R-ANN-3 [K] | Bestätigung der Annahme deckt nur die dort vereinbarten Leistungen, nie spätere Zusatzarbeiten. |
+| R-ANN-3 [K] | Bestätigung der Annahme deckt nur die dort vereinbarten Leistungen, nie spätere Zusatzarbeiten. Festlegung: Nach der ersten Bestätigung entstehen neue Leistungen und Änderungen an Umfang oder Preis nur über eine Freigabeanfrage. |
 
 ### F. Aufträge
 | ID | Anforderung |
@@ -113,7 +113,7 @@ Kennzeichnung:
 | R-FRG-3 [K] | Entscheidung ist an genau die vorgelegte Version gebunden; freies "Ja" im Chat ersetzt keine Freigabe. |
 | R-FRG-4 [K] | Protokoll: Person, Zeitpunkt, Leistungsumfang, Betrag, Dokumentversion (Inhalts-Hash). |
 | R-FRG-5 [K] | Ablehnung: betroffene Zusatzarbeiten werden nicht durchgeführt und nicht als Service übernommen; separat freigegebene Arbeiten bleiben unberührt. |
-| R-FRG-6 [K] | Änderung von Umfang oder Preis erfordert eine neue Entscheidung. |
+| R-FRG-6 [K] | Änderung von Umfang oder Preis erfordert eine neue Entscheidung. Festlegung: Überarbeiten (neue Version) nur, solange aus der Anfrage keine Arbeit begonnen wurde; danach eigene neue Freigabeanfrage. Stornierung zieht offene Anfragen zurück. |
 | R-BEN-1 [K] | E-Mail- und App-Benachrichtigungen nach Einstellungen; Link führt nach Anmeldung direkt zum Vorgang. |
 
 ## 5. Rechnungen und Zahlungen

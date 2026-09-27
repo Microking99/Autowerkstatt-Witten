@@ -108,18 +108,17 @@ describe('F03 Bindung an Fassung und Hash', () => {
 });
 
 describe('F04 Ausführung und Änderung von Positionen', () => {
-  it('wartende Positionen startet auch der Admin nicht; neue Fassung pausiert laufende Arbeit und sperrt sie', async () => {
+  it('wartende Positionen startet auch der Admin nicht; laufende Arbeit sperrt die Überarbeitung der Anfrage', async () => {
     const { customer, wo, approval } = await orderWithApproval([line('Scheiben', 30000)]);
     const [pending] = await itemsOf(wo.id, approval.id);
     expectStatus(await call(h, 'POST', `/work-items/${pending!.id}/start`, { token: w.admin.token }), 403);
     expectOk(await decide(h, customer.token, approval.id, approval.currentVersion.id, approval.currentVersion.contentHash, 'approved'), ApprovalRequestSchema);
     expectOk(await call(h, 'POST', `/work-items/${pending!.id}/start`, { token: w.mechanic.token }), WorkItemSchema);
-    expectOk(await call(h, 'PUT', `/approvals/${approval.id}`, { token: w.service.token, body: draftBody([line('Scheiben', 36000)]) }), ApprovalRequestSchema);
+    // Mehraufwand während laufender Arbeit: eigene neue Freigabeanfrage statt Überarbeitung
+    expectStatus(await call(h, 'PUT', `/approvals/${approval.id}`, { token: w.service.token, body: draftBody([line('Scheiben', 36000)]) }), 409, 'approval_in_execution');
     const [after] = await itemsOf(wo.id, approval.id);
-    expect(after!.authorization).toBe('pending_approval');
-    expect(after!.executionStatus).toBe('paused');
-    expectStatus(await call(h, 'POST', `/work-items/${pending!.id}/finish`, { token: w.mechanic.token, body: {} }), 403);
-    expectStatus(await call(h, 'POST', `/work-items/${pending!.id}/start`, { token: w.mechanic.token }), 403);
+    expect(after!.authorization).toBe('approved');
+    expect(after!.executionStatus).toBe('in_progress');
     // Direkte Änderung einer Freigabeposition ist gesperrt
     expectStatus(await call(h, 'PATCH', `/work-items/${pending!.id}`, { token: w.service.token, body: { unitPriceCents: 1 } }), 409, 'approval_bound');
   });
@@ -154,48 +153,90 @@ describe('F04 Ausführung und Änderung von Positionen', () => {
 });
 
 describe('F05 Annahme-Bestätigung (R-ANN-3)', () => {
-  it.fails('nach bestätigter Annahme entstehen neue Positionen nur über Freigabe, auch nach nachträglicher Änderung (BEFUND, offen)', async () => {
+  it('nach bestätigter Annahme entstehen neue oder geänderte Leistungen nur über Freigabe, auch nach nachträglicher Änderung (behoben)', async () => {
     const { customer, vehicleId } = await customerWithVehicle(h, 'Annahme');
     const wo = await createWorkOrder(h, w.service.token, { customerId: customer.customerId!, vehicleId, items: [item('Ölwechsel', { unitPriceCents: 8000 })] });
     const intake = expectOk(
       await call(h, 'PUT', `/work-orders/${wo.id}/intake`, { token: w.service.token, body: { odometerKm: 1000, customerComplaint: 'Service', agreedServices: 'Ölwechsel' } }),
       IntakeSchema,
     );
-    expectOk(await call(h, 'POST', `/work-orders/${wo.id}/intake/confirm`, { token: customer.token, body: { method: 'app', contentHash: intake.contentHash } }), IntakeSchema);
+    // vor der Bestätigung sind Änderungen erlaubt
+    expectOk(await call(h, 'PATCH', `/work-items/${wo.items[0]!.id}`, { token: w.service.token, body: { unitPriceCents: 7900 } }), WorkItemSchema);
+    const current = expectOk(await call(h, 'GET', `/work-orders/${wo.id}/intake`, { token: customer.token }), IntakeSchema);
+    expect(current.contentHash).not.toBe(intake.contentHash);
+    expectOk(await call(h, 'POST', `/work-orders/${wo.id}/intake/confirm`, { token: customer.token, body: { method: 'app', contentHash: current.contentHash } }), IntakeSchema);
     expectStatus(await call(h, 'POST', `/work-orders/${wo.id}/items`, { token: w.service.token, body: item('Zusatz ohne Freigabe') }), 409, 'approval_required');
-    // Umgehung: bestätigte Position ändern (Bestätigung verfällt), danach neue "vereinbarte" Position
-    expectOk(await call(h, 'PATCH', `/work-items/${wo.items[0]!.id}`, { token: w.service.token, body: { unitPriceCents: 8001 } }), WorkItemSchema);
+    // Umfang/Preis bestätigter Leistungen nur über Freigabe
+    expectStatus(await call(h, 'PATCH', `/work-items/${wo.items[0]!.id}`, { token: w.service.token, body: { unitPriceCents: 8001 } }), 409, 'approval_required');
+    // Zuweisung bleibt änderbar
+    expectOk(await call(h, 'PATCH', `/work-items/${wo.items[0]!.id}`, { token: w.service.token, body: { assignedTo: w.mechanic.id } }), WorkItemSchema);
+    // Änderung des Annahmetextes macht die Bestätigung ungültig, öffnet aber keinen Weg für neue Leistungen
+    const changed = expectOk(
+      await call(h, 'PUT', `/work-orders/${wo.id}/intake`, { token: w.service.token, body: { odometerKm: 1000, customerComplaint: 'Service und Klappern', agreedServices: 'Ölwechsel' } }),
+      IntakeSchema,
+    );
+    expect(changed.confirmedAt).toBeNull();
     expectStatus(await call(h, 'POST', `/work-orders/${wo.id}/items`, { token: w.service.token, body: item('Zusatz ohne Freigabe') }), 409, 'approval_required');
   });
 });
 
 describe('F05b Annahme-Hash und Bruttopreis', () => {
-  it.fails('Änderung des USt-Satzes einer bestätigten Annahmeposition macht die Bestätigung ungültig (BEFUND, offen)', async () => {
+  it('USt-Satz ist Teil des Annahme-Hashs; nach Bestätigung nur über Freigabe änderbar (behoben)', async () => {
     const { customer, vehicleId } = await customerWithVehicle(h, 'AnnahmeUst');
     const wo = await createWorkOrder(h, w.service.token, { customerId: customer.customerId!, vehicleId, items: [item('Inspektion', { unitPriceCents: 10000, vatRateBp: 1900 })] });
     const intake = expectOk(
       await call(h, 'PUT', `/work-orders/${wo.id}/intake`, { token: w.service.token, body: { odometerKm: 1000, customerComplaint: 'Inspektion', agreedServices: 'Inspektion' } }),
       IntakeSchema,
     );
-    expectOk(await call(h, 'POST', `/work-orders/${wo.id}/intake/confirm`, { token: customer.token, body: { method: 'app', contentHash: intake.contentHash } }), IntakeSchema);
-    expectOk(await call(h, 'PATCH', `/work-items/${wo.items[0]!.id}`, { token: w.service.token, body: { vatRateBp: 5000 } }), WorkItemSchema);
-    const after = expectOk(await call(h, 'GET', `/work-orders/${wo.id}/intake`, { token: customer.token }), IntakeSchema);
-    expect(after.confirmedAt).toBeNull();
+    expectOk(await call(h, 'PATCH', `/work-items/${wo.items[0]!.id}`, { token: w.service.token, body: { vatRateBp: 700 } }), WorkItemSchema);
+    const afterVat = expectOk(await call(h, 'GET', `/work-orders/${wo.id}/intake`, { token: customer.token }), IntakeSchema);
+    expect(afterVat.contentHash).not.toBe(intake.contentHash);
+    // alte Fassung kann nicht mehr bestätigt werden
+    expectStatus(await call(h, 'POST', `/work-orders/${wo.id}/intake/confirm`, { token: customer.token, body: { method: 'app', contentHash: intake.contentHash } }), 409, 'intake_changed');
+    expectOk(await call(h, 'POST', `/work-orders/${wo.id}/intake/confirm`, { token: customer.token, body: { method: 'app', contentHash: afterVat.contentHash } }), IntakeSchema);
+    expectStatus(await call(h, 'PATCH', `/work-items/${wo.items[0]!.id}`, { token: w.service.token, body: { vatRateBp: 1900 } }), 409, 'approval_required');
   });
 });
 
-describe('F06 Zuordnung Fassungszeilen ↔ Positionen bei erledigten Positionen', () => {
-  it.fails('neue Fassung ohne die bereits erledigte Zeile: freigegebene Zeile wird ausführbar (BEFUND, offen)', async () => {
+describe('F06 Zuordnung Fassungszeilen ↔ Positionen bei begonnener Arbeit', () => {
+  it('Anfrage mit begonnener Arbeit kann nicht überarbeitet werden; Änderung läuft über eine neue Anfrage (behoben)', async () => {
     const { customer, wo, approval } = await orderWithApproval([line('A-Scheiben', 10000), line('B-Beläge', 5000)]);
     expectOk(await decide(h, customer.token, approval.id, approval.currentVersion.id, approval.currentVersion.contentHash, 'approved'), ApprovalRequestSchema);
     const [a] = await itemsOf(wo.id, approval.id);
     expectOk(await call(h, 'POST', `/work-items/${a!.id}/start`, { token: w.mechanic.token }), WorkItemSchema);
     expectOk(await call(h, 'POST', `/work-items/${a!.id}/finish`, { token: w.mechanic.token, body: {} }), WorkItemSchema);
-    const v2 = expectOk(await call(h, 'PUT', `/approvals/${approval.id}`, { token: w.service.token, body: draftBody([line('B-Beläge', 6000)]) }), ApprovalRequestSchema);
+    expectStatus(await call(h, 'PUT', `/approvals/${approval.id}`, { token: w.service.token, body: draftBody([line('B-Beläge', 6000)]) }), 409, 'approval_in_execution');
+    // bereits freigegebene Positionen bleiben unverändert und ausführbar
+    const items = await itemsOf(wo.id, approval.id);
+    const b = items.find((i) => i.title === 'B-Beläge');
+    expect(b?.authorization).toBe('approved');
+    expect(b?.unitPriceCents).toBe(5000);
+    expect(items.find((i) => i.title === 'A-Scheiben')?.executionStatus).toBe('done');
+  });
+
+  it('vor Arbeitsbeginn erzeugt eine Überarbeitung eine neue Version, die neu entschieden werden muss', async () => {
+    const { customer, wo, approval } = await orderWithApproval([line('A-Scheiben', 10000), line('B-Beläge', 5000)]);
+    expectOk(await decide(h, customer.token, approval.id, approval.currentVersion.id, approval.currentVersion.contentHash, 'approved'), ApprovalRequestSchema);
+    const v2 = expectOk(await call(h, 'PUT', `/approvals/${approval.id}`, { token: w.service.token, body: draftBody([line('A-Scheiben', 10000), line('B-Beläge', 6000)]) }), ApprovalRequestSchema);
+    expect(v2.currentVersion.versionNo).toBe(2);
+    const pending = await itemsOf(wo.id, approval.id);
+    expect(pending.every((i) => i.authorization === 'pending_approval')).toBe(true);
     expectOk(await decide(h, customer.token, approval.id, v2.currentVersion.id, v2.currentVersion.contentHash, 'approved'), ApprovalRequestSchema);
     const items = await itemsOf(wo.id, approval.id);
-    const b = items.find((i) => i.title === 'B-Beläge' && i.executionStatus !== 'done');
-    expect(b?.authorization).toBe('approved');
-    expect(b?.unitPriceCents).toBe(6000);
+    expect(items.find((i) => i.title === 'B-Beläge')?.unitPriceCents).toBe(6000);
+    expect(items.every((i) => i.authorization === 'approved')).toBe(true);
+  });
+});
+
+describe('Stornierung zieht offene Freigabeanfragen zurück', () => {
+  it('nach Stornierung kann der Kunde nicht mehr entscheiden; die Anfrage ist zurückgezogen', async () => {
+    const { customer, wo, approval } = await orderWithApproval([line('Scheiben', 20000)]);
+    expectOk(await call(h, 'POST', `/work-orders/${wo.id}/transition`, { token: w.service.token, body: { to: 'cancelled', reason: 'Kunde storniert' } }), WorkOrderDetailSchema);
+    const after = expectOk(await call(h, 'GET', `/approvals/${approval.id}`, { token: w.service.token }), ApprovalRequestSchema);
+    expect(after.status).toBe('withdrawn');
+    const res = await decide(h, customer.token, approval.id, approval.currentVersion.id, approval.currentVersion.contentHash, 'approved');
+    expect(res.statusCode).toBe(409);
+    const items = await itemsOf(wo.id, approval.id);
+    expect(items.every((i) => i.authorization === 'withdrawn')).toBe(true);
   });
 });

@@ -237,3 +237,23 @@ Nicht erledigt: offene Befunde aus 5.1 (Geschäftsregel- bzw. Domain-Entscheidun
 
 Durch den Lead: Korrekturen und offene Punkte prüfen. **Das unabhängige Codex-Review C-01 bis
 C-03 ist damit nicht erledigt** und bleibt offen, bis Codex eingerichtet ist.
+
+## 9. Nachtrag Lead (27.09.2026): Entscheidungen und Behebung der offenen Befunde
+
+Entscheidungen (reversibel, in den Fachdokumenten nachgetragen):
+
+| Frage/Befund | Entscheidung | Umsetzung | Test |
+|---|---|---|---|
+| F05a / Frage 1 (R-ANN-3) | Wurde die Annahme einmal bestätigt, entstehen neue Leistungen und Änderungen an Umfang oder Preis (Art, Titel, Beschreibung, Menge, Einheit, Preis, USt) vereinbarter Leistungen nur noch über eine Freigabeanfrage. Das gilt dauerhaft, auch wenn eine spätere Änderung am Annahmetext die Bestätigung ungültig macht. Zuweisung, Wartungsart und Intervall bleiben änderbar. | Spalte `intakes.first_confirmed_at` (Migration `0003`), Prüfung in `POST /work-orders/:id/items` und `PATCH /work-items/:id` (409 `approval_required`) | `review-freigaben.test.ts` F05, `endpunkte.test.ts` |
+| F05b | USt-Satz und Art der vereinbarten Positionen sind Teil des Annahme-Hashs (Format `v: 2`). | `packages/domain/src/intake/intake.ts`, `apps/api/src/services/intake.ts` | Domain `intake.test.ts`, API F05b |
+| F06 | Eine Freigabeanfrage kann nur überarbeitet werden, solange aus ihr keine Arbeit begonnen wurde. Danach läuft jede Änderung (z. B. Mehraufwand) über eine eigene neue Freigabeanfrage. Damit entfällt die Zuordnung von Zeilen zu bereits bearbeiteten Positionen. | `PUT /approvals/:id` → 409 `approval_in_execution` | `review-freigaben.test.ts` F06 (2 Tests), angepasster Test "laufende Arbeit sperrt die Überarbeitung" |
+| R09c / Frage 5 | Datenschutz vor Komfort: Bei gesperrtem Konto antwortet die Anmeldung wie bei falschen Daten (401). Die Sperre bleibt wirksam und wird protokolliert. | `apps/api/src/routes/auth.ts` | `review-rechte.test.ts` R09c, `anmeldung.test.ts` |
+| R14c | Nach geänderter Zuweisung werden die Echtzeit-Abonnements des Auftrags sofort neu geprüft; die regelmäßige Sitzungsprüfung prüft zusätzlich alle Abonnements. | `RealtimeHub.revalidateWorkOrder`, `routes/realtime.ts`, `PUT /work-orders/:id/assignees` | `review-rechte.test.ts` R14c |
+| Frage 2 | Mechaniker mit `documents.readInternal` sehen nur Dokumente aktiver, ihnen zugewiesener Aufträge (bzw. deren Fahrzeuge), nie Angebote oder Rechnungen. | Domain `canViewDocument` (`actorAssignedViaActiveWorkOrder`), `services/access.ts` `activeAssignmentScope`, `routes/documents.ts` | Domain `objectRules.test.ts`, API "Mechaniker: Zugriff nur über aktive Zuweisungen" |
+| Frage 3 | Zugriff von Mitarbeitern ohne Leserecht auf Fahrzeugakte, Servicehistorie und Dokumente über eine Zuweisung besteht nur bei laufenden Aufträgen (Status draft, open, in_progress, work_completed). Den Auftrag selbst sehen zugewiesene Mitarbeiter weiterhin. | `services/access.ts` | wie Frage 2 |
+| Frage 4 | Die Stornierung eines Auftrags zieht gesendete, noch offene Freigabeanfragen automatisch zurück (Audit mit Grund). Entwürfe bleiben unsichtbare Entwürfe. | `POST /work-orders/:id/transition` | `review-freigaben.test.ts` "Stornierung zieht offene Freigabeanfragen zurück" |
+
+Ergebnis nach dem Nachtrag (27.09.2026, Hauptcheckout): `pnpm typecheck` grün; `pnpm test`:
+design-tokens 8, contracts 9, app 82, domain 246, api 138 (22 Dateien), **0 erwartete
+Fehlschläge, 0 fehlgeschlagen**. Die Punkte aus 5.2 (nur Code-Inspektion) bleiben offen bzw.
+brauchen den SumUp-Testzugang. Das Codex-Review C-01 bis C-03 bleibt offen.

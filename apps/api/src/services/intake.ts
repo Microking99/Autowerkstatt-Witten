@@ -22,6 +22,8 @@ export function intakeContentHash(row: IntakeRow, items: readonly WorkItemRow[])
       quantity: i.quantity,
       unit: i.unit,
       unitPriceCents: i.unitPriceCents,
+      vatRateBp: i.vatRateBp,
+      kind: i.kind,
     })),
   });
 }

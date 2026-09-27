@@ -7,7 +7,7 @@
  * Nicht enthalten sind interne Hinweise (`notesInternal`) und spätere Zusatzarbeiten
  * (Positionen mit Herkunft `offer`/`additional`): Diese brauchen eine eigene Freigabe.
  */
-import type { WorkItemOrigin } from '@werkstatt/contracts';
+import type { WorkItemKind, WorkItemOrigin } from '@werkstatt/contracts';
 import { canonicalJson, normalizeId, normalizeOptionalText, normalizeText, sha256Hex } from '../common/hash';
 import { canonicalQuantity } from '../common/money';
 
@@ -31,19 +31,31 @@ export interface IntakeHashInput {
     quantity: number;
     unit: string;
     unitPriceCents?: number | null;
+    /** Umsatzsteuersatz in Basispunkten; bestimmt den Bruttobetrag und ist daher Teil des Hashs. */
+    vatRateBp?: number | null;
+    kind?: WorkItemKind | null;
   }[];
 }
 
 /** Normalisierter, hashbarer Inhalt der Annahme. */
 export interface CanonicalIntakeContent {
-  v: 1;
+  /** Format 2: Positionen enthalten Art und USt-Satz (Bruttobetrag). */
+  v: 2;
   workOrderId: string;
   odometerKm: number | null;
   fuelLevel: string | null;
   customerComplaint: string;
   damages: { area: string; description: string; photoId: string | null }[];
   agreedServices: string;
-  agreedItems: { title: string; description: string | null; quantity: string; unit: string; unitPriceCents: number | null }[];
+  agreedItems: {
+    kind: WorkItemKind | null;
+    title: string;
+    description: string | null;
+    quantity: string;
+    unit: string;
+    unitPriceCents: number | null;
+    vatRateBp: number | null;
+  }[];
   costLimitCents: number | null;
   notesCustomer: string | null;
 }
@@ -51,7 +63,7 @@ export interface CanonicalIntakeContent {
 /** Normalisiert den bestätigungsrelevanten Inhalt der Annahme. */
 export function canonicalIntakeContent(intake: IntakeHashInput): CanonicalIntakeContent {
   return {
-    v: 1,
+    v: 2,
     workOrderId: normalizeId(intake.workOrderId),
     odometerKm: intake.odometerKm,
     fuelLevel: normalizeOptionalText(intake.fuelLevel),
@@ -65,11 +77,13 @@ export function canonicalIntakeContent(intake: IntakeHashInput): CanonicalIntake
     agreedItems: (intake.items ?? [])
       .filter((i) => i.origin === 'intake')
       .map((i) => ({
+        kind: i.kind ?? null,
         title: normalizeText(i.title),
         description: normalizeOptionalText(i.description),
         quantity: canonicalQuantity(i.quantity),
         unit: normalizeText(i.unit),
         unitPriceCents: i.unitPriceCents ?? null,
+        vatRateBp: i.vatRateBp ?? null,
       })),
     costLimitCents: intake.costLimitCents ?? null,
     notesCustomer: normalizeOptionalText(intake.notesCustomer),

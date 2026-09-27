@@ -45,6 +45,9 @@ describe('Annahme-Hash', () => {
       { ...intake, costLimitCents: 60_000 },
       { ...intake, damages: [] },
       { ...intake, items: [{ origin: 'intake', title: 'Inspektion', quantity: 1, unit: 'Pauschale', unitPriceCents: 21_900 }] },
+      // USt-Satz und Art bestimmen den Bruttobetrag bzw. die Leistung (Review F05b)
+      { ...intake, items: [{ origin: 'intake', title: 'Inspektion', quantity: 1, unit: 'Pauschale', unitPriceCents: 19_900, vatRateBp: 700 }] },
+      { ...intake, items: [{ origin: 'intake', title: 'Inspektion', quantity: 1, unit: 'Pauschale', unitPriceCents: 19_900, kind: 'part' }] },
     ];
     for (const c of changed) expect(computeIntakeHash(c)).not.toBe(base);
   });
