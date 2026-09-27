@@ -47,8 +47,8 @@ export default function ChecklistScreen() {
   return (
     <Page maxWidth={760} testID="mechaniker-checkliste">
       <PageHeader
-        title="Abschlusscheckliste"
-        subtitle={points ? `${done} von ${points.length} erledigt` : undefined}
+        title="Checkliste"
+        subtitle={points ? `Zum Abschluss, ${done} von ${points.length} erledigt` : undefined}
         backHref={routes.mechanic.workOrder(orderId) as Href}
         backLabel="Auftrag"
         meta={<StatusChip status={{ label: 'Ergänzung, nur auf diesem Gerät', tone: 'warning', icon: 'HourglassMedium' }} />}
