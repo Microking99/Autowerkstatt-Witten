@@ -17,6 +17,7 @@ import { orderTabHref, WorkOrderFrame } from '../../../../src/screens/workshop/W
 import { ActionError, centsToInput, parseEuro, parseInteger, useCan } from '../../../../src/screens/workshop/shared';
 import { useTheme } from '../../../../src/theme';
 import {
+  LoadingState,
   AppText,
   Banner,
   Button,
@@ -82,6 +83,8 @@ function IntakeForm({ order }: { order: WorkOrderDetail }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Inhalts-Hash der zuletzt gespeicherten Fassung: bestätigt wird genau diese, nicht ein älterer Stand
+  const [savedHash, setSavedHash] = useState<string | null>(null);
   const [uploading, setUploading] = useState<string | null>(null);
 
   // Formular mit dem gespeicherten Stand füllen (auch nach dem Speichern)
@@ -89,7 +92,8 @@ function IntakeForm({ order }: { order: WorkOrderDetail }) {
     if (intakeQuery.status !== 'success' || dirty) return;
     const i = intake;
     setKm(i?.odometerKm !== null && i?.odometerKm !== undefined ? String(i.odometerKm) : '');
-    setKmUnknown(!!i && i.odometerKm === null);
+    // Ohne km-Stand gilt er erst nach einer Bestätigung als "unbekannt"; vorher ist er nur noch nicht erfasst
+    setKmUnknown(!!i && i.odometerKm === null && !!i.confirmedAt);
     setFuel(i?.fuelLevel ?? null);
     setComplaint(i?.customerComplaint ?? '');
     setDamages((i?.damages ?? []).map((d, n) => ({ key: `d${n}`, ...d })));
@@ -128,7 +132,7 @@ function IntakeForm({ order }: { order: WorkOrderDetail }) {
     if (!editable || !validate()) return;
     const kmValue = parseInteger(km);
     try {
-      await save.mutate({
+      const saved = await save.mutate({
         odometerKm: kmUnknown ? null : (kmValue as number),
         fuelLevel: fuel,
         customerComplaint: complaint.trim(),
@@ -138,6 +142,7 @@ function IntakeForm({ order }: { order: WorkOrderDetail }) {
         notesInternal: internal.trim() || null,
         notesCustomer: customerNote.trim() || null,
       });
+      setSavedHash(saved.contentHash ?? null);
       setDirty(false);
       toast.show(intake?.confirmedAt ? 'Annahme gespeichert. Die bisherige Bestätigung gilt nur, wenn sich der Inhalt nicht geändert hat.' : 'Annahme gespeichert.');
     } catch {
@@ -169,6 +174,10 @@ function IntakeForm({ order }: { order: WorkOrderDetail }) {
   }
 
   const confirmed = !!intake?.confirmedAt;
+  // Nach dem Speichern erst bestätigen, wenn die gespeicherte Fassung geladen ist
+  const syncing = savedHash !== null && intake?.contentHash !== savedHash;
+  // Erst nach dem Laden bearbeitbar, sonst überschreibt der geladene Stand die Eingaben nicht
+  if (intakeQuery.status === 'loading') return <LoadingState variant="detail" label="Annahme wird geladen" />;
   return (
     <>
       <ActionError error={save.error} />
@@ -259,7 +268,7 @@ function IntakeForm({ order }: { order: WorkOrderDetail }) {
               )}
               {intake && !confirmed && editable ? (
                 <>
-                  <Button label="Vor Ort bestätigen lassen" icon="Signature" onPress={() => setConfirmOpen(true)} disabled={dirty || offline} fullWidth testID="annahme-vor-ort" />
+                  <Button label="Vor Ort bestätigen lassen" icon="Signature" onPress={() => setConfirmOpen(true)} disabled={dirty || offline || syncing} loading={syncing} fullWidth testID="annahme-vor-ort" />
                   <AppText variant="small" tone="subtle">
                     {dirty ? 'Erst speichern, dann bestätigen lassen.' : offline ? 'Bestätigung erst wieder mit Verbindung.' : 'Oder der Kunde bestätigt in der App unter Auftrag, Annahme.'}
                   </AppText>

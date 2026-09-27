@@ -11,7 +11,7 @@ import { StyleSheet, View } from 'react-native';
 import { useApiMutation, useApiQuery } from '../../../../src/data/hooks';
 import { useIsOffline } from '../../../../src/data/network';
 import { keepPlates, formatDate, formatKm, formatVin } from '../../../../src/lib/format';
-import { dueStateLabels, dueSummary, estimateLabel } from '../../../../src/screens/customer/helpers';
+import { dueStateLabels, dueSummary, estimateLabel, isKmEstimate } from '../../../../src/screens/customer/helpers';
 import { QueryView } from '../../../../src/screens/common';
 import {
   AppText,
@@ -85,7 +85,7 @@ export default function VehicleScreen() {
                       <Card key={d.lastServiceEntryId} tone={d.state === 'overdue' ? 'danger' : d.state === 'due_soon' ? 'attention' : 'default'}>
                         <Row wrap>
                           <StatusChip status={dueStateLabels[d.state]} />
-                          {d.estimatedCurrentKm !== null ? <StatusChip status={estimateLabel} /> : null}
+                          {isKmEstimate(d) ? <StatusChip status={estimateLabel} /> : null}
                         </Row>
                         <AppText variant="heading">{d.title}</AppText>
                         <AppText numeric>{dueSummary(d)}</AppText>

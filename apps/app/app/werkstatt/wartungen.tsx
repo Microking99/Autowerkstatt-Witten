@@ -8,7 +8,7 @@ import { StyleSheet, View } from 'react-native';
 import { useApiQuery } from '../../src/data/hooks';
 import { keepPlates } from '../../src/lib/format';
 import { QueryView } from '../../src/screens/common';
-import { dueStateLabels, dueSummary, estimateLabel } from '../../src/screens/customer/helpers';
+import { dueStateLabels, dueSummary, estimateLabel, isKmEstimate } from '../../src/screens/customer/helpers';
 import { useTheme } from '../../src/theme';
 import { AppText, Button, EmptyState, FilterChips, Page, PageHeader, Row, StatusChip } from '../../src/ui';
 
@@ -37,7 +37,7 @@ export default function MaintenanceDueScreen() {
                     <AppText variant="bodyStrong">{v ? `${keepPlates(v.licensePlate)}, ${v.make} ${v.model}` : 'Fahrzeug'}</AppText>
                     <Row wrap gap={6}>
                       <StatusChip status={dueStateLabels[d.state]} />
-                      {d.basis === 'km_estimated' ? <StatusChip status={estimateLabel} /> : null}
+                      {isKmEstimate(d) ? <StatusChip status={estimateLabel} /> : null}
                     </Row>
                   </Row>
                   <AppText>

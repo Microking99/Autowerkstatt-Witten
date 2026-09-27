@@ -12,7 +12,7 @@ import { useApi } from '../../../src/data/ApiProvider';
 import { useApiMutation, useApiQuery } from '../../../src/data/hooks';
 import { formatDate, formatDateTime, formatKm, keepPlates } from '../../../src/lib/format';
 import { QueryView, openDownload } from '../../../src/screens/common';
-import { dueStateLabels, dueSummary, estimateLabel } from '../../../src/screens/customer/helpers';
+import { dueStateLabels, dueSummary, estimateLabel, isKmEstimate } from '../../../src/screens/customer/helpers';
 import { odometerSourceLabel } from '../../../src/screens/customer/labels';
 import { ActionError, InlineLink, parseInteger, useCan } from '../../../src/screens/workshop/shared';
 import { VehicleForm } from '../../../src/screens/workshop/VehicleForm';
@@ -141,7 +141,7 @@ function Overview({ vehicle: v }: { vehicle: VehicleDetail }) {
                   <ListRow key={`${d.lastServiceEntryId}-${i}`} first={i === 0} title={d.title} subtitle={dueSummary(d)} meta={d.explanation}>
                     <Row wrap gap={6}>
                       <StatusChip status={dueStateLabels[d.state]} />
-                      {d.basis === 'km_estimated' ? <StatusChip status={estimateLabel} /> : null}
+                      {isKmEstimate(d) ? <StatusChip status={estimateLabel} /> : null}
                     </Row>
                   </ListRow>
                 ))}

@@ -8,6 +8,7 @@ import { StatusChip } from '../../ui';
 
 export const unsyncedLabel: StatusLabel = { label: 'Nicht synchronisiert', tone: 'warning', icon: 'CloudSlash' };
 export const conflictLabel: StatusLabel = { label: 'Konflikt, bitte prüfen', tone: 'danger', icon: 'WarningCircle' };
+export const sendingLabel: StatusLabel = { label: 'Wird übertragen', tone: 'info', icon: 'CloudArrowUp' };
 
 export const queueKindLabels: Record<QueueOpKind, string> = {
   photo: 'Foto',
@@ -38,5 +39,7 @@ export function expectedExecution(item: WorkItem, entries: readonly QueueEntry[]
 export function PendingChip({ entries, testID }: { entries: readonly QueueEntry[]; testID?: string }) {
   if (entries.length === 0) return null;
   const conflict = entries.some((e) => e.state === 'conflict');
+  // Gerade in Übertragung (mit Verbindung): kein Warnhinweis, nur der Zwischenstand
+  if (!conflict && entries.every((e) => e.state === 'sending')) return <StatusChip status={sendingLabel} testID="wird-uebertragen" />;
   return <StatusChip status={conflict ? conflictLabel : { ...unsyncedLabel, label: entries.length > 1 ? `Nicht synchronisiert (${entries.length})` : unsyncedLabel.label }} testID={testID ?? 'nicht-synchronisiert'} />;
 }

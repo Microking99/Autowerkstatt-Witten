@@ -8,10 +8,22 @@ import { expect, type Locator, type Page } from '@playwright/test';
 const id = (group: number, n: number) => `${group.toString(16).padStart(8, '0')}-0000-4000-8000-${n.toString().padStart(12, '0')}`;
 
 export const IDS = {
-  vehicles: { golf: id(3, 1), octavia: id(3, 2), corsa: id(3, 6) },
-  workOrders: { octaviaInspection: id(10, 1), octaviaTimingBelt: id(10, 2), golfAc: id(10, 4), rohde2025: id(10, 8) },
+  customers: { miriam: id(2, 1), brinkhoff: id(2, 2), guenter: id(2, 3), horst: id(2, 4) },
+  vehicles: { golf: id(3, 1), octavia: id(3, 2), sprinter: id(3, 4), yaris: id(3, 5), corsa: id(3, 6) },
+  workOrders: {
+    octaviaInspection: id(10, 1),
+    octaviaTimingBelt: id(10, 2),
+    golfAc: id(10, 4),
+    rohde2025: id(10, 8),
+    transit: id(10, 10),
+    sprinter: id(10, 11),
+    yaris: id(10, 13),
+    golfService: id(10, 14),
+    corsaAc: id(10, 15),
+  },
+  resources: { lift1: id(7, 1), lift2: id(7, 2) },
   approvals: { timingBeltOffer: id(16, 1), brakes: id(16, 2), wipers: id(16, 3) },
-  appointments: { golfCheck: id(8, 1), octaviaTimingBelt: id(8, 2) },
+  appointments: { golfCheck: id(8, 1), octaviaTimingBelt: id(8, 2), sprinterToday: id(8, 6), golfTpmsToday: id(8, 10) },
   invoices: { golfAc: id(22, 3), golfWheels: id(22, 4), rohde2025: id(22, 6), transit: id(22, 9) },
 };
 
@@ -34,10 +46,18 @@ export function visibleText(page: Page, text: string | RegExp): Locator {
   return page.getByText(text).filter({ visible: true }).first();
 }
 
-export async function loginAs(page: Page, account: 'customer' | 'previousOwner' | 'owner' | 'service' | 'mechanic', next?: string) {
+export type DemoAccountKey = 'customer' | 'previousOwner' | 'owner' | 'service' | 'service2' | 'mechanic';
+
+export async function loginAs(page: Page, account: DemoAccountKey, next?: string) {
   await page.goto(next ? `/anmelden?weiter=${encodeURIComponent(next)}` : '/anmelden');
   await byTestId(page, `demo-zugang-${account}`).click();
   await expect(byTestId(page, 'anmeldung')).toBeHidden({ timeout: 15_000 });
+}
+
+/** Rollenwechsel im selben Browser: Beispieldaten (localStorage) bleiben erhalten. */
+export async function switchTo(page: Page, account: DemoAccountKey, next?: string) {
+  await logout(page);
+  await loginAs(page, account, next);
 }
 
 /** Abmelden ohne Oberfläche (Sitzung im sessionStorage des Tabs entfernen). */
