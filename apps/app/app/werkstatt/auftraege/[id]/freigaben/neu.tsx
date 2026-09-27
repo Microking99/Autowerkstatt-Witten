@@ -11,7 +11,7 @@ import { useApiMutation, useApiQuery } from '../../../../../src/data/hooks';
 import { useIsOffline } from '../../../../../src/data/network';
 import { formatMoney } from '../../../../../src/lib/format';
 import { approvalTotals } from '../../../../../src/screens/approvals/ApprovalContent';
-import { ApprovalEditor, editorFromDraft, emptyLine, toDraft, type EditorState } from '../../../../../src/screens/workshop/ApprovalEditor';
+import { ApprovalEditor, editorFromDraft, emptyLine, previewLines, toDraft, type EditorState } from '../../../../../src/screens/workshop/ApprovalEditor';
 import { WorkOrderFrame } from '../../../../../src/screens/workshop/WorkOrderFrame';
 import { ActionError, useCan } from '../../../../../src/screens/workshop/shared';
 import { useTheme } from '../../../../../src/theme';
@@ -94,7 +94,9 @@ function NewApproval({ order, findingId }: { order: WorkOrderDetail; findingId: 
   }, can('approvals.request'));
 
   if (!can('approvals.request')) return <Banner tone="neutral" message="Für Freigabeanfragen fehlt Ihnen das Recht." />;
-  const totals = approvalTotals(toDraft(state).draft?.lines ?? []);
+  // Gleiche Summe wie im Editor, auch solange andere Felder noch fehlen
+  const previewed = previewLines(state);
+  const totals = previewed.length > 0 ? approvalTotals(previewed) : null;
   return (
     <>
       {findingId ? <Banner tone="info" message="Vorbelegt aus der Feststellung des Mechanikers. Positionen und Preise ergänzen; die Feststellung gilt danach als übernommen." /> : null}

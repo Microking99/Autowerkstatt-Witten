@@ -86,7 +86,7 @@ export function toDraft(s: EditorState): { draft: ApprovalDraftInput | null; err
 }
 
 /** Vorschau-Inhalt auch bei unvollständigen Zeilen (nur gültige Zeilen). */
-function previewLines(s: EditorState): ApprovalLine[] {
+export function previewLines(s: EditorState): ApprovalLine[] {
   return s.lines
     .map((l) => ({ l, q: parseQuantity(l.quantity), c: parseEuro(l.price) }))
     .filter(({ l, q, c }) => l.title.trim() && q > 0 && c !== null && !Number.isNaN(c))

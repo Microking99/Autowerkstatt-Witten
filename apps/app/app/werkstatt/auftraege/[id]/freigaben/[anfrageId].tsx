@@ -15,7 +15,7 @@ import { useIsOffline } from '../../../../../src/data/network';
 import { formatDateTime, formatMoney } from '../../../../../src/lib/format';
 import { ApprovalLinesTable, approvalTotals } from '../../../../../src/screens/approvals/ApprovalContent';
 import { QueryView } from '../../../../../src/screens/common';
-import { ApprovalEditor, editorFromDraft, toDraft, type EditorState } from '../../../../../src/screens/workshop/ApprovalEditor';
+import { ApprovalEditor, editorFromDraft, previewLines, toDraft, type EditorState } from '../../../../../src/screens/workshop/ApprovalEditor';
 import { WorkOrderFrame } from '../../../../../src/screens/workshop/WorkOrderFrame';
 import { ActionError, useCan } from '../../../../../src/screens/workshop/shared';
 import { useTheme } from '../../../../../src/theme';
@@ -95,7 +95,8 @@ function RequestView({ order, request }: { order: WorkOrderDetail; request: Appr
   }, editing !== null);
 
   if (editing) {
-    const totals = approvalTotals(toDraft(editing).draft?.lines ?? []);
+    const previewed = previewLines(editing);
+    const totals = previewed.length > 0 ? approvalTotals(previewed) : null;
     return (
       <>
         {!isDraft ? (
