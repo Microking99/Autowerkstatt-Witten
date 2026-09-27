@@ -3,7 +3,7 @@ import { MechanicShell } from '../../src/navigation/shells';
 
 /**
  * Mechanikerbereich (Mechaniker; Admin/Service mit workItems.execute): 3 Reiter.
- * Die Ansichten außer "Heute" folgen mit Paket APP-2.
+ * Offline-Warteschlange für Feststellungen, Fotos, Zeiten und Notizen (src/offline).
  */
 export default function MechanicLayout() {
   return (

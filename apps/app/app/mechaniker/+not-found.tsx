@@ -1,7 +1,7 @@
 import { routes } from '@werkstatt/contracts';
-import { PlannedView } from '../../src/screens/PlannedView';
+import { AreaNotFound } from '../../src/screens/AreaNotFound';
 
-/** Noch nicht umgesetzte Mechanikeransichten (Paket APP-2), innerhalb der Navigation. */
-export default function MechanicPlanned() {
-  return <PlannedView home={routes.mechanic.home()} homeLabel="Zu Heute" />;
+/** Unbekannte Adresse im Mechanikerbereich (Navigation bleibt sichtbar). */
+export default function MechanicNotFound() {
+  return <AreaNotFound home={routes.mechanic.home()} homeLabel="Zu Heute" />;
 }

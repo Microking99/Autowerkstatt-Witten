@@ -3,6 +3,7 @@ export * from './DateTimeField';
 export * from './Feedback';
 export * from './Form';
 export * from './icons';
+export * from './keyboard';
 export * from './Layout';
 export * from './Media';
 export * from './Navigation';

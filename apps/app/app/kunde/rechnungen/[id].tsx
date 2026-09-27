@@ -162,7 +162,7 @@ export default function InvoiceScreen() {
                       onPress={async () => {
                         try {
                           const res = await openDownload(await api.downloadDocument(inv.documentId!));
-                          if (res === 'unsupported') toast.show('Das Öffnen von Dokumenten auf dem Gerät folgt in einer späteren Version.', 'info');
+                          if (res === 'unsupported') toast.show('Auf diesem Gerät gibt es keine App zum Öffnen der Datei. Bitte im Browser öffnen.', 'info');
                         } catch {
                           toast.show('Das Dokument konnte nicht geladen werden.', 'danger');
                         }

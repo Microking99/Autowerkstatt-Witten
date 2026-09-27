@@ -11,6 +11,7 @@ import { Button } from './Button';
 import { Icon, iconSize } from './icons';
 import { Sheet } from './Overlay';
 import { AppText, type AppTextProps } from './Text';
+import { useAuthImage } from './authImage';
 
 type PressState = PressableStateCallbackType & { hovered?: boolean; focused?: boolean };
 
@@ -22,9 +23,28 @@ export function MoneyText({ cents, variant = 'body', tone, strong, ...rest }: { 
   );
 }
 
-/** Foto oder neutraler Platzhalter ("Beispielfoto") im Demo-Modus. */
+/**
+ * Foto oder neutraler Platzhalter ("Beispielfoto") im Demo-Modus. Geschützte Quellen lädt
+ * useAuthImage mit Anmeldung (nativ per Header, im Browser als Blob-URL).
+ */
 export function PhotoView({ source, caption, height = 140, fit = 'cover' }: { source: ImageSourceSpec; caption?: string | null; height?: number; fit?: 'cover' | 'contain' }) {
   const t = useTheme();
+  const image = useAuthImage(source);
+  if (source.uri && image.status !== 'ready') {
+    return (
+      <View
+        accessible
+        accessibilityRole="image"
+        accessibilityLabel={image.status === 'error' ? 'Foto konnte nicht geladen werden' : `Foto wird geladen: ${caption ?? ''}`}
+        style={[styles.placeholder, { height, backgroundColor: t.colors.surfaceSunken, borderColor: t.colors.border, borderRadius: t.radius.control, borderStyle: 'solid' }]}
+      >
+        <Icon name={image.status === 'error' ? 'ImageBroken' : 'ImageSquare'} size={iconSize.xl} color={t.colors.textSubtle} />
+        <AppText variant="caption" tone="muted" align="center">
+          {image.status === 'error' ? 'Foto nicht verfügbar' : 'Wird geladen'}
+        </AppText>
+      </View>
+    );
+  }
   if (!source.uri) {
     return (
       <View
@@ -47,7 +67,7 @@ export function PhotoView({ source, caption, height = 140, fit = 'cover' }: { so
   }
   return (
     <Image
-      source={{ uri: source.uri, headers: source.headers }}
+      source={image.status === 'ready' ? { uri: image.uri, headers: image.headers } : { uri: source.uri }}
       contentFit={fit}
       accessibilityLabel={caption ?? 'Foto'}
       style={{ height, width: '100%', borderRadius: t.radius.control, backgroundColor: t.colors.surfaceSunken }}

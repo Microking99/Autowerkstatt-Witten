@@ -244,7 +244,7 @@ export default function WorkOrderScreen() {
                               try {
                                 const res = await api.downloadDocument(d.id);
                                 const r = await openDownload(res);
-                                if (r === 'unsupported') toast.show('Das Öffnen von Dokumenten auf dem Gerät folgt in einer späteren Version.', 'info');
+                                if (r === 'unsupported') toast.show('Auf diesem Gerät gibt es keine App zum Öffnen der Datei. Bitte im Browser öffnen.', 'info');
                               } catch {
                                 toast.show('Das Dokument konnte nicht geladen werden.', 'danger');
                               }
