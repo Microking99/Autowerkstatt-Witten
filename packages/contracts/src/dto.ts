@@ -190,6 +190,7 @@ export const AppointmentSchema = z.object({
   customerId: IdSchema,
   customerDisplayName: z.string(),
   vehicleId: IdSchema,
+  /** Marke, Modell und Kennzeichen, z. B. "Volkswagen Golf, EN-AB 123" */
   vehicleLabel: z.string(),
   workOrderId: IdSchema.nullable(),
   startsAt: IsoDateTimeSchema,
@@ -262,6 +263,7 @@ export const WorkOrderSummarySchema = z.object({
   customerId: IdSchema,
   customerDisplayName: z.string(),
   vehicleId: IdSchema,
+  /** Marke und Modell ohne Kennzeichen (Kennzeichen steht in `licensePlate`) */
   vehicleLabel: z.string(),
   licensePlate: z.string(),
   status: StatusTripleSchema,

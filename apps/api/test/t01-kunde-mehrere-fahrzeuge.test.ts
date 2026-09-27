@@ -82,7 +82,7 @@ describe('T-01 Kunde mit mehreren Fahrzeugen', () => {
 
     const orders = expectOk(await call(h, 'GET', '/work-orders', { token: session.token }), PageSchema(WorkOrderSummarySchema));
     expect(orders.items.map((o) => o.id)).toEqual([wo.id]);
-    expect(orders.items[0]!.vehicleLabel).toContain('EN-CD 45');
+    expect(orders.items[0]!.licensePlate).toBe('EN-CD 45');
   });
 
   it('Auftrag nur mit einem Fahrzeug des gewählten Kunden', async () => {

@@ -21,6 +21,7 @@ apps/app/android/
 
 # Test-Berichte (Playwright, Vitest)
 test-results/
+test-results-api/
 playwright-report/
 blob-report/
 

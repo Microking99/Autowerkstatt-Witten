@@ -7,8 +7,14 @@ import { customerDisplayName } from './customers';
 
 export type VehicleRow = typeof vehicles.$inferSelect;
 
+/** Marke und Modell mit Kennzeichen (für DTOs ohne eigenes Kennzeichenfeld, z. B. Termine) */
 export function vehicleLabel(v: Pick<VehicleRow, 'make' | 'model' | 'licensePlate'>): string {
-  return `${v.make} ${v.model} (${v.licensePlate})`;
+  return `${v.make} ${v.model}, ${v.licensePlate}`;
+}
+
+/** Nur Marke und Modell (für DTOs mit eigenem Feld `licensePlate`, z. B. Aufträge) */
+export function vehicleModelLabel(v: Pick<VehicleRow, 'make' | 'model'>): string {
+  return `${v.make} ${v.model}`;
 }
 
 interface VehicleExtras {

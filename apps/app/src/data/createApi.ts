@@ -1,6 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
-import { API_URL, IS_DEMO, WEB_URL } from '../config';
+import { API_URL, CHECK_API_RESPONSES, IS_DEMO, WEB_URL } from '../config';
 import type { WerkstattApi } from './api';
 import { DemoApi, type DemoStorage } from './demo/DemoApi';
 import { HttpApi } from './http';
@@ -30,7 +30,7 @@ export function createApi(): WerkstattApi {
   }
   return new HttpApi({
     baseUrl: API_URL,
-    validateResponses: __DEV__,
+    validateResponses: __DEV__ || CHECK_API_RESPONSES,
     newId: () => Crypto.randomUUID(),
     // Nativ: geschützte Dateien mit Anmelde-Header in den Cache laden (expo-file-system)
     downloadFile: supportsNativeDownload ? nativeDownload : undefined,

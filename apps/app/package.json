@@ -11,9 +11,11 @@
     "demo": "cross-env EXPO_PUBLIC_DEMO=1 expo start --web",
     "export:web": "expo export --platform web",
     "export:demo": "cross-env EXPO_PUBLIC_DEMO=1 expo export --platform web --output-dir dist-demo",
+    "export:api-e2e": "cross-env EXPO_PUBLIC_API_URL=http://127.0.0.1:3100 EXPO_PUBLIC_CHECK_API=1 expo export --platform web --output-dir dist-api",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
+    "e2e:api": "playwright test -c playwright.api.config.ts",
     "screenshots": "cross-env SCREENSHOTS=1 playwright test --project=screenshots"
   },
   "dependencies": {

@@ -182,6 +182,8 @@ export class HttpApi implements WerkstattApi {
     if (opts.schema && this.validate && json !== undefined) {
       const result = opts.schema.safeParse(json);
       if (!result.success) {
+        // Nur bei eingeschalteter Prüfung (Entwicklung, Tests): Abweichung sichtbar protokollieren
+        console.error(`Vertragsabweichung ${method} ${path}`, JSON.stringify(result.error.issues.slice(0, 5)));
         throw new ApiError(500, ERROR_CODES.responseInvalid, `Antwort passt nicht zum Vertrag (${method} ${path}).`, result.error.issues);
       }
       return result.data as T;

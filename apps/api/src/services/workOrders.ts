@@ -30,7 +30,7 @@ import {
   workOrders,
 } from '../db/schema/index';
 import { customerDisplayName } from './customers';
-import { vehicleLabel } from './vehicles';
+import { vehicleModelLabel } from './vehicles';
 import { loadInvoiceBundles } from './invoices';
 import { intakeContentHash } from './intake';
 
@@ -179,7 +179,7 @@ export async function buildWorkOrderSummaries(db: DbOrTx, actor: Actor, rows: Wo
       customerId: wo.customerId,
       customerDisplayName: customer ? customerDisplayName(customer) : '',
       vehicleId: wo.vehicleId,
-      vehicleLabel: vehicle ? vehicleLabel(vehicle) : '',
+      vehicleLabel: vehicle ? vehicleModelLabel(vehicle) : '',
       licensePlate: vehicle?.licensePlate ?? '',
       status,
       plannedStart: wo.plannedStart ? wo.plannedStart.toISOString() : null,
