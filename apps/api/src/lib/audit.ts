@@ -44,6 +44,7 @@ export type AuditAction =
   | 'customer.archived'
   | 'customer_account.invited'
   | 'customer_account.disabled'
+  | 'customer_account.enabled'
   | 'vehicle.created'
   | 'vehicle.updated'
   | 'vehicle.odometer_recorded'

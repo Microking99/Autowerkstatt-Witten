@@ -56,6 +56,7 @@ export const endpoints = {
   archiveCustomer: e('POST', '/customers/:id/archive', 'Kunde archivieren'),
   inviteCustomer: e('POST', '/customers/:id/account/invite', 'Kunden zur App einladen'),
   disableCustomerAccount: e('POST', '/customers/:id/account/disable', 'Kundenzugang sperren'),
+  enableCustomerAccount: e('POST', '/customers/:id/account/enable', 'Gesperrten Kundenzugang wieder freischalten'),
 
   // Fahrzeuge
   listVehicles: e('GET', '/vehicles', 'Suche (?q, ?customerId) → Page<VehicleSummary>; Kunden: nur aktuelle eigene'),

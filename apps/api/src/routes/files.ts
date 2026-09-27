@@ -33,7 +33,14 @@ export async function loadAttachableFile(db: DbOrTx, actor: Actor, fileId: strin
 }
 
 export async function fileRoutes(app: App): Promise<void> {
-  app.post('/files', { schema: { response: { 201: FileRefSchema } } }, async (request, reply) => {
+  app.post(
+    '/files',
+    {
+      schema: { response: { 201: FileRefSchema } },
+      // Schutz vor Speicherfüllung: höchstens 120 Uploads je Konto und Stunde (Review 5.2)
+      config: { rateLimit: { max: 120, timeWindow: '1 hour', hook: 'preHandler' as const, keyGenerator: (req: { actor?: { userId: string } | null; ip: string }) => req.actor?.userId ?? req.ip } },
+    },
+    async (request, reply) => {
     const actor = requireActor(request);
     if (!request.isMultipart()) throw new HttpError(415, 'unsupported_media_type', 'Bitte als multipart/form-data hochladen.');
     const part = await request.file();
@@ -60,5 +67,6 @@ export async function fileRoutes(app: App): Promise<void> {
       })
       .returning();
     return reply.code(201).send(toFileRef(row!));
-  });
+    },
+  );
 }

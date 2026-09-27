@@ -220,4 +220,24 @@ export async function customerRoutes(app: App): Promise<void> {
     app.deps.realtime.disconnectUser(customer.userId);
     return toCustomerDetail(db, customer.row, actor);
   });
+
+  app.post('/customers/:id/account/enable', { schema: { params: IdParamsSchema, response: { 200: CustomerDetailSchema } } }, async (request) => {
+    const actor = requireActor(request);
+    ensure(hasPermission(actor, 'customerAccounts.manage'));
+    const { db } = app.deps;
+    const row = await db.transaction(async (tx) => {
+      const [customer] = await tx.select().from(customers).where(eq(customers.id, request.params.id));
+      ensureFound(customer);
+      const [link] = await tx.select().from(customerAccounts).where(eq(customerAccounts.customerId, customer!.id));
+      if (!link) throw conflict('no_account', 'Der Kunde hat keinen App-Zugang.');
+      const [user] = await tx.select().from(users).where(eq(users.id, link.userId)).for('update');
+      if (user!.status !== 'disabled') throw conflict('not_disabled', 'Der Zugang ist nicht gesperrt.');
+      // Ein nie aktiviertes Konto (ohne Passwort) bleibt eingeladen; sonst wieder aktiv
+      const status = user!.passwordHash ? 'active' : 'invited';
+      await tx.update(users).set({ status, failedLoginCount: 0, lockedUntil: null }).where(eq(users.id, link.userId));
+      await audit(tx, auditContextFrom(request), { action: 'customer_account.enabled', entityType: 'customer', entityId: customer!.id, data: { userId: link.userId, status } });
+      return customer!;
+    });
+    return toCustomerDetail(db, row, actor);
+  });
 }
