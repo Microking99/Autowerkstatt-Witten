@@ -35,7 +35,7 @@ läuft wie im Betrieb über Webhook und Statusabfrage.
 | `pnpm typecheck` | alle fünf Pakete ohne Fehler |
 | `pnpm test` | design-tokens 8, contracts 13, domain 247, app 99, api 142 Tests grün |
 | `pnpm --filter @werkstatt/app e2e` (Demo) | 104 bestanden, 2 übersprungen (Tastaturtests nur im Projekt "pc"); Lauf vom APP-2-Paket, nach dem Zusammenführen in CI grün |
-| `pnpm --filter @werkstatt/app e2e:api` (echte API) | 10 bestanden |
+| `pnpm --filter @werkstatt/app e2e:api` (echte API) | 15 bestanden |
 | GitHub Actions `CI` | Jobs "Typen und Tests", "App (Web-Export und Browser-Tests)" und "App gegen echte API" |
 
 Nicht ausgeführt: iOS-, Android- und Windows-Builds, Gerätetests, Tests gegen die
@@ -79,7 +79,7 @@ Anforderungen: R-ROLLE-2, R-ROLLE-3, R-ADM-1, R-MECH-3.
 | Domain-Unit | `packages/domain/src/permissions/catalog.test.ts` (21) | Rollenstandards, gewährte und entzogene Rechte, nicht zuweisbare Rechte | grün (27.09.2026) |
 | API-Integration | `apps/api/test/t03-mitarbeiterrechte.test.ts` (6), `review-rechte.test.ts`, `kundenzugang.test.ts` (1) | Mechaniker nur zugewiesene Aufträge, keine Preise, keine Rechnungen; Service ohne `payments.refund` 403; nicht zuweisbare Rechte und Inhaber-Schutz; Deaktivierung beendet Sitzungen; gesperrter Kundenzugang nur mit Recht wieder frei | grün (27.09.2026) |
 | App-E2E Demo | `apps/app/e2e/zugang.spec.ts`, `w-werkstatt.spec.ts` | Fremder Rollenbereich leitet um; ohne Recht keine manuelle Zahlung und kein Stellen | grün (27.09.2026) |
-| App-E2E API | `apps/app/e2e-api/10-ablaeufe.spec.ts` Schritte 4 und 6 | Mechaniker sieht keine Preise; ohne Zuweisung kein Zugriff auf den Auftrag | grün (27.09.2026) |
+| App-E2E API | `apps/app/e2e-api/10-ablaeufe.spec.ts` Schritte 4 und 6, `20-werkstatt.spec.ts` Schritte 4 und 5 | Mechaniker sieht keine Preise; ohne Zuweisung kein Zugriff; Service ohne Recht erfasst keine Zahlung; interne Notiz für Kundin unsichtbar | grün (27.09.2026) |
 | Gerätetest | | Mechanikeransicht auf Telefon | blockiert: kein Build, keine Geräte, keine Konten |
 
 ### T-04 Freigabe und Ablehnung von Zusatzarbeiten
@@ -207,3 +207,4 @@ Anforderungen: R-PLAT-1 bis R-PLAT-4.
 | `packages/domain/src/appointments/appointments.test.ts`, `workOrders/*.test.ts`, `intake/intake.test.ts` | Termine und Konflikte, Arbeitsstatus, Positionen, Zeiterfassung, Annahme-Hash |
 | `apps/app/e2e/f-termin.spec.ts`, `g-rueckfrage.spec.ts`, `w-tastatur.spec.ts` | Klickwege F und G, Tastaturbedienung am PC |
 | `apps/app/e2e-api/00-rundgang.spec.ts` | Jede Ansicht je Rolle gegen die echte API; Antworten mit den zod-Schemas geprüft |
+| `apps/app/e2e-api/20-werkstatt.spec.ts` | Schreibende Werkstattabläufe gegen die echte API: Auftrag mit neuem Kunden und Fahrzeug, Annahme, Freigabeanfrage, Rechnung, manuelle Zahlung nur mit Recht, Chat und interne Notiz |
