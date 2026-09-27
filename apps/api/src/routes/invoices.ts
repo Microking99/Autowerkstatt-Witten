@@ -16,6 +16,7 @@ import {
   paymentStatusLabels,
   routes,
   type Invoice,
+  API_ERROR_CODES,
 } from '@werkstatt/contracts';
 import {
   addDays,
@@ -119,17 +120,17 @@ export async function invoiceRoutes(app: App): Promise<void> {
     const body = request.body;
     const id = await db.transaction(async (tx) => {
       const [customer] = await tx.select().from(customers).where(eq(customers.id, body.customerId));
-      if (!customer) throw unprocessable('invalid_customer', 'Kunde nicht gefunden.');
+      if (!customer) throw unprocessable(API_ERROR_CODES.invalidCustomer, 'Kunde nicht gefunden.');
       let vehicleId: string | null = null;
       if (body.workOrderId) {
         const [wo] = await tx.select().from(workOrders).where(eq(workOrders.id, body.workOrderId));
-        if (!wo || wo.customerId !== body.customerId) throw unprocessable('work_order_mismatch', 'Auftrag und Kunde passen nicht zusammen.');
+        if (!wo || wo.customerId !== body.customerId) throw unprocessable(API_ERROR_CODES.workOrderMismatch, 'Auftrag und Kunde passen nicht zusammen.');
         vehicleId = wo.vehicleId;
       }
       let documentId: string | null = null;
       if (body.documentFileId) {
         const file = await loadAttachableFile(tx, actor, body.documentFileId);
-        if (file.mimeType !== 'application/pdf') throw unprocessable('pdf_required', 'Die Rechnung muss als PDF hochgeladen werden.');
+        if (file.mimeType !== 'application/pdf') throw unprocessable(API_ERROR_CODES.pdfRequired, 'Die Rechnung muss als PDF hochgeladen werden.');
         const doc = await createDocument(tx, {
           kind: 'invoice',
           title: 'Rechnung',
@@ -181,9 +182,9 @@ export async function invoiceRoutes(app: App): Promise<void> {
     await db.transaction(async (tx) => {
       const [row] = await tx.select().from(invoices).where(eq(invoices.id, request.params.id)).for('update');
       ensureFound(row);
-      if (row!.status !== 'draft') throw conflict('not_draft', 'Nur Entwürfe können gestellt werden.');
+      if (row!.status !== 'draft') throw conflict(API_ERROR_CODES.notDraft, 'Nur Entwürfe können gestellt werden.');
       const [taken] = await tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.invoiceNumber, request.body.invoiceNumber));
-      if (taken) throw conflict('invoice_number_taken', 'Diese Rechnungsnummer ist bereits vergeben.');
+      if (taken) throw conflict(API_ERROR_CODES.invoiceNumberTaken, 'Diese Rechnungsnummer ist bereits vergeben.');
       const settings = await loadSettings(tx);
       const dueDate = row!.dueDate ?? addDays(berlinDateOf(now), settings.paymentTermDays);
       await tx.update(invoices).set({ status: 'issued', invoiceNumber: request.body.invoiceNumber, issuedAt: now, dueDate }).where(eq(invoices.id, row!.id));
@@ -226,7 +227,7 @@ export async function invoiceRoutes(app: App): Promise<void> {
     const toDeactivate = await db.transaction(async (tx) => {
       const [row] = await tx.select().from(invoices).where(eq(invoices.id, request.params.id)).for('update');
       ensureFound(row);
-      if (row!.status === 'cancelled') throw conflict('already_cancelled', 'Die Rechnung ist bereits storniert.');
+      if (row!.status === 'cancelled') throw conflict(API_ERROR_CODES.alreadyCancelled, 'Die Rechnung ist bereits storniert.');
       await tx.update(invoices).set({ status: 'cancelled', cancelledAt: now }).where(eq(invoices.id, row!.id));
       const open = await tx.select().from(checkouts).where(and(eq(checkouts.invoiceId, row!.id), inArray(checkouts.status, ['created', 'pending'])));
       if (open.length > 0) await tx.update(checkouts).set({ status: 'deactivated' }).where(inArray(checkouts.id, open.map((c) => c.id)));
@@ -253,7 +254,7 @@ export async function invoiceRoutes(app: App): Promise<void> {
     ensure(canStartCheckout(actor, invoiceAccess(row)));
     const ctx = await invoiceDtoContext(db, provider !== null, now);
     if (!provider || !ctx.onlinePaymentAvailable) {
-      throw conflict('online_payment_unavailable', 'Online-Zahlung ist derzeit nicht verfügbar. Bitte per Überweisung bezahlen.');
+      throw conflict(API_ERROR_CODES.onlinePaymentUnavailable, 'Online-Zahlung ist derzeit nicht verfügbar. Bitte per Überweisung bezahlen.');
     }
     const result = await db.transaction(async (tx) => {
       // Zeilensperre: ein Klick erzeugt höchstens einen neuen Zahlungsversuch
@@ -309,11 +310,11 @@ export async function invoiceRoutes(app: App): Promise<void> {
         });
       } catch (err) {
         if (err instanceof PaymentProviderError) {
-          throw new HttpError(502, 'payment_provider_unavailable', 'Der Zahlungsanbieter ist gerade nicht erreichbar. Bitte später erneut versuchen.');
+          throw new HttpError(502, API_ERROR_CODES.paymentProviderUnavailable, 'Der Zahlungsanbieter ist gerade nicht erreichbar. Bitte später erneut versuchen.');
         }
         throw err;
       }
-      if (!remote.hosted_checkout_url) throw new HttpError(502, 'payment_provider_unavailable', 'Der Zahlungsanbieter hat keine Zahlungsseite geliefert.');
+      if (!remote.hosted_checkout_url) throw new HttpError(502, API_ERROR_CODES.paymentProviderUnavailable, 'Der Zahlungsanbieter hat keine Zahlungsseite geliefert.');
       const [updated] = await tx
         .update(checkouts)
         .set({
@@ -435,7 +436,7 @@ export async function invoiceRoutes(app: App): Promise<void> {
       });
       if (!check.ok) {
         if (check.error.code === 'MISSING_PERMISSION') throw forbidden(check.error.message);
-        if (check.error.code === 'IDEMPOTENCY_KEY_REUSED') throw conflict('idempotency_key_reused', check.error.message);
+        if (check.error.code === 'IDEMPOTENCY_KEY_REUSED') throw conflict(API_ERROR_CODES.idempotencyKeyReused, check.error.message);
         throw unprocessable(check.error.code.toLowerCase(), check.error.message);
       }
       if (check.value.action === 'existing') return { invoiceId: invoice!.id, refundId: null as string | null, amountCents: 0, payment: payment!, invoice: invoice! };

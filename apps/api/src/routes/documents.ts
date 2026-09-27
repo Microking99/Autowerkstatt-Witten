@@ -4,7 +4,7 @@
  */
 import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
-import { API_PREFIX, CreateDocumentRequestSchema, DocumentSchema, IdSchema, type DocumentDto } from '@werkstatt/contracts';
+import { API_PREFIX, CreateDocumentRequestSchema, DocumentSchema, IdSchema, type DocumentDto, API_ERROR_CODES } from '@werkstatt/contracts';
 import { canViewDocument, hasPermission, type Actor } from '@werkstatt/domain';
 import type { DbOrTx } from '../db/index';
 import { customers, documentVersions, documents, files, vehicles, workOrders } from '../db/schema/index';
@@ -123,19 +123,19 @@ export async function documentRoutes(app: App): Promise<void> {
       let vehicleId = body.vehicleId ?? null;
       if (body.workOrderId) {
         const [wo] = await tx.select().from(workOrders).where(eq(workOrders.id, body.workOrderId));
-        if (!wo) throw unprocessable('invalid_work_order', 'Auftrag nicht gefunden.');
-        if (customerId && customerId !== wo.customerId) throw unprocessable('customer_mismatch', 'Kunde und Auftrag passen nicht zusammen.');
+        if (!wo) throw unprocessable(API_ERROR_CODES.invalidWorkOrder, 'Auftrag nicht gefunden.');
+        if (customerId && customerId !== wo.customerId) throw unprocessable(API_ERROR_CODES.customerMismatch, 'Kunde und Auftrag passen nicht zusammen.');
         // Dokumente eines Auftrags gehören dem Auftraggeber (bleibt nach Halterwechsel beim Kunden)
         customerId = wo.customerId;
         vehicleId = vehicleId ?? wo.vehicleId;
       }
       if (customerId) {
         const [c] = await tx.select({ id: customers.id }).from(customers).where(eq(customers.id, customerId));
-        if (!c) throw unprocessable('invalid_customer', 'Kunde nicht gefunden.');
+        if (!c) throw unprocessable(API_ERROR_CODES.invalidCustomer, 'Kunde nicht gefunden.');
       }
       if (vehicleId) {
         const [v] = await tx.select({ id: vehicles.id }).from(vehicles).where(eq(vehicles.id, vehicleId));
-        if (!v) throw unprocessable('invalid_vehicle', 'Fahrzeug nicht gefunden.');
+        if (!v) throw unprocessable(API_ERROR_CODES.invalidVehicle, 'Fahrzeug nicht gefunden.');
       }
       const created = await createDocument(tx, {
         kind: body.kind,
@@ -183,7 +183,7 @@ export async function documentRoutes(app: App): Promise<void> {
       const [current] = await tx.select().from(documents).where(and(eq(documents.id, request.params.id), isNull(documents.deletedAt))).for('update');
       ensureFound(current);
       if (publish && !current!.customerId) {
-        throw unprocessable('customer_required', 'Nur Dokumente mit Kundenbezug können veröffentlicht werden.');
+        throw unprocessable(API_ERROR_CODES.customerRequired, 'Nur Dokumente mit Kundenbezug können veröffentlicht werden.');
       }
       const [updated] = await tx
         .update(documents)

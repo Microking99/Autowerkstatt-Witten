@@ -4,7 +4,7 @@
  */
 import { and, asc, eq, inArray, ne } from 'drizzle-orm';
 import { z } from 'zod';
-import { InviteStaffRequestSchema, StaffUserSchema, UpdateStaffRequestSchema, type StaffUser } from '@werkstatt/contracts';
+import { InviteStaffRequestSchema, StaffUserSchema, UpdateStaffRequestSchema, type StaffUser, API_ERROR_CODES } from '@werkstatt/contracts';
 import {
   canDisableUser,
   effectivePermissions,
@@ -77,7 +77,7 @@ export async function userRoutes(app: App): Promise<void> {
     const { db, now: clock, config, mailer } = app.deps;
     const now = clock();
     const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, request.body.email));
-    if (existing) throw conflict('email_taken', 'Für diese E-Mail-Adresse gibt es bereits ein Konto.');
+    if (existing) throw conflict(API_ERROR_CODES.emailTaken, 'Für diese E-Mail-Adresse gibt es bereits ein Konto.');
     const result = await db.transaction(async (tx) => {
       const [user] = await tx
         .insert(users)
@@ -121,7 +121,7 @@ export async function userRoutes(app: App): Promise<void> {
           activeAdminCount: await countActiveAdmins(tx),
         });
         if (!change.ok) {
-          throw unprocessable('permission_change_rejected', change.issues.map((i) => i.message).join(' '), change.issues);
+          throw unprocessable(API_ERROR_CODES.permissionChangeRejected, change.issues.map((i) => i.message).join(' '), change.issues);
         }
         const ctx = auditContextFrom(request);
         if (body.displayName !== undefined && body.displayName !== target.displayName) {

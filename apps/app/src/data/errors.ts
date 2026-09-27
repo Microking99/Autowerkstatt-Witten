@@ -1,33 +1,22 @@
 /**
  * Einheitliche Fehler der Datenschicht (HttpApi und DemoApi).
  *
- * status 0 = keine Verbindung (code 'NETWORK'). Für Kunden liefern fremde und nicht
- * vorhandene Objekte gleichermaßen 404 (keine Existenzpreisgabe, docs/rollen-und-rechte.md).
+ * Codes: gemeinsame Liste für API und App in packages/contracts/src/errors.ts
+ * (`API_ERROR_CODES`, dazu die reinen Client-Codes `network` und `response_invalid`).
+ * status 0 = keine Verbindung. Für Kunden liefern fremde und nicht vorhandene Objekte
+ * gleichermaßen 404 (keine Existenzpreisgabe, docs/rollen-und-rechte.md).
  */
+import { API_ERROR_CODES, CLIENT_ERROR_CODES, isApprovalOutdatedCode } from '@werkstatt/contracts';
 
-/** Fehlercodes, die die Oberfläche gezielt behandelt. Die API sollte diese Codes verwenden. */
+/** Codes, die die Oberfläche gezielt behandelt (Werte aus @werkstatt/contracts). */
 export const ERROR_CODES = {
-  network: 'NETWORK',
-  unauthorized: 'UNAUTHORIZED',
-  forbidden: 'FORBIDDEN',
-  notFound: 'NOT_FOUND',
-  validation: 'VALIDATION',
-  conflict: 'CONFLICT',
-  invalidCredentials: 'INVALID_CREDENTIALS',
-  accountDisabled: 'ACCOUNT_DISABLED',
-  tokenInvalid: 'TOKEN_INVALID',
-  tokenExpired: 'TOKEN_EXPIRED',
-  tokenUsed: 'TOKEN_USED',
-  shareExpired: 'SHARE_EXPIRED',
-  shareRevoked: 'SHARE_REVOKED',
-  approvalVersionOutdated: 'APPROVAL_VERSION_OUTDATED',
-  approvalAlreadyDecided: 'APPROVAL_ALREADY_DECIDED',
-  invoiceNotPayable: 'INVOICE_NOT_PAYABLE',
-  server: 'SERVER',
-  responseInvalid: 'RESPONSE_INVALID',
+  ...API_ERROR_CODES,
+  ...CLIENT_ERROR_CODES,
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES] | (string & {});
+
+export { isApprovalOutdatedCode };
 
 export class ApiError extends Error {
   readonly status: number;
@@ -79,15 +68,21 @@ export class ApiError extends Error {
     return new ApiError(409, code, message, details);
   }
 
+  /** Fachliche Ablehnung (422) mit Code aus der gemeinsamen Liste. */
+  static unprocessable(code: ErrorCode, message: string, details?: unknown): ApiError {
+    return new ApiError(422, code, message, details);
+  }
+
+  /** Ungültige Eingabe (400, `validation_failed`). */
   static validation(message: string, details?: unknown): ApiError {
-    return new ApiError(422, ERROR_CODES.validation, message, details);
+    return new ApiError(400, ERROR_CODES.validationFailed, message, details);
   }
 }
 
 export function toApiError(error: unknown): ApiError {
   if (error instanceof ApiError) return error;
-  if (error instanceof Error) return new ApiError(500, ERROR_CODES.server, error.message);
-  return new ApiError(500, ERROR_CODES.server, 'Unbekannter Fehler');
+  if (error instanceof Error) return new ApiError(500, ERROR_CODES.internalError, error.message);
+  return new ApiError(500, ERROR_CODES.internalError, 'Unbekannter Fehler');
 }
 
 /** Verständlicher Text für Fehlerzustände (Kunden werden gesiezt). */
@@ -106,7 +101,7 @@ export function describeError(error: unknown): { title: string; message: string 
       message: 'Dieser Inhalt ist nicht vorhanden oder für Ihr Konto nicht freigegeben.',
     };
   }
-  if (e.isConflict || e.status === 422 || e.status === 410) return { title: 'Nicht möglich', message: e.message };
+  if (e.isConflict || e.status === 422 || e.status === 410 || e.status === 400) return { title: 'Nicht möglich', message: e.message };
   return {
     title: 'Etwas ist schiefgelaufen',
     message: 'Der Server hat einen Fehler gemeldet. Bitte versuchen Sie es in einigen Minuten erneut.',

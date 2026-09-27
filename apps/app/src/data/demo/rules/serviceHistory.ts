@@ -1,38 +1,25 @@
 /**
- * Servicehistorie (R-SERV-1 bis R-SERV-8, AGENTS.md Regel 5 und 8).
+ * Servicehistorie im Demo-Modus (R-SERV-1 bis R-SERV-8, AGENTS.md Regel 5 und 8).
  *
- * Serviceeinträge entstehen ausschließlich beim fachlichen Abschluss eines Auftrags
- * (Übergang work_completed → completed), und zwar genau einmal je erledigter
- * Wartungsposition. Nie aus Angebot, Freigabe, Rechnung oder Zahlung. Abgelehnte oder
- * nicht durchgeführte Positionen erscheinen nie. Korrekturen erzeugen eine neue Revision.
- *
- * Platzhalter für @werkstatt/domain; reine Funktionen.
+ * Wie in der API aus @werkstatt/domain: Serviceeinträge entstehen ausschließlich beim
+ * fachlichen Abschluss (`canTransitionWorkOrder` → `completed`, dann
+ * `deriveServiceEntries`), genau einmal je erledigter, autorisierter Wartungsposition; nie aus
+ * Angebot, Freigabe, Rechnung oder Zahlung. Korrekturen erzeugen eine neue Revision
+ * (`createCorrection`).
  */
-import { ApiError, ERROR_CODES } from '../../errors';
+import { apiCodeFromDomain, type Permission } from '@werkstatt/contracts';
+import { addMonths as domainAddMonths, allExecutableItemsFinished, berlinDateOf, canTransitionWorkOrder, createCorrection, deriveServiceEntries, type Actor } from '@werkstatt/domain';
+import { ApiError } from '../../errors';
 import type { DMaintenanceType, DServiceEntry, DWorkItem, DWorkOrder } from '../model';
-import { itemIsExecutable } from './access';
 
 export function addMonths(isoDate: string, months: number): string {
-  const [y, m, d] = isoDate.slice(0, 10).split('-').map(Number) as [number, number, number];
-  const target = new Date(Date.UTC(y, m - 1 + months, 1));
-  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
-  target.setUTCDate(Math.min(d, lastDay));
-  return target.toISOString().slice(0, 10);
+  return domainAddMonths(isoDate.slice(0, 10), months);
 }
 
 /** Alle ausführbaren Positionen sind erledigt oder als nicht durchgeführt markiert. */
 export function allWorkFinished(workOrderId: string, items: readonly DWorkItem[]): boolean {
   const own = items.filter((i) => i.workOrderId === workOrderId);
-  const open = own.filter(
-    (i) =>
-      (itemIsExecutable(i) && i.executionStatus !== 'done' && i.executionStatus !== 'not_done') ||
-      i.authorization === 'pending_approval',
-  );
-  return own.length > 0 && open.length === 0;
-}
-
-export function isServiceRelevant(item: DWorkItem): boolean {
-  return item.maintenanceTypeId !== null && item.executionStatus === 'done' && itemIsExecutable(item);
+  return own.length > 0 && allExecutableItemsFinished(own);
 }
 
 export interface CompletionArgs {
@@ -42,6 +29,7 @@ export interface CompletionArgs {
   maintenanceTypes: readonly DMaintenanceType[];
   workshopName: string;
   reviewerId: string;
+  permissions: ReadonlySet<Permission>;
   now: string;
   /** km-Stand aus der Abschlussprüfung, falls an der Position keiner erfasst ist */
   odometerKm: number | null;
@@ -49,68 +37,62 @@ export interface CompletionArgs {
 }
 
 /**
- * Fachlicher Abschluss: setzt den Auftrag auf "completed" und erzeugt die Serviceeinträge.
- * Ein erneuter Aufruf ist ein Konflikt und erzeugt keine weiteren Einträge.
+ * Fachlicher Abschluss: Auftrag → `completed` und Serviceeinträge erzeugen. Ein erneuter
+ * Aufruf (bereits abgeschlossen) erzeugt keine weiteren Einträge (wie die API: idempotent).
  */
 export function completeReview(args: CompletionArgs): { workOrder: DWorkOrder; entries: DServiceEntry[] } {
   const { workOrder } = args;
-  if (workOrder.status === 'completed' || workOrder.status === 'picked_up') {
-    throw ApiError.conflict(ERROR_CODES.conflict, 'Der Auftrag ist bereits fachlich abgeschlossen.');
+  const own = args.items.filter((i) => i.workOrderId === workOrder.id);
+  const already = workOrder.status === 'completed' || workOrder.status === 'picked_up';
+  if (!already) {
+    const check = canTransitionWorkOrder(workOrder.status, 'completed', { items: own, permissions: args.permissions });
+    if (!check.allowed) {
+      if (check.code === 'MISSING_PERMISSION') throw ApiError.forbidden(check.message);
+      throw ApiError.conflict(apiCodeFromDomain(check.code), check.message);
+    }
   }
-  if (workOrder.status !== 'work_completed' || !allWorkFinished(workOrder.id, args.items)) {
-    throw ApiError.conflict(ERROR_CODES.conflict, 'Es sind noch Arbeiten offen oder Freigaben ausstehend.');
-  }
-  const entries = createEntriesForCompletedItems(args);
+  const reviewedAt = already ? (workOrder.completionReviewedAt ?? args.now) : args.now;
+  const existingForItems = args.existingEntries.filter((e) => e.revisionOfId === null && e.workItemId).map((e) => e.workItemId!);
+  const { entries } = deriveServiceEntries({
+    workOrder: { id: workOrder.id, vehicleId: workOrder.vehicleId, status: 'completed' },
+    items: own,
+    maintenanceTypes: args.maintenanceTypes,
+    performedOn: berlinDateOf(reviewedAt),
+    odometerKm: args.odometerKm,
+    workshopName: args.workshopName,
+    existingEntriesForItems: existingForItems,
+    createdBy: args.reviewerId,
+    now: new Date(args.now),
+  });
+  const created: DServiceEntry[] = entries.map((e) => ({
+    id: args.newId(),
+    vehicleId: e.vehicleId,
+    workOrderId: e.workOrderId,
+    workItemId: e.workItemId,
+    maintenanceTypeId: e.maintenanceTypeId,
+    performedOn: e.performedOn,
+    odometerKm: e.odometerKm,
+    title: e.title,
+    details: e.details,
+    workshopName: e.workshopName,
+    intervalKm: e.intervalKm,
+    intervalMonths: e.intervalMonths,
+    nextDueDate: e.nextDueDate,
+    nextDueKm: e.nextDueKm,
+    status: 'valid',
+    revisionOfId: null,
+    revisionNo: 1,
+    correctionReason: null,
+    source: 'work_completion',
+    createdBy: args.reviewerId,
+    createdAt: args.now,
+  }));
   return {
-    workOrder: {
-      ...workOrder,
-      status: 'completed',
-      completionReviewedAt: args.now,
-      completionReviewedBy: args.reviewerId,
-      updatedAt: args.now,
-    },
-    entries,
+    workOrder: already
+      ? workOrder
+      : { ...workOrder, status: 'completed', completionReviewedAt: args.now, completionReviewedBy: args.reviewerId, updatedAt: args.now },
+    entries: created,
   };
-}
-
-/** Genau ein Ursprungseintrag je Position (Unique-Index work_item_id WHERE revision_of_id IS NULL). */
-export function createEntriesForCompletedItems(args: CompletionArgs): DServiceEntry[] {
-  const already = new Set(args.existingEntries.filter((e) => e.revisionOfId === null && e.workItemId).map((e) => e.workItemId));
-  const created: DServiceEntry[] = [];
-  for (const item of args.items) {
-    if (item.workOrderId !== args.workOrder.id || !isServiceRelevant(item) || already.has(item.id)) continue;
-    const type = args.maintenanceTypes.find((t) => t.id === item.maintenanceTypeId);
-    const performedOn = (item.doneAt ?? args.now).slice(0, 10);
-    const odometerKm = item.doneOdometerKm ?? args.odometerKm;
-    const intervalKm = item.intervalKm ?? type?.defaultIntervalKm ?? null;
-    const intervalMonths = item.intervalMonths ?? type?.defaultIntervalMonths ?? null;
-    created.push({
-      id: args.newId(),
-      vehicleId: args.workOrder.vehicleId,
-      workOrderId: args.workOrder.id,
-      workItemId: item.id,
-      maintenanceTypeId: item.maintenanceTypeId,
-      performedOn,
-      odometerKm,
-      title: type?.name ?? item.title,
-      details: item.resultNotes ?? item.description,
-      workshopName: args.workshopName,
-      intervalKm,
-      intervalMonths,
-      nextDueDate: intervalMonths ? addMonths(performedOn, intervalMonths) : null,
-      // Ohne km-Stand keine vorgetäuschte km-Fälligkeit (R-SERV-4)
-      nextDueKm: intervalKm && odometerKm !== null ? odometerKm + intervalKm : null,
-      status: 'valid',
-      revisionOfId: null,
-      revisionNo: 1,
-      correctionReason: null,
-      source: 'work_completion',
-      createdBy: args.reviewerId,
-      createdAt: args.now,
-    });
-    already.add(item.id);
-  }
-  return created;
 }
 
 export interface CorrectionInput {
@@ -124,36 +106,34 @@ export interface CorrectionInput {
   reason: string;
 }
 
-/** Korrektur als neue Revision; der bisherige Eintrag wird "superseded", nichts wird überschrieben. */
+/** Korrektur als neue Revision (Domain `createCorrection`); der bisherige Eintrag wird ersetzt. */
 export function correctEntry(
   entry: DServiceEntry,
   input: CorrectionInput,
-  args: { newId: string; userId: string; now: string },
+  args: { newId: string; actor: Actor; maintenanceTypeName: string | null; now: string },
 ): { previous: DServiceEntry; revision: DServiceEntry } {
-  if (entry.status !== 'valid') {
-    throw ApiError.conflict(ERROR_CODES.conflict, 'Nur der aktuelle Stand eines Eintrags kann korrigiert werden.');
+  const result = createCorrection({ ...entry, maintenanceTypeName: args.maintenanceTypeName }, input, args.actor, new Date(args.now));
+  if (!result.ok) {
+    if (result.error.code === 'MISSING_PERMISSION') throw ApiError.forbidden(result.error.message);
+    throw ApiError.unprocessable(apiCodeFromDomain(result.error.code), result.error.message);
   }
-  if (!input.reason.trim()) throw ApiError.validation('Eine Begründung ist Pflicht.');
-  const performedOn = input.performedOn ?? entry.performedOn;
-  const odometerKm = input.odometerKm !== undefined ? input.odometerKm : entry.odometerKm;
-  const intervalKm = input.intervalKm !== undefined ? input.intervalKm : entry.intervalKm;
-  const intervalMonths = input.intervalMonths !== undefined ? input.intervalMonths : entry.intervalMonths;
+  const e = result.value.newEntry;
   const revision: DServiceEntry = {
     ...entry,
     id: args.newId,
-    performedOn,
-    odometerKm,
-    title: input.title ?? entry.title,
-    details: input.details !== undefined ? input.details : entry.details,
-    intervalKm,
-    intervalMonths,
-    nextDueDate: intervalMonths ? addMonths(performedOn, intervalMonths) : null,
-    nextDueKm: intervalKm && odometerKm !== null ? odometerKm + intervalKm : null,
-    status: input.void ? 'voided' : 'valid',
+    performedOn: e.performedOn,
+    odometerKm: e.odometerKm,
+    title: e.title,
+    details: e.details,
+    intervalKm: e.intervalKm,
+    intervalMonths: e.intervalMonths,
+    nextDueDate: e.nextDueDate,
+    nextDueKm: e.nextDueKm,
+    status: e.status,
     revisionOfId: entry.id,
-    revisionNo: entry.revisionNo + 1,
-    correctionReason: input.reason.trim(),
-    createdBy: args.userId,
+    revisionNo: e.revisionNo,
+    correctionReason: e.correctionReason,
+    createdBy: args.actor.userId,
     createdAt: args.now,
   };
   return { previous: { ...entry, status: 'superseded' }, revision };
@@ -165,3 +145,4 @@ export function visibleEntries(entries: readonly DServiceEntry[], vehicleId: str
     .filter((e) => e.vehicleId === vehicleId && e.status === 'valid')
     .sort((a, b) => (a.performedOn < b.performedOn ? 1 : a.performedOn > b.performedOn ? -1 : 0));
 }
+

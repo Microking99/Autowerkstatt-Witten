@@ -11,6 +11,7 @@
  * "überfällig" beim Ausprobieren stimmen.
  */
 import type { ApprovalLine } from '@werkstatt/contracts';
+import { computeIntakeHash } from '@werkstatt/domain';
 import { buildVersion, lineTotals } from './rules/approvals';
 import { sha256Hex } from './rules/hash';
 import { hashShareToken } from './rules/publicAccess';
@@ -24,10 +25,13 @@ import {
   type DDocument,
   type DemoState,
   type DFile,
+  type DIntake,
   type DInvoice,
   type DMessage,
   type DOdometer,
+  type DPartDemand,
   type DServiceEntry,
+  type DWorkingHours,
   type DUser,
   type DVehicle,
   type DWorkItem,
@@ -46,6 +50,7 @@ export const IDS = {
     emre: seedId(1, 3),
     lukas: seedId(1, 4),
     jonas: seedId(1, 5),
+    nadine: seedId(1, 6),
     miriam: seedId(1, 10),
     guenter: seedId(1, 11),
     tobias: seedId(1, 12),
@@ -87,6 +92,8 @@ export const IDS = {
     sprinter: seedId(10, 11),
     sprinterDoor: seedId(10, 12),
     yaris: seedId(10, 13),
+    golfService: seedId(10, 14),
+    corsaAc: seedId(10, 15),
   },
   approvals: {
     timingBeltOffer: seedId(16, 1),
@@ -103,6 +110,7 @@ export const IDS = {
     transitPickup: seedId(8, 7),
     yarisToday: seedId(8, 8),
     yarisTires: seedId(8, 9),
+    golfTpmsToday: seedId(8, 10),
   },
   invoices: {
     golf2024: seedId(22, 1),
@@ -155,6 +163,7 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
     { id: IDS.users.service, email: DEMO_EMAILS.service, displayName: 'Petra Wiesmann', role: 'service', status: 'active', passwordHash: pw, permissionOverrides: [{ permission: 'payments.recordManual', granted: true }], lastLoginAt: at(0, 7, 15), createdAt: at(-880) },
     { id: IDS.users.emre, email: DEMO_EMAILS.mechanic, displayName: 'Emre Aydın', role: 'mechanic', status: 'active', passwordHash: pw, permissionOverrides: [{ permission: 'serviceHistory.read', granted: true }], lastLoginAt: at(0, 7, 5), createdAt: at(-700) },
     { id: IDS.users.lukas, email: DEMO_EMAILS.mechanic2, displayName: 'Lukas Brettschneider', role: 'mechanic', status: 'active', passwordHash: pw, permissionOverrides: [], lastLoginAt: at(0, 7, 2), createdAt: at(-400) },
+    { id: IDS.users.nadine, email: DEMO_EMAILS.service2, displayName: 'Nadine Kurz', role: 'service', status: 'active', passwordHash: pw, permissionOverrides: [{ permission: 'invoices.write', granted: false }], lastLoginAt: at(-2, 8, 5), createdAt: at(-90) },
     { id: IDS.users.jonas, email: DEMO_EMAILS.disabled, displayName: 'Jonas Feldhaus', role: 'mechanic', status: 'disabled', passwordHash: pw, permissionOverrides: [], lastLoginAt: at(-120), createdAt: at(-500) },
     { id: IDS.users.miriam, email: DEMO_EMAILS.customer, displayName: 'Miriam Kowalczyk', role: 'customer', status: 'active', passwordHash: pw, permissionOverrides: [], lastLoginAt: at(-1, 20, 10), createdAt: at(-720) },
     { id: IDS.users.guenter, email: DEMO_EMAILS.previousOwner, displayName: 'Günter Rohde', role: 'customer', status: 'active', passwordHash: pw, permissionOverrides: [], lastLoginAt: at(-30), createdAt: at(-950) },
@@ -249,13 +258,14 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
   const fDoor = file('schiebetuer-fuehrung.jpg', 'image/jpeg', 'Beispielfoto: Führungsschiene Schiebetür');
   const pdf = (name: string) => file(name, 'application/pdf', null, 96_000);
 
-  const P = { disc: seedId(15, 1), pad: seedId(15, 2), dash: seedId(15, 3), wiper: seedId(15, 4), door: seedId(15, 5) };
+  const P = { disc: seedId(15, 1), pad: seedId(15, 2), dash: seedId(15, 3), wiper: seedId(15, 4), door: seedId(15, 5), chatDisc: seedId(15, 6) };
   const photos = [
     { id: P.disc, workOrderId: W.octaviaInspection, fileId: fBrakeDisc, context: 'finding' as const, findingId: seedId(13, 1), visibility: 'customer' as const, caption: 'Bremsscheibe vorne links: deutlicher Rand, Oberfläche riefig', takenAt: at(-1, 11, 12) },
     { id: P.pad, workOrderId: W.octaviaInspection, fileId: fBrakePad, context: 'finding' as const, findingId: seedId(13, 1), visibility: 'customer' as const, caption: 'Bremsbelag vorne rechts: Restbelag unter 3 mm', takenAt: at(-1, 11, 14) },
     { id: P.dash, workOrderId: W.octaviaInspection, fileId: fDash, context: 'intake' as const, findingId: null, visibility: 'internal' as const, caption: 'Kilometerstand und Tankanzeige bei Annahme', takenAt: at(-2, 7, 41) },
     { id: P.wiper, workOrderId: W.golfAc, fileId: fWiper, context: 'approval' as const, findingId: null, visibility: 'customer' as const, caption: 'Wischerblatt hinten: Gummi rissig', takenAt: at(-31, 10) },
     { id: P.door, workOrderId: W.sprinterDoor, fileId: fDoor, context: 'work' as const, findingId: null, visibility: 'internal' as const, caption: 'Führungsschiene nach Austausch', takenAt: at(-21, 14) },
+    { id: P.chatDisc, workOrderId: W.octaviaInspection, fileId: fBrakeDisc, context: 'chat' as const, findingId: null, visibility: 'customer' as const, caption: null, takenAt: at(-1, 14, 22) },
   ];
 
   // -------------------------------------------------------------------------
@@ -331,6 +341,8 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
     wo({ id: W.transit, orderNumber: 'A-2026-0185', customerId: C.brinkhoff, vehicleId: V.transit, status: 'completed', title: 'Inspektion und Bremsflüssigkeit', createdAt: at(-3), plannedStart: at(-2, 7, 30), plannedEnd: at(-1, 16), completionReviewedAt: at(-1, 15, 30), completionReviewedBy: U.service, readyForPickupAt: at(-1, 15, 40), assigneeIds: [U.lukas], updatedAt: at(-1, 15, 40) }),
     wo({ id: W.sprinter, orderNumber: 'A-2026-0191', customerId: C.brinkhoff, vehicleId: V.sprinter, status: 'in_progress', title: 'Geräusch beim Anfahren prüfen', descriptionCustomer: 'Klackern beim Anfahren, vermutlich Kupplung oder Antriebswelle.', plannedStart: at(0, 7, 30), plannedEnd: at(0, 12), assigneeIds: [U.lukas], createdAt: at(-1, 16), updatedAt: at(0, 8) }),
     wo({ id: W.sprinterDoor, orderNumber: 'A-2026-0151', customerId: C.brinkhoff, vehicleId: V.sprinter, status: 'picked_up', title: 'Schiebetür schließt nicht', createdAt: at(-23), completionReviewedAt: at(-21, 16), completionReviewedBy: U.service, readyForPickupAt: at(-21, 16), pickedUpAt: at(-20, 8), assigneeIds: [U.emre], updatedAt: at(-20, 8) }),
+    wo({ id: W.golfService, orderNumber: 'A-2026-0193', customerId: C.miriam, vehicleId: V.golf, status: 'open', title: 'Service mit Ölwechsel', descriptionCustomer: 'Ölwechsel laut Anzeige fällig, Innenraumfilter erneuern.', notesInternal: 'Innenraumfilter mit Aktivkohle ist bestellt.', plannedStart: wd(6, 8), plannedEnd: wd(6, 16), assigneeIds: [U.emre], createdAt: at(-5, 10, 30), updatedAt: at(-5, 10, 30) }),
+    wo({ id: W.corsaAc, orderNumber: 'A-2026-0188', customerId: C.guenter, vehicleId: V.corsa, status: 'completed', title: 'Klimaanlage prüfen', descriptionCustomer: 'Klimaanlage kühlt nicht mehr richtig.', plannedStart: at(-2, 8), plannedEnd: at(-1, 15), completionReviewedAt: at(-1, 16), completionReviewedBy: U.service, readyForPickupAt: at(-1, 16, 10), assigneeIds: [U.lukas], createdAt: at(-3, 9), updatedAt: at(-1, 16, 10) }),
     wo({ id: W.yaris, orderNumber: 'A-2026-0192', customerId: C.horst, vehicleId: V.yaris, status: 'in_progress', title: 'Jahresinspektion Hybrid', descriptionCustomer: 'Inspektion mit Hybrid-Check. Kunde holt gegen 15 Uhr ab.', notesInternal: 'Kunde ohne App, Rückruf unter Festnetz.', plannedStart: at(0, 9), plannedEnd: at(0, 15), assigneeIds: [U.emre], createdAt: at(-7, 10), updatedAt: at(0, 9, 10) }),
   ];
 
@@ -364,6 +376,12 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
     item({ workOrderId: W.sprinter, position: 1, title: 'Fehlersuche Geräusch beim Anfahren', unitPriceCents: 7_800, quantity: 1, unit: 'Std.', assignedTo: U.lukas, executionStatus: 'in_progress', runningSince: at(0, 8), trackedMinutes: 0 }),
     item({ workOrderId: W.sprinterDoor, position: 1, title: 'Führungsschiene Schiebetür erneuern', unitPriceCents: 58_000, ...done(U.emre, at(-21, 14), 186_990) }),
     item({ workOrderId: W.sprinterDoor, position: 2, title: 'Arbeitszeit Schiebetür', unitPriceCents: 7_800, quantity: 5.5, unit: 'Std.', ...done(U.emre, at(-21, 15), 186_990) }),
+    // Golf Service (geplant, Teil noch nicht da)
+    item({ workOrderId: W.golfService, position: 1, title: 'Ölwechsel inkl. Ölfilter', kind: 'flat_rate', unitPriceCents: 8_450, maintenanceTypeId: M.oil, intervalKm: 15_000, intervalMonths: 12, assignedTo: U.emre }),
+    item({ workOrderId: W.golfService, position: 2, title: 'Innenraumfilter mit Aktivkohle erneuern', kind: 'part', unitPriceCents: 3_490, assignedTo: U.emre }),
+    // Corsa Klimaanlage (fachlich abgeschlossen, noch ohne Rechnung)
+    item({ workOrderId: W.corsaAc, position: 1, title: 'Klimaanlage Dichtheitsprüfung', unitPriceCents: 7_800, quantity: 1, unit: 'Std.', ...done(U.lukas, at(-1, 11), null, 'Anlage dicht, Druck in Ordnung.'), trackedMinutes: 55 }),
+    item({ workOrderId: W.corsaAc, position: 2, title: 'Kältemittel R1234yf ergänzen', kind: 'part', unitPriceCents: 4_500, ...done(U.lukas, at(-1, 12), null), trackedMinutes: 20 }),
     // Yaris heute
     item({ workOrderId: W.yaris, position: 1, title: 'Inspektion mit Hybrid-Check', unitPriceCents: 21_900, maintenanceTypeId: M.inspection, intervalKm: 15_000, intervalMonths: 12, assignedTo: U.emre, executionStatus: 'planned' }),
     item({ workOrderId: W.yaris, position: 2, title: 'Bremsflüssigkeit wechseln', kind: 'flat_rate', unitPriceCents: 6_900, maintenanceTypeId: M.brakeFluid, intervalMonths: 24, assignedTo: U.emre, executionStatus: 'planned' }),
@@ -486,11 +504,15 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
     workItems.push(item({ workOrderId: W.octaviaTimingBelt, position: pos++, title: line.title, kind: 'flat_rate', unitPriceCents: line.unitPriceCents, quantity: line.quantity, unit: line.unit, origin: 'offer', authorization: 'pending_approval', approvalRequestId: A.timingBeltOffer, maintenanceTypeId: line.maintenanceTypeId, intervalKm: line.maintenanceTypeId ? 180_000 : null, intervalMonths: line.maintenanceTypeId ? 120 : null, assignedTo: U.lukas }));
   }
 
-  const intakes = [
-    { id: seedId(12, 1), workOrderId: W.octaviaInspection, odometerKm: 91_480, fuelLevel: '1/2', customerComplaint: 'Inspektion fällig. Beim Bremsen leichtes Schleifgeräusch vorne.', damages: [{ area: 'Stoßfänger hinten links', description: 'Kratzer ca. 5 cm, vorhanden bei Annahme', photoId: null }], agreedServices: 'Inspektion nach Herstellervorgabe, Ölwechsel mit Filter', costLimitCents: 45_000, notesInternal: 'Schlüssel am Brett Platz 7.', notesCustomer: 'Bitte vor weiteren Arbeiten anrufen.', confirmedAt: at(-2, 7, 50), confirmationMethod: 'on_site_signature' as const, contentHash: sha256Hex('annahme:A-2026-0187') },
-    { id: seedId(12, 2), workOrderId: W.sprinter, odometerKm: 187_644, fuelLevel: '3/4', customerComplaint: 'Klackern beim Anfahren, vor allem im ersten Gang.', damages: [], agreedServices: 'Fehlersuche bis 2 Stunden', costLimitCents: 20_000, notesInternal: null, notesCustomer: null, confirmedAt: at(0, 7, 40), confirmationMethod: 'on_site_signature' as const, contentHash: sha256Hex('annahme:A-2026-0191') },
-    { id: seedId(12, 3), workOrderId: W.yaris, odometerKm: 58_120, fuelLevel: '1/4', customerComplaint: 'Jahresinspektion.', damages: [], agreedServices: 'Inspektion mit Hybrid-Check, Bremsflüssigkeit', costLimitCents: null, notesInternal: 'Kunde ohne App.', notesCustomer: null, confirmedAt: at(0, 9, 8), confirmationMethod: 'on_site_signature' as const, contentHash: sha256Hex('annahme:A-2026-0192') },
+  const intakes: DIntake[] = [
+    { id: seedId(12, 1), workOrderId: W.octaviaInspection, odometerKm: 91_480, fuelLevel: '1/2', customerComplaint: 'Inspektion fällig. Beim Bremsen leichtes Schleifgeräusch vorne.', damages: [{ area: 'Stoßfänger hinten links', description: 'Kratzer ca. 5 cm, vorhanden bei Annahme', photoId: null }], agreedServices: 'Inspektion nach Herstellervorgabe, Ölwechsel mit Filter', costLimitCents: 45_000, notesInternal: 'Schlüssel am Brett Platz 7.', notesCustomer: 'Bitte vor weiteren Arbeiten anrufen.', confirmedAt: at(-2, 7, 50), confirmationMethod: 'on_site_signature' as const, contentHash: '' },
+    { id: seedId(12, 2), workOrderId: W.sprinter, odometerKm: 187_644, fuelLevel: '3/4', customerComplaint: 'Klackern beim Anfahren, vor allem im ersten Gang.', damages: [], agreedServices: 'Fehlersuche bis 2 Stunden', costLimitCents: 20_000, notesInternal: null, notesCustomer: null, confirmedAt: at(0, 7, 40), confirmationMethod: 'on_site_signature' as const, contentHash: '' },
+    { id: seedId(12, 3), workOrderId: W.yaris, odometerKm: 58_120, fuelLevel: '1/4', customerComplaint: 'Jahresinspektion.', damages: [], agreedServices: 'Inspektion mit Hybrid-Check, Bremsflüssigkeit', costLimitCents: null, notesInternal: 'Kunde ohne App.', notesCustomer: null, confirmedAt: at(0, 9, 8), confirmationMethod: 'on_site_signature' as const, contentHash: '' },
   ];
+  // Inhalts-Hash der bestätigten Annahme wie in der API (Domain `computeIntakeHash`)
+  for (const intake of intakes) {
+    intake.contentHash = computeIntakeHash({ ...intake, items: workItems.filter((i) => i.workOrderId === intake.workOrderId) });
+  }
 
   const findings = [
     { id: seedId(13, 1), workOrderId: W.octaviaInspection, workItemId: null, description: 'Bremsbeläge vorne unter 3 mm, Bremsscheiben mit deutlichem Rand. Austausch empfohlen.', severity: 'urgent' as const, status: 'converted' as const, reportedBy: U.emre, dictated: false, photoIds: [P.disc, P.pad], createdAt: at(-1, 11, 15) },
@@ -625,18 +647,18 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
   // Chat (auftragsbezogen). Ein "Ja" im Chat ist keine Freigabe.
   // -------------------------------------------------------------------------
   let msgN = 0;
-  const msg = (workOrderId: string, authorUserId: string, body: string, createdAt: string, fileIds: string[] = []): DMessage => ({
+  const msg = (workOrderId: string, authorUserId: string, body: string, createdAt: string, photoIds: string[] = []): DMessage => ({
     id: seedId(21, ++msgN),
     workOrderId,
     authorUserId,
     body,
-    fileIds,
+    photoIds,
     clientMessageId: null,
     createdAt,
   });
   const messages: DMessage[] = [
     msg(W.octaviaInspection, U.service, 'Guten Morgen Frau Kowalczyk, Ihr Octavia ist bei uns angekommen. Wir melden uns, sobald die Inspektion durch ist.', at(-2, 8, 12)),
-    msg(W.octaviaInspection, U.service, 'Wir haben an den Bremsen vorne etwas gefunden. Das Foto zeigt die Bremsscheibe vorne links. Die Freigabeanfrage mit allen Kosten finden Sie im Auftrag.', at(-1, 14, 22), [fBrakeDisc]),
+    msg(W.octaviaInspection, U.service, 'Wir haben an den Bremsen vorne etwas gefunden. Das Foto zeigt die Bremsscheibe vorne links. Die Freigabeanfrage mit allen Kosten finden Sie im Auftrag.', at(-1, 14, 22), [P.chatDisc]),
     msg(W.octaviaInspection, U.miriam, 'Ja, machen Sie das bitte.', at(-1, 17, 5)),
     msg(W.octaviaInspection, U.service, 'Danke, Frau Kowalczyk. Bitte bestätigen Sie die Zusatzarbeit noch über „Freigeben“ im Auftrag. Eine Zusage im Chat können wir nicht als Freigabe werten.', at(-1, 17, 31)),
     msg(W.octaviaTimingBelt, U.service, 'Wir haben das Angebot um die Wasserpumpe ergänzt (Version 2). Die Begründung steht im Angebot.', at(-3, 11, 25)),
@@ -681,11 +703,13 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
   const appointments: DAppointment[] = [
     appt({ id: AP.golfCheck, kind: 'other', status: 'requested', customerId: C.miriam, vehicleId: V.golf, startsAt: wd(14, 8), endsAt: wd(14, 10), requestedBy: 'customer', customerNote: 'Ich möchte den Golf verkaufen. Bitte einmal durchsehen, ob etwas zu machen ist.', createdAt: at(-1, 20, 15) }),
     appt({ id: AP.octaviaTimingBelt, kind: 'repair', status: 'proposed', customerId: C.miriam, vehicleId: V.octavia, workOrderId: W.octaviaTimingBelt, startsAt: wd(7, 8), endsAt: wd(7, 17), requestedBy: 'customer', customerNote: 'Am liebsten an einem Montag.', createdAt: at(-5, 19), proposals: [{ id: seedId(9, 1), startsAt: wd(9, 7, 30), endsAt: wd(9, 16), status: 'open', createdAt: at(-2, 9, 10), respondedAt: null }] }),
-    appt({ id: AP.golfService, kind: 'service', status: 'confirmed', customerId: C.miriam, vehicleId: V.golf, startsAt: wd(6, 8), endsAt: wd(6, 16), resourceId: IDS.resources.lift1, assigneeIds: [U.emre], requestedBy: 'customer', customerNote: 'Ölwechsel laut Anzeige bald fällig.', confirmedAt: at(-5, 10), createdAt: at(-6, 18) }),
+    appt({ id: AP.golfService, kind: 'service', status: 'confirmed', customerId: C.miriam, vehicleId: V.golf, workOrderId: W.golfService, startsAt: wd(6, 8), endsAt: wd(6, 16), resourceId: IDS.resources.lift1, assigneeIds: [U.emre], requestedBy: 'customer', customerNote: 'Ölwechsel laut Anzeige bald fällig.', confirmedAt: at(-5, 10), createdAt: at(-6, 18) }),
     appt({ id: AP.octaviaDropOff, kind: 'service', status: 'completed', customerId: C.miriam, vehicleId: V.octavia, workOrderId: W.octaviaInspection, startsAt: at(-2, 7, 30), endsAt: at(-2, 8), resourceId: IDS.resources.lift1, assigneeIds: [U.emre], confirmedAt: at(-8, 11), createdAt: at(-9) }),
     appt({ id: AP.corsaHu, kind: 'inspection_hu', status: 'confirmed', customerId: C.guenter, vehicleId: V.corsa, startsAt: wd(12, 10), endsAt: wd(12, 11), resourceId: IDS.resources.lift2, confirmedAt: at(-4, 9), createdAt: at(-5) }),
     appt({ id: AP.sprinterToday, kind: 'repair', status: 'confirmed', customerId: C.brinkhoff, vehicleId: V.sprinter, workOrderId: W.sprinter, startsAt: at(0, 7, 30), endsAt: at(0, 12), resourceId: IDS.resources.lift2, assigneeIds: [U.lukas], confirmedAt: at(-1, 16), createdAt: at(-1, 16) }),
-    appt({ id: AP.transitPickup, kind: 'other', status: 'confirmed', customerId: C.brinkhoff, vehicleId: V.transit, workOrderId: W.transit, startsAt: at(0, 16), endsAt: at(0, 16, 30), internalNote: 'Abholung durch Mitarbeiter der Firma', confirmedAt: at(-1, 16), createdAt: at(-1, 16) }),
+    appt({ id: AP.transitPickup, kind: 'other', status: 'confirmed', customerId: C.brinkhoff, vehicleId: V.transit, workOrderId: W.transit, startsAt: at(0, 16), endsAt: at(0, 16, 30), assigneeIds: [U.lukas], internalNote: 'Abholung durch Mitarbeiter der Firma, Übergabe durch Lukas', confirmedAt: at(-1, 16), createdAt: at(-1, 16) }),
+    // Bewusst doppelt belegt (Hebebühne 2 und Lukas), damit der Kalender den Konflikt zeigt
+    appt({ id: AP.golfTpmsToday, kind: 'repair', status: 'confirmed', customerId: C.miriam, vehicleId: V.golf, startsAt: at(0, 10), endsAt: at(0, 11), resourceId: IDS.resources.lift2, assigneeIds: [U.lukas], customerNote: 'Reifendruck-Warnleuchte leuchtet seit gestern.', internalNote: 'Kurzfristig eingeschoben', confirmedAt: at(-1, 17), createdAt: at(-1, 17) }),
     appt({ id: AP.yarisToday, kind: 'service', status: 'confirmed', customerId: C.horst, vehicleId: V.yaris, workOrderId: W.yaris, startsAt: at(0, 9), endsAt: at(0, 15), resourceId: IDS.resources.lift1, assigneeIds: [U.emre], confirmedAt: at(-7, 10), createdAt: at(-7, 10) }),
     appt({ id: AP.yarisTires, kind: 'tire_change', status: 'requested', customerId: C.horst, vehicleId: V.yaris, startsAt: wd(18, 8), endsAt: wd(18, 9), requestedBy: 'staff', internalNote: 'Telefonisch angefragt, Rückruf zur Bestätigung.', createdAt: at(0, 9, 12) }),
   ];
@@ -735,6 +759,16 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
     { id: seedId(29, 1), occurredAt: at(-31, 12, 4), actorUserId: U.miriam, actorRole: 'customer' as const, action: 'approval.decided', entityType: 'approval_version', entityId: wipersV1.id, data: { decision: 'rejected', contentHash: wipersV1.contentHash, channel: 'ios' } },
     { id: seedId(29, 2), occurredAt: at(-164, 12), actorUserId: U.service, actorRole: 'service' as const, action: 'vehicle.ownership_transferred', entityType: 'vehicle', entityId: V.octavia, data: { from: C.guenter, to: C.miriam } },
     { id: seedId(29, 3), occurredAt: at(-296, 9), actorUserId: U.owner, actorRole: 'admin' as const, action: 'service_entry.corrected', entityType: 'service_entry', entityId: rohdeOilCorrected.id, data: { reason: rohdeOilCorrected.correctionReason } },
+  ];
+
+  const partDemands: DPartDemand[] = [
+    { id: seedId(30, 1), workOrderId: W.octaviaTimingBelt, description: 'Zahnriemensatz mit Spannrolle', status: 'ordered', expectedAt: wd(8, 10) },
+    { id: seedId(30, 2), workOrderId: W.octaviaTimingBelt, description: 'Wasserpumpe', status: 'needed', expectedAt: null },
+    { id: seedId(30, 3), workOrderId: W.golfService, description: 'Innenraumfilter mit Aktivkohle', status: 'ordered', expectedAt: wd(8, 10) },
+  ];
+  const workingHours: DWorkingHours[] = [
+    ...[1, 2, 3, 4, 5].map((weekday) => ({ userId: U.emre, weekday, startTime: '07:30', endTime: '16:30' })),
+    ...[1, 2, 3, 4, 5].map((weekday) => ({ userId: U.lukas, weekday, startTime: '07:00', endTime: '15:30' })),
   ];
 
   return {
@@ -795,6 +829,8 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
     notifications,
     notificationPreferences: [],
     audit,
-    counters: { workOrder: 192, invoice: 316, customer: 10245 },
+    partDemands,
+    workingHours,
+    counters: { workOrder: 193, invoice: 316, customer: 10245 },
   };
 }

@@ -3,17 +3,23 @@
  *
  * - Enthält nur BEISPIELDATEN (seed.ts). Keine Netzwerkaufrufe, keine echten Zahlungen,
  *   keine echten Nachrichten.
- * - Rechte und Geschäftsregeln werden hier wie auf einem Server geprüft (rules/*), damit der
- *   Entwurf die Regeln sichtbar macht. Verbindlich bleibt die spätere API (apps/api) mit
- *   @werkstatt/domain.
+ * - Rechte und Geschäftsregeln kommen aus @werkstatt/domain wie in der API (apps/api); die
+ *   Dateien unter rules/ übersetzen nur zwischen Demo-Zustand und Domain. Fehler tragen
+ *   dieselben Codes wie die API (packages/contracts/src/errors.ts).
+ * - Verbindlich bleibt die API; der Demo-Modus zeigt das Verhalten im Entwurf.
  * - Zustand optional im sessionStorage (Web), damit ein Neuladen nichts verliert.
  */
 import {
+  API_ERROR_CODES,
+  AppointmentInputSchema,
   AppointmentRequestInputSchema,
   CustomerInputSchema,
   PasswordSchema,
   SendMessageRequestSchema,
   VehicleInputSchema,
+  apiCodeFromDomain,
+  paymentMethodLabels,
+  paymentStatusLabels,
   type DashboardTile,
   type LoginRequest,
   type LoginResponse,
@@ -25,6 +31,21 @@ import {
   type SchedulingConflict,
   type Visibility,
 } from '@werkstatt/contracts';
+import {
+  berlinDateOf,
+  canExecuteWorkItem,
+  canTransitionWorkOrder,
+  checkOdometerPlausibility,
+  computeIntakeHash,
+  createActor,
+  finishItem,
+  markNotDone,
+  pauseItem,
+  planOwnershipTransfer,
+  startItem,
+  type Actor,
+  type WorkItemTransitionResult,
+} from '@werkstatt/domain';
 import type {
   AcceptInvitationInput,
   AppointmentInput,
@@ -36,6 +57,7 @@ import type {
   ChangePasswordInput,
   CompleteReviewInput,
   ConfirmIntakeInput,
+  ConflictCheckInput,
   CreateDocumentInput,
   CreateInvoiceInput,
   CreateVehicleShareInput,
@@ -78,7 +100,7 @@ import type {
 import { ApiError, ERROR_CODES } from '../errors';
 import { DEMO_EMAILS, DEMO_MERCHANT_CODE, DEMO_PUBLIC_BASE } from './constants';
 import { Mapper, can, customerName, isStaff, todayLocal, vehicleLabel, type Viewer } from './mappers';
-import { DEMO_SCHEMA_VERSION, type DAppointment, type DCheckout, type DemoState, type DUser, type DWorkItem, type DWorkOrder } from './model';
+import { DEMO_SCHEMA_VERSION, type DAppointment, type DCheckout, type DemoState, type DIntake, type DUser, type DWorkItem, type DWorkOrder } from './model';
 import { makeDemoPdf, toBase64 } from './pdf';
 import {
   currentOwnerId,
@@ -93,8 +115,8 @@ import * as approvalRules from './rules/approvals';
 import * as appointmentRules from './rules/appointments';
 import { sha256Hex } from './rules/hash';
 import { computeMaintenanceDue } from './rules/maintenanceDue';
-import { reconcileCheckout, registerProviderEvent, startCheckout, summarizeInvoice, validateManualPayment } from './rules/payments';
-import { effectivePermissions, isAssignable } from './rules/permissions';
+import { planRefund, reconcileCheckout, registerProviderEvent, startCheckout, summarizeInvoice, validateManualPayment } from './rules/payments';
+import { canDisableUser, effectivePermissions, validatePermissionChange } from './rules/permissions';
 import { createShare, openShare, resolveQr, revokeShare, type QrViewer } from './rules/publicAccess';
 import { completeReview, correctEntry, visibleEntries } from './rules/serviceHistory';
 import { recomputeWorkStatus } from './rules/workOrders';
@@ -127,7 +149,7 @@ export interface DemoCheckoutInfo {
 }
 
 export interface DemoAccount {
-  key: 'owner' | 'service' | 'mechanic' | 'customer' | 'previousOwner';
+  key: 'owner' | 'service' | 'service2' | 'mechanic' | 'customer' | 'previousOwner';
   label: string;
   description: string;
   email: string;
@@ -164,6 +186,7 @@ function base62(bytes: number): string {
 
 const pwHash = (password: string) => sha256Hex(`demo:${password}`);
 const tokenHash = (token: string) => sha256Hex(`token:${token}`);
+const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic']);
 
 export class DemoApi implements WerkstattApi {
   readonly mode = 'demo' as const;
@@ -173,6 +196,8 @@ export class DemoApi implements WerkstattApi {
   private failNextFlag = false;
   private offlineFlag = false;
   private submittedCheckouts = new Set<string>();
+  /** Antworten zu bereits verarbeiteten Idempotency-Keys (Wiederholung aus der Warteschlange) */
+  private idempotent = new Map<string, unknown>();
   private readonly latencyMs: number;
   private readonly storage: DemoStorage | null;
   private readonly clock: () => Date;
@@ -243,6 +268,16 @@ export class DemoApi implements WerkstattApi {
     }
   }
 
+  /** Wiederholung mit gleichem Idempotency-Key liefert die erste Antwort (wie die API). */
+  private async once<T>(key: string | undefined, userId: string, run: () => T): Promise<T> {
+    if (!key) return run();
+    const k = `${userId}:${key}`;
+    if (this.idempotent.has(k)) return this.idempotent.get(k) as T;
+    const result = run();
+    this.idempotent.set(k, result);
+    return result;
+  }
+
   private userById(id: string): DUser | undefined {
     return this.state.users.find((u) => u.id === id);
   }
@@ -255,6 +290,11 @@ export class DemoApi implements WerkstattApi {
       customerId: user.role === 'customer' ? (account?.customerId ?? null) : null,
       permissions: new Set(effectivePermissions(user.role, user.permissionOverrides)),
     };
+  }
+
+  /** Actor für die Domain-Regeln (wie in der API). */
+  private actorOf(v: Viewer): Actor {
+    return createActor({ userId: v.user.id, role: v.role, status: v.user.status, customerId: v.customerId, overrides: v.role === 'customer' ? [] : v.user.permissionOverrides });
   }
 
   private optionalViewer(): Viewer | null {
@@ -350,11 +390,13 @@ export class DemoApi implements WerkstattApi {
     throw ApiError.forbidden();
   }
 
+  /** Freigabeanfragen sehen Kunden (ohne Entwürfe) und Mitarbeiter mit Freigaberecht; Mechaniker nie (Preise). */
   private approvalFor(v: Viewer, id: string) {
     const r = this.state.approvals.find((x) => x.id === id);
     if (!r) throw ApiError.notFound();
     this.workOrderFor(v, r.workOrderId);
     if (v.role === 'customer' && r.status === 'draft') throw ApiError.notFound();
+    if (v.role === 'mechanic') throw ApiError.forbidden('Freigabeanfragen enthalten Preise und sind für Mechaniker nicht sichtbar.');
     return r;
   }
 
@@ -375,7 +417,12 @@ export class DemoApi implements WerkstattApi {
 
   private refreshWorkStatus(workOrderId: string) {
     const wo = this.state.workOrders.find((w) => w.id === workOrderId);
-    if (wo) this.replaceWorkOrder(recomputeWorkStatus(wo, this.state.workItems, this.nowIso()));
+    if (!wo) return;
+    const next = recomputeWorkStatus(wo, this.state.workItems, this.nowIso());
+    if (next !== wo) {
+      this.replaceWorkOrder(next);
+      this.audit(null, 'work_order.status_changed', 'work_order', wo.id, { workOrderId: wo.id, from: wo.status, to: next.status });
+    }
   }
 
   private loginResponse(user: DUser): LoginResponse {
@@ -424,21 +471,28 @@ export class DemoApi implements WerkstattApi {
     return this.map.sessionUser(this.viewer().user);
   }
 
-  private consumeToken(token: string, purposes: string[]) {
+  /**
+   * Einladung bzw. Rücksetzlink prüfen. Die API meldet ungültig, abgelaufen und benutzt
+   * einheitlich (400 invitation_invalid bzw. reset_invalid); der Grund steht nur im Text.
+   */
+  private consumeToken(token: string, purposes: string[], code: string, kind: 'Einladung' | 'Link') {
     const entry = this.state.tokens.find((t) => t.tokenHash === tokenHash(token) && purposes.includes(t.purpose));
-    if (!entry) throw new ApiError(404, ERROR_CODES.tokenInvalid, 'Dieser Link ist ungültig.');
-    if (entry.usedAt) throw new ApiError(410, ERROR_CODES.tokenUsed, 'Dieser Link wurde bereits verwendet.');
-    if (Date.parse(entry.expiresAt) <= this.clock().getTime()) throw new ApiError(410, ERROR_CODES.tokenExpired, 'Dieser Link ist abgelaufen.');
+    const article = kind === 'Einladung' ? 'Diese Einladung' : 'Dieser Link';
+    if (!entry) throw new ApiError(400, code, `${article} ist ungültig oder unvollständig.`);
+    if (entry.usedAt) throw new ApiError(400, code, `${article} wurde bereits verwendet.${kind === 'Einladung' ? ' Melden Sie sich mit Ihrem Passwort an.' : ''}`);
+    if (Date.parse(entry.expiresAt) <= this.clock().getTime()) {
+      throw new ApiError(400, code, kind === 'Einladung' ? 'Diese Einladung ist abgelaufen. Einladungen gelten 7 Tage.' : 'Dieser Link ist abgelaufen (Links gelten eine Stunde).');
+    }
     return entry;
   }
 
   async acceptInvitation(input: AcceptInvitationInput): Promise<LoginResponse> {
     await this.gate();
-    const entry = this.consumeToken(input.token, ['staff', 'customer']);
     const pw = PasswordSchema.safeParse(input.password);
     if (!pw.success) throw ApiError.validation('Das Passwort muss mindestens 10 Zeichen haben.');
+    const entry = this.consumeToken(input.token, ['staff', 'customer'], API_ERROR_CODES.invitationInvalid, 'Einladung');
     const user = this.userById(entry.userId);
-    if (!user || user.status === 'disabled') throw new ApiError(404, ERROR_CODES.tokenInvalid, 'Dieser Link ist ungültig.');
+    if (!user || user.status === 'disabled') throw new ApiError(400, API_ERROR_CODES.invitationInvalid, 'Diese Einladung ist ungültig.');
     user.passwordHash = pwHash(input.password);
     user.status = 'active';
     user.lastLoginAt = this.nowIso();
@@ -455,11 +509,11 @@ export class DemoApi implements WerkstattApi {
 
   async resetPassword(input: { token: string; password: string }): Promise<void> {
     await this.gate();
-    const entry = this.consumeToken(input.token, ['password_reset']);
     const pw = PasswordSchema.safeParse(input.password);
     if (!pw.success) throw ApiError.validation('Das Passwort muss mindestens 10 Zeichen haben.');
+    const entry = this.consumeToken(input.token, ['password_reset'], API_ERROR_CODES.resetInvalid, 'Link');
     const user = this.userById(entry.userId);
-    if (!user) throw new ApiError(404, ERROR_CODES.tokenInvalid, 'Dieser Link ist ungültig.');
+    if (!user) throw new ApiError(400, API_ERROR_CODES.resetInvalid, 'Dieser Link ist ungültig.');
     user.passwordHash = pwHash(input.password);
     entry.usedAt = this.nowIso();
     this.audit(null, 'auth.password_reset', 'user', user.id);
@@ -469,7 +523,7 @@ export class DemoApi implements WerkstattApi {
   async changePassword(input: ChangePasswordInput): Promise<void> {
     await this.gate();
     const v = this.viewer();
-    if (v.user.passwordHash !== pwHash(input.currentPassword)) throw ApiError.validation('Das aktuelle Passwort ist nicht korrekt.');
+    if (v.user.passwordHash !== pwHash(input.currentPassword)) throw new ApiError(400, API_ERROR_CODES.invalidCurrentPassword, 'Das aktuelle Passwort ist falsch.');
     if (!PasswordSchema.safeParse(input.newPassword).success) throw ApiError.validation('Das neue Passwort muss mindestens 10 Zeichen haben.');
     v.user.passwordHash = pwHash(input.newPassword);
     this.audit(v, 'auth.password_changed', 'user', v.user.id);
@@ -484,15 +538,19 @@ export class DemoApi implements WerkstattApi {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'users.manage');
-    return this.state.users.filter((u) => u.role !== 'customer').map((u) => this.map.staffUser(u));
+    const map = this.map;
+    return this.state.users
+      .filter((u) => u.role !== 'customer')
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'de'))
+      .map((u) => map.staffUser(u));
   }
 
   async inviteUser(input: InviteStaffInput) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'users.manage');
-    if (this.state.users.some((u) => u.email.toLowerCase() === input.email.toLowerCase())) {
-      throw ApiError.conflict(ERROR_CODES.conflict, 'Für diese E-Mail-Adresse gibt es bereits einen Zugang.');
+    if (this.state.users.some((u) => u.email.toLowerCase() === input.email.trim().toLowerCase())) {
+      throw ApiError.conflict(API_ERROR_CODES.emailTaken, 'Für diese E-Mail-Adresse gibt es bereits ein Konto.');
     }
     const user: DUser = { id: uuid(), email: input.email.trim(), displayName: input.displayName.trim(), role: input.role, status: 'invited', passwordHash: null, permissionOverrides: [], lastLoginAt: null, createdAt: this.nowIso() };
     this.state.users.push(user);
@@ -502,35 +560,42 @@ export class DemoApi implements WerkstattApi {
     return this.map.staffUser(user);
   }
 
+  private staffById(id: string): DUser {
+    const u = this.state.users.find((x) => x.id === id && x.role !== 'customer');
+    if (!u) throw ApiError.notFound();
+    return u;
+  }
+
   async getUser(id: string) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'users.manage');
-    const u = this.state.users.find((x) => x.id === id && x.role !== 'customer');
-    if (!u) throw ApiError.notFound();
-    return this.map.staffUser(u);
+    return this.map.staffUser(this.staffById(id));
   }
 
-  private activeAdmins() {
-    return this.state.users.filter((u) => u.role === 'admin' && u.status === 'active');
+  /** Aktive Admins mit wirksamem users.manage (Schutz des letzten Admins, Domain). */
+  private activeAdminCount(): number {
+    return this.state.users.filter((u) => u.role === 'admin' && u.status === 'active' && effectivePermissions(u.role, u.permissionOverrides).includes('users.manage')).length;
   }
 
   async updateUser(id: string, input: UpdateStaffInput) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'users.manage');
-    const u = this.state.users.find((x) => x.id === id && x.role !== 'customer');
-    if (!u) throw ApiError.notFound();
-    if (input.role && input.role !== 'admin' && u.role === 'admin' && this.activeAdmins().length <= 1) {
-      throw ApiError.conflict(ERROR_CODES.conflict, 'Der letzte aktive Inhaber-Zugang kann seine Rolle nicht verlieren.');
-    }
-    const role = input.role ?? u.role;
-    const overrides = input.permissionOverrides ?? u.permissionOverrides;
-    for (const o of overrides) {
-      if (!isAssignable(role, o.permission)) throw ApiError.validation(`Das Recht "${o.permission}" ist für diese Rolle nicht zuweisbar.`);
-    }
-    Object.assign(u, { role, displayName: input.displayName?.trim() ?? u.displayName, permissionOverrides: overrides });
-    this.audit(v, 'user.updated', 'user', u.id, { role, overrides });
+    const u = this.staffById(id);
+    const change = validatePermissionChange({
+      targetUser: { id: u.id, role: u.role, status: u.status, overrides: u.permissionOverrides },
+      newRole: input.role,
+      newOverrides: input.permissionOverrides,
+      activeAdminCount: this.activeAdminCount(),
+    });
+    if (!change.ok) throw ApiError.unprocessable(API_ERROR_CODES.permissionChangeRejected, change.issues.map((i) => i.message).join(' '), change.issues);
+    const before = u.permissionOverrides;
+    if (input.displayName !== undefined) u.displayName = input.displayName.trim();
+    if (change.role !== u.role) this.audit(v, 'user.role_changed', 'user', u.id, { from: u.role, to: change.role });
+    u.role = change.role;
+    u.permissionOverrides = change.overrides;
+    this.audit(v, 'user.permissions_changed', 'user', u.id, { before, after: change.overrides });
     this.changed();
     return this.map.staffUser(u);
   }
@@ -539,25 +604,24 @@ export class DemoApi implements WerkstattApi {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'users.manage');
-    const u = this.state.users.find((x) => x.id === id && x.role !== 'customer');
-    if (!u) throw ApiError.notFound();
-    if (u.role === 'admin' && u.status === 'active' && this.activeAdmins().length <= 1) {
-      throw ApiError.conflict(ERROR_CODES.conflict, 'Der letzte aktive Inhaber-Zugang kann nicht deaktiviert werden.');
-    }
+    const u = this.staffById(id);
+    const check = canDisableUser({ targetUser: { id: u.id, role: u.role, status: u.status, overrides: u.permissionOverrides }, activeAdminCount: this.activeAdminCount() });
+    if (!check.ok) throw ApiError.unprocessable(apiCodeFromDomain(check.issue.code), check.issue.message);
     u.status = 'disabled';
     this.audit(v, 'user.disabled', 'user', u.id);
     this.changed();
+    return this.map.staffUser(u);
   }
 
   async enableUser(id: string) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'users.manage');
-    const u = this.state.users.find((x) => x.id === id && x.role !== 'customer');
-    if (!u) throw ApiError.notFound();
+    const u = this.staffById(id);
     u.status = u.passwordHash ? 'active' : 'invited';
-    this.audit(v, 'user.enabled', 'user', u.id);
+    this.audit(v, 'user.enabled', 'user', u.id, { status: u.status });
     this.changed();
+    return this.map.staffUser(u);
   }
 
   // ---------------------------------------------------------------------------
@@ -567,32 +631,38 @@ export class DemoApi implements WerkstattApi {
   async dashboard(): Promise<DashboardTile[]> {
     await this.gate();
     const v = this.viewer();
-    this.require(v, 'dashboard.view');
     const today = this.today();
     const isToday = (iso: string) => todayLocal(new Date(iso)) === today;
+    if (v.role === 'customer') throw ApiError.notFound();
+    this.require(v, 'dashboard.view');
     if (v.role === 'mechanic') {
       const mine = this.visibleWorkOrders(v).filter((w) => w.status === 'open' || w.status === 'in_progress');
-      const items = this.state.workItems.filter((i) => i.assignedTo === v.user.id && mine.some((w) => w.id === i.workOrderId) && i.executionStatus !== 'done' && i.executionStatus !== 'not_done');
+      const items = this.state.workItems.filter((i) => mine.some((w) => w.id === i.workOrderId) && (i.assignedTo === v.user.id || i.assignedTo === null) && i.executionStatus !== 'done' && i.executionStatus !== 'not_done');
       return [
         { key: 'my_assigned_items', label: 'Meine offenen Positionen', count: items.length, targetPath: '/mechaniker' },
-        { key: 'appointments_today', label: 'Meine Termine heute', count: this.state.appointments.filter((a) => a.assigneeIds.includes(v.user.id) && a.status === 'confirmed' && isToday(a.startsAt)).length, targetPath: '/mechaniker' },
+        { key: 'open_work_orders', label: 'Meine Aufträge', count: mine.length, targetPath: '/mechaniker' },
       ];
     }
     const orders = this.state.workOrders;
     const map = this.map;
     const summaries = orders.map((w) => map.workOrderSummary(w, v));
-    const tiles: DashboardTile[] = [
-      { key: 'appointments_today', label: 'Termine heute', count: this.state.appointments.filter((a) => a.status === 'confirmed' && isToday(a.startsAt)).length, targetPath: '/werkstatt/kalender?tag=heute' },
-      { key: 'appointment_requests', label: 'Offene Terminanfragen', count: this.state.appointments.filter((a) => a.status === 'requested').length, targetPath: '/werkstatt/kalender/anfragen' },
+    const tiles: DashboardTile[] = [];
+    if (can(v, 'appointments.read')) {
+      tiles.push({ key: 'appointments_today', label: 'Termine heute', count: this.state.appointments.filter((a) => a.status === 'confirmed' && isToday(a.startsAt)).length, targetPath: '/werkstatt/kalender' });
+      tiles.push({ key: 'appointment_requests', label: 'Terminanfragen', count: this.state.appointments.filter((a) => a.status === 'requested').length, targetPath: '/werkstatt/kalender/anfragen' });
+    }
+    tiles.push(
       { key: 'open_work_orders', label: 'Offene Aufträge', count: orders.filter((w) => ['open', 'in_progress', 'work_completed'].includes(w.status)).length, targetPath: '/werkstatt/auftraege?arbeit=offen' },
       { key: 'pending_approvals', label: 'Ausstehende Kundenfreigaben', count: summaries.reduce((s, w) => s + w.status.pendingApprovalCount, 0), targetPath: '/werkstatt/auftraege?freigabe=pending' },
       { key: 'unread_messages', label: 'Ungelesene Nachrichten', count: summaries.reduce((s, w) => s + w.unreadMessages, 0), targetPath: '/werkstatt/nachrichten' },
       { key: 'ready_for_pickup', label: 'Abholbereit', count: summaries.filter((w) => w.status.readyForPickup).length, targetPath: '/werkstatt/auftraege?abholbereit=ja' },
-      { key: 'maintenance_due', label: 'Fällige Wartungen', count: this.allDue().filter((d) => d.state === 'overdue' || d.state === 'due_soon').length, targetPath: '/werkstatt/wartungen' },
-    ];
+    );
+    if (can(v, 'serviceHistory.read')) {
+      tiles.push({ key: 'maintenance_due', label: 'Fällige Wartungen', count: this.allDue().filter((d) => d.state === 'overdue' || d.state === 'due_soon').length, targetPath: '/werkstatt/wartungen' });
+    }
     if (can(v, 'invoices.read')) {
       const open = this.state.invoices.filter((i) => i.status === 'issued' && summarizeInvoice(i, this.state.payments, this.state.refunds, today).openCents > 0);
-      tiles.push({ key: 'open_invoices', label: 'Offene Rechnungen', count: open.length, targetPath: '/werkstatt/rechnungen?status=offen' });
+      tiles.push({ key: 'open_invoices', label: 'Offene Rechnungen', count: open.length, targetPath: '/werkstatt/rechnungen?zahlung=offen' });
     }
     return tiles;
   }
@@ -609,15 +679,17 @@ export class DemoApi implements WerkstattApi {
     const map = this.map;
     let items = this.state.customers.filter((c) => c.archivedAt === null).map((c) => map.customerSummary(c));
     if (q) {
+      const qKey = q.replace(/[\s-]/g, '');
       items = items.filter((c) => {
         const plates = this.state.ownerships
           .filter((o) => o.customerId === c.id && o.endedAt === null)
           .map((o) => this.state.vehicles.find((x) => x.id === o.vehicleId)?.licensePlate.toLowerCase().replace(/[\s-]/g, '') ?? '');
-        return [c.displayName, c.email ?? '', c.phone ?? '', c.customerNumber].some((f) => f.toLowerCase().includes(q)) || plates.some((p) => p.includes(q.replace(/[\s-]/g, '')));
+        const raw = this.state.customers.find((x) => x.id === c.id);
+        const phones = [c.phone ?? '', raw?.mobile ?? '', raw?.phone ?? ''].map((p) => p.replace(/[\s/-]/g, ''));
+        return [c.displayName, c.email ?? '', c.customerNumber].some((f) => f.toLowerCase().includes(q)) || phones.some((p) => p.includes(qKey)) || plates.some((p) => p.includes(qKey));
       });
     }
-    if (query.access === 'yes') items = items.filter((c) => c.accessStatus === 'active');
-    if (query.access === 'no') items = items.filter((c) => c.accessStatus !== 'active');
+    if (query.access) items = items.filter((c) => c.accessStatus === query.access);
     if (query.openItems) items = items.filter((c) => (c.openInvoiceCount ?? 0) > 0);
     return { items: items.sort((a, b) => a.displayName.localeCompare(b.displayName, 'de')), nextCursor: null };
   }
@@ -672,11 +744,12 @@ export class DemoApi implements WerkstattApi {
     this.require(v, 'customers.write');
     const c = this.state.customers.find((x) => x.id === id);
     if (!c) throw ApiError.notFound();
-    const merged = { ...c, ...input };
+    const patch = Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+    const merged = { ...c, ...patch };
     const parsed = CustomerInputSchema.safeParse({ ...merged, country: merged.country ?? 'DE' });
     if (!parsed.success) throw ApiError.validation(parsed.error.issues[0]?.message ?? 'Eingaben prüfen', parsed.error.issues);
     Object.assign(c, parsed.data, { isTestData: c.isTestData });
-    this.audit(v, 'customer.updated', 'customer', c.id);
+    this.audit(v, 'customer.updated', 'customer', c.id, { fields: Object.keys(patch) });
     this.changed();
     return this.map.customerDetail(c, v);
   }
@@ -690,6 +763,7 @@ export class DemoApi implements WerkstattApi {
     c.archivedAt = this.nowIso();
     this.audit(v, 'customer.archived', 'customer', c.id);
     this.changed();
+    return this.map.customerDetail(c, v);
   }
 
   async inviteCustomer(id: string, input: { email: string }) {
@@ -699,30 +773,86 @@ export class DemoApi implements WerkstattApi {
     const c = this.state.customers.find((x) => x.id === id);
     if (!c) throw ApiError.notFound();
     let account = this.state.customerAccounts.find((a) => a.customerId === id);
-    if (account && this.userById(account.userId)?.status === 'active') {
-      throw ApiError.conflict(ERROR_CODES.conflict, 'Dieser Kunde hat bereits einen aktiven Zugang.');
+    const linked = account ? this.userById(account.userId) : undefined;
+    if (linked && linked.status !== 'invited') {
+      throw ApiError.conflict(API_ERROR_CODES.accountExists, 'Der Kunde hat bereits einen Zugang. Gesperrte Zugänge bitte über "Zugang sperren" verwalten.');
     }
+    const email = input.email.trim();
+    const taken = this.state.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+    if (taken && taken.id !== linked?.id) throw ApiError.conflict(API_ERROR_CODES.emailTaken, 'Für diese E-Mail-Adresse gibt es bereits ein Konto.');
     if (!account) {
-      const user: DUser = { id: uuid(), email: input.email.trim(), displayName: customerName(c), role: 'customer', status: 'invited', passwordHash: null, permissionOverrides: [], lastLoginAt: null, createdAt: this.nowIso() };
+      const user: DUser = { id: uuid(), email, displayName: customerName(c), role: 'customer', status: 'invited', passwordHash: null, permissionOverrides: [], lastLoginAt: null, createdAt: this.nowIso() };
       this.state.users.push(user);
       account = { customerId: id, userId: user.id };
       this.state.customerAccounts.push(account);
-    }
+    } else if (linked) linked.email = email;
     this.state.tokens.push({ tokenHash: tokenHash(base62(24)), userId: account.userId, purpose: 'customer', expiresAt: new Date(this.clock().getTime() + 7 * 86_400_000).toISOString(), usedAt: null });
-    this.audit(v, 'customer.invited', 'customer', id);
+    this.audit(v, 'customer_account.invited', 'customer', id, { userId: account.userId });
     this.changed();
+    return this.map.customerDetail(c, v);
   }
 
   async disableCustomerAccount(id: string) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'customerAccounts.manage');
+    const c = this.state.customers.find((x) => x.id === id);
+    if (!c) throw ApiError.notFound();
     const account = this.state.customerAccounts.find((a) => a.customerId === id);
     const user = account ? this.userById(account.userId) : undefined;
-    if (!user) throw ApiError.notFound();
+    if (!user) throw ApiError.unprocessable(API_ERROR_CODES.noAccount, 'Dieser Kunde hat keinen App-Zugang.');
     user.status = 'disabled';
-    this.audit(v, 'customer.account_disabled', 'customer', id);
+    this.audit(v, 'customer_account.disabled', 'customer', id);
     this.changed();
+    return this.map.customerDetail(c, v);
+  }
+
+  /** Datenexport (Demo: JSON statt ZIP, gekennzeichnet). */
+  private buildExport(customerId: string, scope: 'self' | 'full'): DownloadResult {
+    const map = this.map;
+    const c = this.state.customers.find((x) => x.id === customerId)!;
+    const viewer: Viewer = scope === 'self' ? this.viewer() : this.viewer();
+    const orders = this.state.workOrders.filter((w) => w.customerId === customerId && w.status !== 'draft');
+    const payload = {
+      hinweis: 'Beispieldaten (Demo-Modus). Die echte API liefert ein ZIP mit JSON und freigegebenen Dokumenten.',
+      erstelltAm: this.nowIso(),
+      umfang: scope === 'self' ? 'Eigene Daten' : 'Vollständiger Export für die Werkstatt',
+      kunde: map.customerDetail(c, viewer),
+      fahrzeuge: this.state.ownerships.filter((o) => o.customerId === customerId).map((o) => ({ ...map.ownership(o), fahrzeug: this.state.vehicles.find((x) => x.id === o.vehicleId)?.licensePlate })),
+      auftraege: orders.map((w) => map.workOrderSummary(w, viewer)),
+      rechnungen: this.state.invoices.filter((i) => i.customerId === customerId && i.status !== 'draft').map((i) => map.invoice(i, viewer)),
+      nachrichten: this.state.messages.filter((m) => orders.some((w) => w.id === m.workOrderId)).map((m) => map.message(m)),
+      dokumente: this.state.documents.filter((d) => customerCanSeeDocument(customerId, d) || (scope === 'full' && d.customerId === customerId)).map((d) => map.document(d)),
+    };
+    const json = JSON.stringify(payload, null, 2);
+    const bytes = new TextEncoder().encode(json);
+    let binary = '';
+    for (const b of bytes) binary += String.fromCharCode(b);
+    const b64 = typeof btoa === 'function' ? btoa(binary) : toBase64(bytes);
+    return { uri: `data:application/json;base64,${b64}`, fileName: `datenexport-${c.customerNumber}-${this.today()}.json`, mimeType: 'application/json' };
+  }
+
+  async exportCustomerData(customerId: string): Promise<DownloadResult> {
+    await this.gate();
+    const v = this.viewer();
+    if (v.role === 'customer') throw ApiError.forbidden('Bitte den Selbstexport unter Konto verwenden.');
+    this.require(v, 'customers.read');
+    this.require(v, 'reports.export');
+    if (!this.state.customers.some((c) => c.id === customerId)) throw ApiError.notFound();
+    const result = this.buildExport(customerId, 'full');
+    this.audit(v, 'export.customer_data', 'customer', customerId, { scope: 'full' });
+    this.changed();
+    return result;
+  }
+
+  async exportOwnData(): Promise<DownloadResult> {
+    await this.gate();
+    const v = this.viewer();
+    if (v.role !== 'customer' || !v.customerId) throw ApiError.forbidden('Der Selbstexport ist für Kundenkonten vorgesehen. Mitarbeiterdaten stellt der Inhaber bereit.');
+    const result = this.buildExport(v.customerId, 'self');
+    this.audit(v, 'export.customer_data', 'customer', v.customerId, { scope: 'self' });
+    this.changed();
+    return result;
   }
 
   // ---------------------------------------------------------------------------
@@ -740,9 +870,15 @@ export class DemoApi implements WerkstattApi {
     }
     if (query.customerId) vehicles = vehicles.filter((x) => currentOwnerId(this.state.ownerships, x.id) === query.customerId);
     const q = query.q?.trim().toLowerCase().replace(/[\s-]/g, '');
-    if (q) vehicles = vehicles.filter((x) => [x.licensePlate, x.vin ?? '', x.make, x.model].some((f) => f.toLowerCase().replace(/[\s-]/g, '').includes(q)));
+    if (q) {
+      vehicles = vehicles.filter((x) => {
+        const owner = currentOwnerId(this.state.ownerships, x.id);
+        const ownerName = owner ? customerName(this.state.customers.find((c) => c.id === owner)).toLowerCase().replace(/[\s-]/g, '') : '';
+        return [x.licensePlate, x.vin ?? '', x.make, x.model].some((f) => f.toLowerCase().replace(/[\s-]/g, '').includes(q)) || (isStaff(v) && ownerName.includes(q));
+      });
+    }
     const map = this.map;
-    return { items: vehicles.map((x) => map.vehicleSummary(x, v)), nextCursor: null };
+    return { items: vehicles.map((x) => map.vehicleSummary(x, v)).sort((a, b) => a.licensePlate.localeCompare(b.licensePlate, 'de')), nextCursor: null };
   }
 
   async createVehicle(input: VehicleInputData) {
@@ -752,8 +888,9 @@ export class DemoApi implements WerkstattApi {
     const parsed = VehicleInputSchema.safeParse(input);
     if (!parsed.success) throw ApiError.validation(parsed.error.issues[0]?.message ?? 'Eingaben prüfen', parsed.error.issues);
     const d = parsed.data;
-    if (!this.state.customers.some((c) => c.id === d.ownerCustomerId)) throw ApiError.validation('Halter nicht gefunden.');
-    if (d.vin && this.state.vehicles.some((x) => x.vin === d.vin)) throw ApiError.conflict(ERROR_CODES.conflict, 'Ein Fahrzeug mit dieser FIN ist bereits angelegt.');
+    const owner = this.state.customers.find((c) => c.id === d.ownerCustomerId);
+    if (!owner || owner.archivedAt) throw ApiError.unprocessable(API_ERROR_CODES.ownerInvalid, 'Der Halter wurde nicht gefunden oder ist archiviert.');
+    if (d.vin && this.state.vehicles.some((x) => x.vin === d.vin)) throw ApiError.conflict(API_ERROR_CODES.vinTaken, 'Ein Fahrzeug mit dieser FIN ist bereits angelegt.');
     const vehicle = {
       id: uuid(),
       licensePlate: d.licensePlate.toUpperCase(),
@@ -775,7 +912,7 @@ export class DemoApi implements WerkstattApi {
     };
     this.state.vehicles.push(vehicle);
     this.state.ownerships.push({ id: uuid(), vehicleId: vehicle.id, customerId: d.ownerCustomerId, startedAt: this.nowIso(), endedAt: null, note: null });
-    this.audit(v, 'vehicle.created', 'vehicle', vehicle.id);
+    this.audit(v, 'vehicle.created', 'vehicle', vehicle.id, { ownerCustomerId: d.ownerCustomerId });
     this.changed();
     return this.map.vehicleDetail(vehicle, v);
   }
@@ -793,8 +930,12 @@ export class DemoApi implements WerkstattApi {
     const vehicle = this.state.vehicles.find((x) => x.id === id);
     if (!vehicle) throw ApiError.notFound();
     const { ownerCustomerId: _ignored, isTestData: _t, ...rest } = input;
-    Object.assign(vehicle, Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined)));
-    this.audit(v, 'vehicle.updated', 'vehicle', id);
+    const patch = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
+    if (typeof patch.vin === 'string' && this.state.vehicles.some((x) => x.id !== id && x.vin === patch.vin)) {
+      throw ApiError.conflict(API_ERROR_CODES.vinTaken, 'Ein Fahrzeug mit dieser FIN ist bereits angelegt.');
+    }
+    Object.assign(vehicle, patch);
+    this.audit(v, 'vehicle.updated', 'vehicle', id, { fields: Object.keys(patch) });
     this.changed();
     return this.map.vehicleDetail(vehicle, v);
   }
@@ -810,23 +951,25 @@ export class DemoApi implements WerkstattApi {
       .map((r) => map.odometer(r));
   }
 
+  /** km-Stand speichern (nie überschreiben); Plausibilität nach Domain-Regel. */
+  private recordOdometer(vehicleId: string, valueKm: number, recordedAt: string, source: DemoState['odometer'][number]['source'], workOrderId: string | null) {
+    const previous = this.state.odometer.filter((r) => r.vehicleId === vehicleId);
+    const reading = { id: uuid(), vehicleId, valueKm, recordedAt, source, workOrderId, plausibility: checkOdometerPlausibility(previous, valueKm, recordedAt) };
+    this.state.odometer.push(reading);
+    return reading;
+  }
+
   async addOdometer(vehicleId: string, input: OdometerInput) {
     await this.gate();
     const v = this.viewer();
-    if (v.role === 'customer') this.vehicleFor(v, vehicleId);
-    else this.require(v, 'vehicles.write');
-    const last = this.state.odometer.filter((r) => r.vehicleId === vehicleId).sort((a, b) => (a.recordedAt < b.recordedAt ? 1 : -1))[0];
-    const reading = {
-      id: uuid(),
-      vehicleId,
-      valueKm: input.valueKm,
-      recordedAt: input.recordedAt ?? this.nowIso(),
-      source: v.role === 'customer' ? ('customer' as const) : ('staff' as const),
-      workOrderId: null,
-      plausibility: last && input.valueKm < last.valueKm ? ('lower_than_previous' as const) : ('ok' as const),
-    };
-    this.state.odometer.push(reading);
-    this.audit(v, 'vehicle.odometer_added', 'vehicle', vehicleId, { valueKm: input.valueKm });
+    this.vehicleFor(v, vehicleId);
+    if (v.role === 'customer') {
+      if (currentOwnerId(this.state.ownerships, vehicleId) !== v.customerId) throw ApiError.notFound();
+    } else this.require(v, 'vehicles.write');
+    const recordedAt = input.recordedAt ?? this.nowIso();
+    if (Date.parse(recordedAt) > this.clock().getTime() + 5 * 60_000) throw ApiError.unprocessable(API_ERROR_CODES.recordedInFuture, 'Der Zeitpunkt liegt in der Zukunft.');
+    const reading = this.recordOdometer(vehicleId, input.valueKm, recordedAt, v.role === 'customer' ? 'customer' : 'staff', null);
+    this.audit(v, 'vehicle.odometer_recorded', 'vehicle', vehicleId, { valueKm: input.valueKm, plausibility: reading.plausibility });
     this.changed();
     return this.map.odometer(reading);
   }
@@ -835,26 +978,40 @@ export class DemoApi implements WerkstattApi {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'vehicles.read');
+    if (!this.state.vehicles.some((x) => x.id === vehicleId)) throw ApiError.notFound();
     const map = this.map;
-    return this.state.ownerships.filter((o) => o.vehicleId === vehicleId).sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1)).map((o) => map.ownership(o));
+    return this.state.ownerships.filter((o) => o.vehicleId === vehicleId).sort((a, b) => (a.startedAt < b.startedAt ? -1 : 1)).map((o) => map.ownership(o));
   }
 
+  /**
+   * Halterwechsel (Domain `planOwnershipTransfer`): bisheriger Zeitraum endet, neuer beginnt;
+   * Freigaben für Dritte des Vorbesitzers werden widerrufen, die QR-Kurzansicht aus.
+   * Aufträge, Rechnungen, Dokumente und Nachrichten bleiben beim bisherigen Kunden.
+   */
   async transferOwnership(vehicleId: string, input: OwnershipTransferInput) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'vehicles.transferOwnership');
-    const current = this.state.ownerships.find((o) => o.vehicleId === vehicleId && o.endedAt === null);
-    if (!current) throw ApiError.notFound();
-    if (current.customerId === input.newCustomerId) throw ApiError.validation('Der neue Halter ist bereits eingetragen.');
-    if (!this.state.customers.some((c) => c.id === input.newCustomerId)) throw ApiError.validation('Kunde nicht gefunden.');
-    current.endedAt = input.effectiveAt;
-    this.state.ownerships.push({ id: uuid(), vehicleId, customerId: input.newCustomerId, startedAt: input.effectiveAt, endedAt: null, note: input.note ?? null });
-    // Freigaben des bisherigen Halters enden mit dem Halterwechsel.
-    for (const share of this.state.shares) if (share.vehicleId === vehicleId && !share.revokedAt) share.revokedAt = this.nowIso();
     const vehicle = this.state.vehicles.find((x) => x.id === vehicleId);
-    if (vehicle) vehicle.qrPublicViewEnabled = false;
-    this.audit(v, 'vehicle.ownership_transferred', 'vehicle', vehicleId, { from: current.customerId, to: input.newCustomerId });
+    if (!vehicle) throw ApiError.notFound();
+    const newOwner = this.state.customers.find((c) => c.id === input.newCustomerId);
+    if (!newOwner || newOwner.archivedAt) throw ApiError.unprocessable(API_ERROR_CODES.ownerInvalid, 'Der neue Halter wurde nicht gefunden oder ist archiviert.');
+    const current = this.state.ownerships.find((o) => o.vehicleId === vehicleId && o.endedAt === null);
+    let startedAt = input.effectiveAt;
+    let previous: string | null = null;
+    if (current) {
+      const plan = planOwnershipTransfer({ current: { id: current.id, customerId: current.customerId, startedAt: current.startedAt, endedAt: null }, newCustomerId: newOwner.id, effectiveAt: input.effectiveAt, now: this.clock() });
+      if (!plan.ok) throw ApiError.unprocessable(apiCodeFromDomain(plan.error.code), plan.error.message);
+      previous = current.customerId;
+      startedAt = plan.value.startNew.startedAt;
+      current.endedAt = plan.value.endCurrent.endedAt;
+      for (const share of this.state.shares) if (share.vehicleId === vehicleId && !share.revokedAt) share.revokedAt = this.nowIso();
+      vehicle.qrPublicViewEnabled = false;
+    }
+    this.state.ownerships.push({ id: uuid(), vehicleId, customerId: newOwner.id, startedAt, endedAt: null, note: input.note?.trim() || null });
+    this.audit(v, 'vehicle.ownership_transferred', 'vehicle', vehicleId, { fromCustomerId: previous, toCustomerId: newOwner.id, effectiveAt: startedAt });
     this.changed();
+    return this.map.vehicleDetail(vehicle, v);
   }
 
   async setQrPublicView(vehicleId: string, enabled: boolean) {
@@ -864,7 +1021,7 @@ export class DemoApi implements WerkstattApi {
     const vehicle = this.vehicleFor(v, vehicleId);
     if (currentOwnerId(this.state.ownerships, vehicleId) !== customerId) throw ApiError.notFound();
     vehicle.qrPublicViewEnabled = enabled;
-    this.audit(v, enabled ? 'vehicle.qr_public_enabled' : 'vehicle.qr_public_disabled', 'vehicle', vehicleId);
+    this.audit(v, 'vehicle.qr_public_view_changed', 'vehicle', vehicleId, { enabled });
     this.changed();
     return this.map.vehicleDetail(vehicle, v);
   }
@@ -888,6 +1045,7 @@ export class DemoApi implements WerkstattApi {
   private entriesVisibleTo(v: Viewer, vehicleId: string) {
     this.vehicleFor(v, vehicleId);
     if (v.role === 'customer') return visibleEntries(this.state.serviceEntries, vehicleId);
+    if (!can(v, 'serviceHistory.read') && !this.visibleWorkOrders(v).some((w) => w.vehicleId === vehicleId)) throw ApiError.forbidden();
     return this.state.serviceEntries
       .filter((e) => e.vehicleId === vehicleId)
       .sort((a, b) => (a.performedOn < b.performedOn ? 1 : a.performedOn > b.performedOn ? -1 : b.revisionNo - a.revisionNo));
@@ -916,16 +1074,17 @@ export class DemoApi implements WerkstattApi {
     this.require(v, 'serviceHistory.correct');
     const entry = this.state.serviceEntries.find((e) => e.id === id);
     if (!entry) throw ApiError.notFound();
-    const { previous, revision } = correctEntry(entry, { ...input, void: input.void ?? false }, { newId: uuid(), userId: v.user.id, now: this.nowIso() });
+    const typeName = entry.maintenanceTypeId ? (this.state.maintenanceTypes.find((t) => t.id === entry.maintenanceTypeId)?.name ?? null) : null;
+    const { previous, revision } = correctEntry(entry, { ...input, void: input.void ?? false }, { newId: uuid(), actor: this.actorOf(v), maintenanceTypeName: typeName, now: this.nowIso() });
     this.state.serviceEntries = this.state.serviceEntries.map((e) => (e.id === id ? previous : e));
     this.state.serviceEntries.push(revision);
-    this.audit(v, 'service_entry.corrected', 'service_entry', revision.id, { previous: id, reason: input.reason });
+    this.audit(v, 'service_entry.corrected', 'service_entry', revision.id, { revisionOfId: id, revisionNo: revision.revisionNo, reason: input.reason, voided: revision.status === 'voided', vehicleId: entry.vehicleId, workOrderId: entry.workOrderId });
     this.changed();
     return this.map.serviceEntry(revision, v);
   }
 
   private dueFor(vehicleId: string): MaintenanceDue[] {
-    return computeMaintenanceDue(this.state.serviceEntries, this.state.odometer, vehicleId, this.today());
+    return computeMaintenanceDue(this.state.serviceEntries, this.state.odometer, vehicleId, this.today(), this.state.maintenanceTypes);
   }
 
   private allDue(): MaintenanceDue[] {
@@ -939,11 +1098,14 @@ export class DemoApi implements WerkstattApi {
     return this.dueFor(vehicleId);
   }
 
-  async maintenanceDueAll() {
+  async maintenanceDueAll(options: { all?: boolean } = {}) {
     await this.gate();
     const v = this.viewer();
-    this.require(v, 'vehicles.read');
-    return this.allDue();
+    this.require(v, 'serviceHistory.read');
+    const rank = { overdue: 0, due_soon: 1, unknown: 2, ok: 3 } as const;
+    return this.allDue()
+      .filter((d) => options.all || d.state === 'overdue' || d.state === 'due_soon')
+      .sort((a, b) => rank[a.state] - rank[b.state] || (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999'));
   }
 
   async listShares(vehicleId: string) {
@@ -991,6 +1153,7 @@ export class DemoApi implements WerkstattApi {
     this.state.shares = this.state.shares.map((s) => (s.id === shareId ? revoked : s));
     this.audit(v, 'vehicle_share.revoked', 'vehicle_share', shareId);
     this.changed();
+    return this.map.share(revoked);
   }
 
   // ---------------------------------------------------------------------------
@@ -1012,35 +1175,31 @@ export class DemoApi implements WerkstattApi {
     return [...list].sort((a, b) => (a.startsAt < b.startsAt ? -1 : 1)).map((a) => map.appointment(a, v));
   }
 
-  private conflictsFor(input: AppointmentInput, ignoreId?: string): SchedulingConflict[] {
-    const conflicts: SchedulingConflict[] = [];
-    const overlaps = (a: DAppointment) => a.id !== ignoreId && ['confirmed', 'requested', 'proposed'].includes(a.status) && a.startsAt < input.endsAt && a.endsAt > input.startsAt;
-    for (const a of this.state.appointments.filter(overlaps)) {
-      if (input.resourceId && a.resourceId === input.resourceId) {
-        conflicts.push({ kind: 'resource_double_booked', message: `${this.state.resources.find((r) => r.id === a.resourceId)?.name ?? 'Arbeitsplatz'} ist bereits belegt (${customerName(this.state.customers.find((c) => c.id === a.customerId))}).`, relatedAppointmentId: a.id });
-      }
-      const shared = (input.assigneeIds ?? []).filter((id) => a.assigneeIds.includes(id));
-      for (const id of shared) conflicts.push({ kind: 'assignee_double_booked', message: `${this.userById(id)?.displayName ?? 'Mitarbeiter'} ist zu dieser Zeit schon eingeplant.`, relatedAppointmentId: a.id });
-    }
-    const start = new Date(input.startsAt);
-    const end = new Date(input.endsAt);
-    const weekday = ((start.getDay() + 6) % 7) + 1;
-    const hours = this.state.settings.openingHours.find((h) => h.weekday === weekday);
-    const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-    if (!hours || hhmm(start) < hours.opens || hhmm(end) > hours.closes) {
-      conflicts.push({ kind: 'outside_opening_hours', message: 'Der Termin liegt außerhalb der Öffnungszeiten.', relatedAppointmentId: null });
-    }
-    return conflicts;
+  private conflictsFor(candidate: ConflictCheckInput): SchedulingConflict[] {
+    return appointmentRules.conflictsFor({
+      candidate: { id: candidate.id ?? null, startsAt: new Date(candidate.startsAt).toISOString(), endsAt: new Date(candidate.endsAt).toISOString(), resourceId: candidate.resourceId ?? null, assigneeIds: candidate.assigneeIds ?? [], workOrderId: candidate.workOrderId ?? null },
+      appointments: this.state.appointments,
+      workingHours: this.state.workingHours,
+      openingHours: this.state.settings.openingHours,
+      partDemands: this.state.partDemands,
+      resourceNames: Object.fromEntries(this.state.resources.map((r) => [r.id, r.name])),
+      staffNames: Object.fromEntries(this.state.users.map((u) => [u.id, u.displayName])),
+    });
   }
 
   async createAppointment(input: AppointmentInput) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'appointments.write');
-    if (currentOwnerId(this.state.ownerships, input.vehicleId) !== input.customerId) throw ApiError.validation('Das Fahrzeug gehört nicht zu diesem Kunden.');
-    const conflicts = this.conflictsFor(input);
-    if (conflicts.length > 0 && !input.overrideConflictsReason?.trim()) {
-      throw ApiError.conflict(ERROR_CODES.conflict, 'Der Termin hat Konflikte. Speichern nur mit Begründung.', conflicts);
+    const parsed = AppointmentInputSchema.safeParse(input);
+    if (!parsed.success) throw ApiError.validation(parsed.error.issues[0]?.message ?? 'Eingaben prüfen', parsed.error.issues);
+    if (currentOwnerId(this.state.ownerships, input.vehicleId) !== input.customerId) {
+      throw ApiError.unprocessable(API_ERROR_CODES.vehicleNotOwnedByCustomer, 'Das Fahrzeug gehört nicht (mehr) zu diesem Kunden.');
+    }
+    const conflicts = this.conflictsFor({ startsAt: input.startsAt, endsAt: input.endsAt, resourceId: input.resourceId, assigneeIds: input.assigneeIds, workOrderId: input.workOrderId });
+    const reason = input.overrideConflictsReason?.trim() || null;
+    if (conflicts.length > 0 && !reason) {
+      throw ApiError.conflict(API_ERROR_CODES.schedulingConflicts, 'Es gibt Planungskonflikte. Speichern ist nur mit Begründung möglich.', conflicts);
     }
     const a: DAppointment = {
       id: uuid(),
@@ -1049,13 +1208,13 @@ export class DemoApi implements WerkstattApi {
       customerId: input.customerId,
       vehicleId: input.vehicleId,
       workOrderId: input.workOrderId ?? null,
-      startsAt: input.startsAt,
-      endsAt: input.endsAt,
+      startsAt: new Date(input.startsAt).toISOString(),
+      endsAt: new Date(input.endsAt).toISOString(),
       resourceId: input.resourceId ?? null,
       assigneeIds: input.assigneeIds ?? [],
       requestedBy: 'staff',
-      customerNote: input.customerNote ?? null,
-      internalNote: [input.internalNote, input.overrideConflictsReason ? `Konflikt bewusst übergangen: ${input.overrideConflictsReason}` : null].filter(Boolean).join('\n') || null,
+      customerNote: input.customerNote?.trim() || null,
+      internalNote: [input.internalNote?.trim(), reason && conflicts.length > 0 ? `Konflikt bewusst übergangen: ${reason}` : null].filter(Boolean).join('\n') || null,
       proposals: [],
       confirmedAt: this.nowIso(),
       cancelledAt: null,
@@ -1064,7 +1223,7 @@ export class DemoApi implements WerkstattApi {
     };
     this.state.appointments.push(a);
     this.notify(this.customerUserIds(a.customerId), 'appointment.confirmed', 'Termin bestätigt', `${vehicleLabel(this.state.vehicles.find((x) => x.id === a.vehicleId))}`, `/kunde/termine/${a.id}`);
-    this.audit(v, 'appointment.created', 'appointment', a.id);
+    this.audit(v, 'appointment.created', 'appointment', a.id, { conflicts: conflicts.map((c) => c.kind), overrideReason: conflicts.length > 0 ? reason : null });
     this.changed();
     return this.map.appointment(a, v);
   }
@@ -1099,10 +1258,10 @@ export class DemoApi implements WerkstattApi {
     return this.map.appointment(this.appointmentFor(v, id), v);
   }
 
-  async checkConflicts(input: AppointmentInput) {
+  async checkConflicts(input: ConflictCheckInput) {
     await this.gate();
     const v = this.viewer();
-    this.require(v, 'appointments.read');
+    this.require(v, 'appointments.write');
     return this.conflictsFor(input);
   }
 
@@ -1110,14 +1269,20 @@ export class DemoApi implements WerkstattApi {
     this.state.appointments = this.state.appointments.map((x) => (x.id === a.id ? a : x));
   }
 
-  async confirmAppointment(id: string) {
+  async confirmAppointment(id: string, input: { overrideConflictsReason?: string | null } = {}) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'appointments.write');
-    const a = appointmentRules.confirm(this.appointmentFor(v, id), this.nowIso());
+    const current = this.appointmentFor(v, id);
+    const conflicts = this.conflictsFor({ id: current.id, startsAt: current.startsAt, endsAt: current.endsAt, resourceId: current.resourceId, assigneeIds: current.assigneeIds, workOrderId: current.workOrderId });
+    const reason = input.overrideConflictsReason?.trim() || null;
+    if (conflicts.length > 0 && !reason) {
+      throw ApiError.conflict(API_ERROR_CODES.schedulingConflicts, 'Es gibt Planungskonflikte. Speichern ist nur mit Begründung möglich.', conflicts);
+    }
+    const a = appointmentRules.confirm(current, this.nowIso(), conflicts.length > 0 ? { internalNote: [current.internalNote, `Konflikt bewusst übergangen: ${reason}`].filter(Boolean).join('\n') } : {});
     this.replaceAppointment(a);
     this.notify(this.customerUserIds(a.customerId), 'appointment.confirmed', 'Termin bestätigt', vehicleLabel(this.state.vehicles.find((x) => x.id === a.vehicleId)), `/kunde/termine/${a.id}`);
-    this.audit(v, 'appointment.confirmed', 'appointment', id);
+    this.audit(v, 'appointment.confirmed', 'appointment', id, { conflicts: conflicts.map((c) => c.kind) });
     this.changed();
     return this.map.appointment(a, v);
   }
@@ -1128,7 +1293,7 @@ export class DemoApi implements WerkstattApi {
     this.require(v, 'appointments.write');
     const a = appointmentRules.proposeAlternative(this.appointmentFor(v, id), { id: uuid(), startsAt: input.startsAt, endsAt: input.endsAt }, this.nowIso());
     this.replaceAppointment(a);
-    this.notify(this.customerUserIds(a.customerId), 'appointment.proposed', 'Terminvorschlag der Werkstatt', input.message ?? 'Die Werkstatt schlägt einen anderen Termin vor.', `/kunde/termine/${a.id}`);
+    this.notify(this.customerUserIds(a.customerId), 'appointment.proposed', 'Terminvorschlag der Werkstatt', input.message?.trim() || 'Die Werkstatt schlägt einen anderen Termin vor.', `/kunde/termine/${a.id}`);
     this.audit(v, 'appointment.proposed', 'appointment', id);
     this.changed();
     return this.map.appointment(a, v);
@@ -1146,11 +1311,11 @@ export class DemoApi implements WerkstattApi {
     return this.map.appointment(a, v);
   }
 
-  async declineProposal(appointmentId: string, proposalId: string) {
+  async declineProposal(appointmentId: string, proposalId: string, input: { cancel?: boolean } = {}) {
     await this.gate();
     const v = this.viewer();
     this.requireCustomer(v);
-    const a = appointmentRules.declineProposal(this.appointmentFor(v, appointmentId), proposalId, this.nowIso());
+    const a = appointmentRules.declineProposal(this.appointmentFor(v, appointmentId), proposalId, this.nowIso(), input);
     this.replaceAppointment(a);
     this.notify(this.staffUserIds(), 'appointment.requested', 'Terminvorschlag abgelehnt', `${customerName(this.state.customers.find((c) => c.id === a.customerId))} bittet um einen anderen Termin.`, `/werkstatt/termine/${a.id}`);
     this.audit(v, 'appointment.proposal_declined', 'appointment', appointmentId);
@@ -1165,6 +1330,7 @@ export class DemoApi implements WerkstattApi {
     const a = appointmentRules.cancel(this.appointmentFor(v, id), input.reason, this.nowIso());
     this.replaceAppointment(a);
     if (v.role === 'customer') this.notify(this.staffUserIds(), 'appointment.requested', 'Termin abgesagt', `${customerName(this.state.customers.find((c) => c.id === a.customerId))}: ${input.reason}`, `/werkstatt/termine/${a.id}`);
+    else this.notify(this.customerUserIds(a.customerId), 'appointment.confirmed', 'Termin abgesagt', input.reason, `/kunde/termine/${a.id}`);
     this.audit(v, 'appointment.cancelled', 'appointment', id, { reason: input.reason });
     this.changed();
     return this.map.appointment(a, v);
@@ -1186,31 +1352,53 @@ export class DemoApi implements WerkstattApi {
     const v = this.viewer();
     const map = this.map;
     let list = this.visibleWorkOrders(v).map((w) => map.workOrderSummary(w, v));
-    if (query.work) list = list.filter((w) => w.status.work === query.work);
+    if (query.work === 'active') list = list.filter((w) => ['open', 'in_progress', 'work_completed'].includes(w.status.work));
+    else if (query.work) list = list.filter((w) => w.status.work === query.work);
+    if (query.q?.trim()) {
+      const q = query.q.trim().toLowerCase();
+      list = list.filter((w) => w.orderNumber.toLowerCase().includes(q) || w.title.toLowerCase().includes(q));
+    }
     if (query.approval) list = list.filter((w) => w.status.approval === query.approval);
     if (query.payment) list = list.filter((w) => w.status.payment === query.payment);
-    if (query.assigneeId) list = list.filter((w) => w.assignees.some((a) => a.userId === query.assigneeId));
+    if (query.assigneeId) {
+      const id = query.assigneeId;
+      list = list.filter((w) => w.assignees.some((a) => a.userId === id) || this.state.workItems.some((i) => i.workOrderId === w.id && i.assignedTo === id));
+    }
     if (query.readyForPickup !== undefined) list = list.filter((w) => w.status.readyForPickup === query.readyForPickup);
     if (query.customerId) list = list.filter((w) => w.customerId === query.customerId);
     if (query.vehicleId) list = list.filter((w) => w.vehicleId === query.vehicleId);
     return { items: list.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)), nextCursor: null };
   }
 
-  async createWorkOrder(input: CreateWorkOrderInput) {
+  private assertAssignable(ids: readonly (string | null | undefined)[]) {
+    for (const id of ids) {
+      if (!id) continue;
+      const u = this.userById(id);
+      if (!u || u.role === 'customer' || u.status === 'disabled') throw ApiError.unprocessable(API_ERROR_CODES.invalidAssignee, 'Mindestens ein zugewiesener Mitarbeiter ist unbekannt oder deaktiviert.');
+    }
+  }
+
+  async createWorkOrder(input: CreateWorkOrderInput, options: { draft?: boolean } = {}) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'workOrders.write');
-    if (currentOwnerId(this.state.ownerships, input.vehicleId) !== input.customerId) throw ApiError.validation('Das Fahrzeug gehört nicht zu diesem Kunden.');
+    const customer = this.state.customers.find((c) => c.id === input.customerId);
+    if (!customer || customer.archivedAt) throw ApiError.unprocessable(API_ERROR_CODES.customerInvalid, 'Der Kunde wurde nicht gefunden oder ist archiviert.');
+    if (currentOwnerId(this.state.ownerships, input.vehicleId) !== input.customerId) {
+      throw ApiError.unprocessable(API_ERROR_CODES.vehicleNotOwnedByCustomer, 'Das Fahrzeug gehört nicht (mehr) zu diesem Kunden. Bitte ein Fahrzeug des Kunden wählen.');
+    }
+    if (!input.title?.trim()) throw ApiError.validation('Bitte einen Titel angeben.');
+    this.assertAssignable([...(input.assigneeIds ?? []), ...(input.items ?? []).map((i) => i.assignedTo)]);
     const year = this.clock().getFullYear();
     const wo: DWorkOrder = {
       id: uuid(),
       orderNumber: `A-${year}-${String(++this.state.counters.workOrder).padStart(4, '0')}`,
       customerId: input.customerId,
       vehicleId: input.vehicleId,
-      status: 'open',
+      status: options.draft ? 'draft' : 'open',
       title: input.title.trim(),
-      descriptionCustomer: input.descriptionCustomer ?? null,
-      notesInternal: input.notesInternal ?? null,
+      descriptionCustomer: input.descriptionCustomer?.trim() || null,
+      notesInternal: input.notesInternal?.trim() || null,
       costLimitCents: input.costLimitCents ?? null,
       plannedStart: input.plannedStart ?? null,
       plannedEnd: input.plannedEnd ?? null,
@@ -1220,13 +1408,13 @@ export class DemoApi implements WerkstattApi {
       completionReviewedBy: null,
       cancelledAt: null,
       cancelReason: null,
-      assigneeIds: input.assigneeIds ?? [],
+      assigneeIds: [...new Set(input.assigneeIds ?? [])],
       createdAt: this.nowIso(),
       updatedAt: this.nowIso(),
     };
     this.state.workOrders.push(wo);
     (input.items ?? []).forEach((it, index) => this.state.workItems.push(this.newItem(wo.id, index + 1, it, 'agreed', 'intake')));
-    this.audit(v, 'work_order.created', 'work_order', wo.id);
+    this.audit(v, 'work_order.created', 'work_order', wo.id, { workOrderId: wo.id, customerId: wo.customerId, vehicleId: wo.vehicleId, itemCount: input.items?.length ?? 0 });
     this.changed();
     return this.map.workOrderDetail(wo, v);
   }
@@ -1273,24 +1461,31 @@ export class DemoApi implements WerkstattApi {
     const v = this.viewer();
     this.require(v, 'workOrders.write');
     const wo = this.workOrderFor(v, id);
+    if (wo.status === 'cancelled' || wo.status === 'picked_up') throw ApiError.conflict(API_ERROR_CODES.workOrderClosed, 'Der Auftrag ist abgeschlossen und kann nicht mehr geändert werden.');
     const { assigneeIds, ...rest } = input;
-    const next: DWorkOrder = { ...wo, ...Object.fromEntries(Object.entries(rest).filter(([, x]) => x !== undefined)), ...(assigneeIds ? { assigneeIds } : {}), updatedAt: this.nowIso() };
+    if (assigneeIds) this.assertAssignable(assigneeIds);
+    const next: DWorkOrder = { ...wo, ...Object.fromEntries(Object.entries(rest).filter(([, x]) => x !== undefined)), ...(assigneeIds ? { assigneeIds: [...new Set(assigneeIds)] } : {}), updatedAt: this.nowIso() };
     this.replaceWorkOrder(next);
-    this.audit(v, 'work_order.updated', 'work_order', id);
+    this.audit(v, 'work_order.updated', 'work_order', id, { workOrderId: id, fields: Object.keys(input) });
     this.changed();
     return this.map.workOrderDetail(next, v);
   }
 
+  /** Arbeitsstatus weiterschalten (Domain `canTransitionWorkOrder`). */
   async transitionWorkOrder(id: string, input: WorkOrderTransitionInput) {
     await this.gate();
     const v = this.viewer();
-    this.require(v, 'workOrders.write');
     const wo = this.workOrderFor(v, id);
-    const allowed: Record<string, string[]> = { draft: ['open', 'cancelled'], open: ['in_progress', 'cancelled'], in_progress: ['open', 'cancelled'], work_completed: ['in_progress', 'cancelled'] };
-    if (!allowed[wo.status]?.includes(input.to)) throw ApiError.conflict(ERROR_CODES.conflict, 'Dieser Statuswechsel ist nicht möglich.');
+    if (!isStaff(v)) throw ApiError.notFound();
+    const items = this.state.workItems.filter((i) => i.workOrderId === id);
+    const check = canTransitionWorkOrder(wo.status, input.to, { items, permissions: v.permissions });
+    if (!check.allowed) {
+      if (check.code === 'MISSING_PERMISSION') throw ApiError.forbidden(check.message);
+      throw ApiError.conflict(apiCodeFromDomain(check.code), check.message);
+    }
     const next: DWorkOrder = { ...wo, status: input.to, updatedAt: this.nowIso(), ...(input.to === 'cancelled' ? { cancelledAt: this.nowIso(), cancelReason: input.reason ?? null } : {}) };
     this.replaceWorkOrder(next);
-    this.audit(v, 'work_order.transition', 'work_order', id, { to: input.to });
+    this.audit(v, 'work_order.status_changed', 'work_order', id, { workOrderId: id, from: wo.status, to: input.to, reason: input.reason ?? null });
     this.changed();
     return this.map.workOrderDetail(next, v);
   }
@@ -1302,8 +1497,13 @@ export class DemoApi implements WerkstattApi {
     return this.map.workOrderDetail(this.doCompleteReview(v, id, input.odometerKm ?? null), v);
   }
 
+  /**
+   * Fachlicher Abschluss wie in der API: Serviceeinträge nur hier und genau einmal je
+   * erledigter, autorisierter Wartungsposition; ein wiederholter Aufruf erzeugt nichts Neues.
+   */
   private doCompleteReview(v: Viewer, id: string, odometerKm: number | null): DWorkOrder {
     const wo = this.workOrderFor(v, id);
+    const already = wo.status === 'completed' || wo.status === 'picked_up';
     const { workOrder, entries } = completeReview({
       workOrder: wo,
       items: this.state.workItems,
@@ -1311,14 +1511,16 @@ export class DemoApi implements WerkstattApi {
       maintenanceTypes: this.state.maintenanceTypes,
       workshopName: this.state.settings.name,
       reviewerId: v.user.id,
+      permissions: v.permissions,
       now: this.nowIso(),
       odometerKm,
       newId: uuid,
     });
+    if (!already && odometerKm !== null) this.recordOdometer(wo.vehicleId, odometerKm, this.nowIso(), 'work_completion', wo.id);
     this.replaceWorkOrder(workOrder);
     this.state.serviceEntries.push(...entries);
-    this.audit(v, 'work_order.completion_reviewed', 'work_order', id, { serviceEntries: entries.map((e) => e.id) });
-    for (const e of entries) this.audit(v, 'service_entry.created', 'service_entry', e.id, { workOrderId: id, workItemId: e.workItemId });
+    if (!already) this.audit(v, 'work_order.completion_reviewed', 'work_order', id, { workOrderId: id });
+    for (const e of entries) this.audit(v, 'service_entry.created', 'service_entry', e.id, { workOrderId: id, workItemId: e.workItemId, vehicleId: e.vehicleId });
     this.changed();
     return workOrder;
   }
@@ -1328,11 +1530,12 @@ export class DemoApi implements WerkstattApi {
     const v = this.viewer();
     this.require(v, 'workOrders.write');
     const wo = this.workOrderFor(v, id);
-    if (!['work_completed', 'completed'].includes(wo.status)) throw ApiError.conflict(ERROR_CODES.conflict, 'Erst wenn die Arbeiten erledigt sind, kann das Fahrzeug abholbereit gemeldet werden.');
+    if (wo.status !== 'work_completed' && wo.status !== 'completed') throw ApiError.conflict(API_ERROR_CODES.notReady, 'Abholbereit erst, wenn die Arbeiten erledigt sind.');
+    if (wo.readyForPickupAt) return this.map.workOrderDetail(wo, v);
     const next = { ...wo, readyForPickupAt: this.nowIso(), updatedAt: this.nowIso() };
     this.replaceWorkOrder(next);
-    this.notify(this.customerUserIds(wo.customerId), 'work_order.ready_for_pickup', 'Ihr Fahrzeug ist abholbereit', `${wo.orderNumber}: ${wo.title}`, `/kunde/auftraege/${wo.id}`);
-    this.audit(v, 'work_order.ready_for_pickup', 'work_order', id);
+    this.notify(this.customerUserIds(wo.customerId), 'work_order.ready_for_pickup', 'Fahrzeug abholbereit', 'Ihr Fahrzeug ist abholbereit.', `/kunde/auftraege/${wo.id}`);
+    this.audit(v, 'work_order.ready_for_pickup', 'work_order', id, { workOrderId: id });
     this.changed();
     return this.map.workOrderDetail(next, v);
   }
@@ -1340,12 +1543,17 @@ export class DemoApi implements WerkstattApi {
   async pickedUp(id: string) {
     await this.gate();
     const v = this.viewer();
-    this.require(v, 'workOrders.write');
     const wo = this.workOrderFor(v, id);
-    if (wo.status !== 'completed') throw ApiError.conflict(ERROR_CODES.conflict, 'Vor der Abholung muss der fachliche Abschluss bestätigt sein.');
+    if (!isStaff(v)) throw ApiError.notFound();
+    const items = this.state.workItems.filter((i) => i.workOrderId === id);
+    const check = canTransitionWorkOrder(wo.status, 'picked_up', { items, permissions: v.permissions });
+    if (!check.allowed) {
+      if (check.code === 'MISSING_PERMISSION') throw ApiError.forbidden(check.message);
+      throw ApiError.conflict(apiCodeFromDomain(check.code), check.message);
+    }
     const next: DWorkOrder = { ...wo, status: 'picked_up', pickedUpAt: this.nowIso(), updatedAt: this.nowIso() };
     this.replaceWorkOrder(next);
-    this.audit(v, 'work_order.picked_up', 'work_order', id);
+    this.audit(v, 'work_order.picked_up', 'work_order', id, { workOrderId: id });
     this.changed();
     return this.map.workOrderDetail(next, v);
   }
@@ -1355,11 +1563,27 @@ export class DemoApi implements WerkstattApi {
     const v = this.viewer();
     this.require(v, 'workOrders.write');
     const wo = this.workOrderFor(v, id);
-    const next = { ...wo, assigneeIds: userIds, updatedAt: this.nowIso() };
+    this.assertAssignable(userIds);
+    const next = { ...wo, assigneeIds: [...new Set(userIds)], updatedAt: this.nowIso() };
     this.replaceWorkOrder(next);
-    this.audit(v, 'work_order.assignees', 'work_order', id, { userIds });
+    this.audit(v, 'work_order.assignees_changed', 'work_order', id, { workOrderId: id, assigneeIds: next.assigneeIds });
     this.changed();
     return this.map.workOrderDetail(next, v);
+  }
+
+  /** Inhalts-Hash der Annahme wie in der API (Domain `computeIntakeHash`, nur kundenbezogener Inhalt). */
+  private intakeHash(intake: DIntake): string {
+    return computeIntakeHash({ ...intake, items: this.state.workItems.filter((i) => i.workOrderId === intake.workOrderId) });
+  }
+
+  /** Ändert sich der bestätigte Inhalt, gilt die frühere Bestätigung nicht mehr (Audit). */
+  private invalidateIntakeIfChanged(workOrderId: string, v: Viewer) {
+    const intake = this.state.intakes.find((i) => i.workOrderId === workOrderId);
+    if (!intake?.confirmedAt) return;
+    if (this.intakeHash(intake) !== intake.contentHash) {
+      Object.assign(intake, { confirmedAt: null, confirmationMethod: 'none' });
+      this.audit(v, 'intake.confirmation_invalidated', 'work_order', workOrderId, { workOrderId });
+    }
   }
 
   async getIntake(workOrderId: string) {
@@ -1368,7 +1592,7 @@ export class DemoApi implements WerkstattApi {
     this.workOrderFor(v, workOrderId);
     const intake = this.state.intakes.find((i) => i.workOrderId === workOrderId);
     if (!intake) throw ApiError.notFound();
-    return this.map.intake(intake, v);
+    return this.map.intake({ ...intake, contentHash: intake.confirmedAt ? intake.contentHash : this.intakeHash(intake) }, v);
   }
 
   async saveIntake(workOrderId: string, input: IntakeInputData) {
@@ -1376,44 +1600,57 @@ export class DemoApi implements WerkstattApi {
     const v = this.viewer();
     this.require(v, 'intake.write');
     const wo = this.workOrderFor(v, workOrderId);
+    if (wo.status === 'cancelled' || wo.status === 'picked_up') throw ApiError.conflict(API_ERROR_CODES.workOrderClosed, 'Der Auftrag ist abgeschlossen.');
+    if (!input.customerComplaint?.trim()) throw ApiError.validation('Bitte die Beanstandung des Kunden angeben.');
     let intake = this.state.intakes.find((i) => i.workOrderId === workOrderId);
     const data = {
       odometerKm: input.odometerKm,
-      fuelLevel: input.fuelLevel ?? null,
-      customerComplaint: input.customerComplaint,
-      damages: (input.damages ?? []).map((d) => ({ ...d, photoId: d.photoId ?? null })),
-      agreedServices: input.agreedServices,
+      fuelLevel: input.fuelLevel?.trim() || null,
+      customerComplaint: input.customerComplaint.trim(),
+      damages: (input.damages ?? []).map((d) => ({ area: d.area.trim(), description: d.description.trim(), photoId: d.photoId ?? null })),
+      agreedServices: input.agreedServices ?? '',
       costLimitCents: input.costLimitCents ?? null,
-      notesInternal: input.notesInternal ?? null,
-      notesCustomer: input.notesCustomer ?? null,
+      notesInternal: input.notesInternal?.trim() || null,
+      notesCustomer: input.notesCustomer?.trim() || null,
     };
-    if (intake?.confirmedAt) throw ApiError.conflict(ERROR_CODES.conflict, 'Die Annahme ist bereits bestätigt und kann nicht mehr geändert werden.');
+    const previousKm = intake?.odometerKm ?? null;
     if (intake) Object.assign(intake, data);
     else {
       intake = { id: uuid(), workOrderId, ...data, confirmedAt: null, confirmationMethod: 'none', contentHash: null };
       this.state.intakes.push(intake);
     }
-    intake.contentHash = sha256Hex(JSON.stringify({ workOrderId, ...data, customerId: wo.customerId }));
-    if (input.odometerKm !== null) {
-      this.state.odometer.push({ id: uuid(), vehicleId: wo.vehicleId, valueKm: input.odometerKm, recordedAt: this.nowIso(), source: 'intake', workOrderId, plausibility: 'ok' });
-    }
-    this.audit(v, 'intake.saved', 'work_order', workOrderId);
+    if (input.odometerKm !== null && input.odometerKm !== previousKm) this.recordOdometer(wo.vehicleId, input.odometerKm, this.nowIso(), 'intake', workOrderId);
+    this.audit(v, 'intake.saved', 'work_order', workOrderId, { workOrderId });
+    this.invalidateIntakeIfChanged(workOrderId, v);
+    if (!intake.confirmedAt) intake.contentHash = this.intakeHash(intake);
     this.changed();
     return this.map.intake(intake, v);
   }
 
+  /**
+   * Annahme bestätigen lassen (vor Ort durch die Werkstatt oder in der App durch den Kunden),
+   * gebunden an den Inhalts-Hash. Deckt nur die dort vereinbarten Leistungen (R-ANN-3).
+   */
   async confirmIntake(workOrderId: string, input: ConfirmIntakeInput) {
     await this.gate();
     const v = this.viewer();
-    const intake = this.state.intakes.find((i) => i.workOrderId === workOrderId);
     this.workOrderFor(v, workOrderId);
+    if (input.method === 'app') {
+      if (v.role !== 'customer') throw ApiError.forbidden('Die Bestätigung in der App erfolgt durch den Kunden.');
+    } else this.require(v, 'intake.write');
+    const intake = this.state.intakes.find((i) => i.workOrderId === workOrderId);
     if (!intake) throw ApiError.notFound();
-    if (intake.contentHash !== input.contentHash) throw ApiError.conflict(ERROR_CODES.conflict, 'Die Annahme wurde inzwischen geändert.');
-    if (input.method === 'app' && v.role !== 'customer') throw ApiError.forbidden('Die Bestätigung in der App erfolgt durch den Kunden.');
-    if (input.method === 'on_site_signature') this.require(v, 'intake.write');
-    Object.assign(intake, { confirmedAt: this.nowIso(), confirmationMethod: input.method });
-    this.audit(v, 'intake.confirmed', 'work_order', workOrderId, { method: input.method, contentHash: input.contentHash });
-    this.changed();
+    const current = this.intakeHash(intake);
+    if (current !== input.contentHash.toLowerCase()) throw ApiError.conflict(API_ERROR_CODES.intakeChanged, 'Die Annahme wurde inzwischen geändert. Bitte die aktuelle Fassung prüfen.');
+    if (!(intake.confirmedAt && intake.contentHash === current)) {
+      Object.assign(intake, { confirmedAt: this.nowIso(), confirmationMethod: input.method, contentHash: current });
+      this.audit(v, 'intake.confirmed', 'work_order', workOrderId, { workOrderId, method: input.method, contentHash: current });
+      if (v.role === 'customer') {
+        const wo = this.state.workOrders.find((w) => w.id === workOrderId)!;
+        this.notify(this.staffUserIds(), 'approval.decided', `Annahme bestätigt: ${wo.orderNumber}`, `${customerName(this.state.customers.find((c) => c.id === wo.customerId))} hat die Fahrzeugannahme in der App bestätigt.`, `/werkstatt/auftraege/${wo.id}/annahme`);
+      }
+      this.changed();
+    }
     return this.map.intake(intake, v);
   }
 
@@ -1421,11 +1658,22 @@ export class DemoApi implements WerkstattApi {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'workOrders.write');
-    this.workOrderFor(v, workOrderId);
+    const wo = this.workOrderFor(v, workOrderId);
+    if (!['draft', 'open', 'in_progress', 'work_completed'].includes(wo.status)) {
+      throw ApiError.conflict(API_ERROR_CODES.workOrderClosed, 'Zu einem abgeschlossenen Auftrag können keine Positionen hinzugefügt werden.');
+    }
+    const intake = this.state.intakes.find((i) => i.workOrderId === workOrderId);
+    if (intake?.confirmedAt) {
+      // R-ANN-3: Die bestätigte Annahme deckt keine späteren Zusatzarbeiten
+      throw ApiError.conflict(API_ERROR_CODES.approvalRequired, 'Die Annahme ist bestätigt. Weitere Arbeiten bitte als Freigabeanfrage an den Kunden senden.');
+    }
+    if (!input.title?.trim()) throw ApiError.validation('Bitte einen Titel angeben.');
+    this.assertAssignable([input.assignedTo]);
     const position = this.state.workItems.filter((i) => i.workOrderId === workOrderId).reduce((m, i) => Math.max(m, i.position), 0) + 1;
     const item = this.newItem(workOrderId, position, input, 'agreed', 'intake');
     this.state.workItems.push(item);
-    this.audit(v, 'work_item.added', 'work_order', workOrderId, { itemId: item.id });
+    this.audit(v, 'work_item.added', 'work_item', item.id, { workOrderId });
+    this.refreshWorkStatus(workOrderId);
     this.changed();
     return this.map.workItem(item, v);
   }
@@ -1435,103 +1683,136 @@ export class DemoApi implements WerkstattApi {
     const v = this.viewer();
     this.require(v, 'workOrders.write');
     const item = this.itemFor(v, itemId);
-    if (item.approvalRequestId) throw ApiError.conflict(ERROR_CODES.conflict, 'Positionen aus Freigabeanfragen werden über eine neue Version geändert.');
+    if (item.approvalRequestId) throw ApiError.conflict(API_ERROR_CODES.approvalBound, 'Diese Position gehört zu einer Freigabeanfrage. Änderungen bitte als neue Fassung der Anfrage senden.');
+    if (item.executionStatus === 'done' || item.executionStatus === 'not_done') throw ApiError.conflict(API_ERROR_CODES.itemFinished, 'Abgeschlossene Positionen können nicht mehr geändert werden.');
+    this.assertAssignable([input.assignedTo]);
     const next = { ...item, ...Object.fromEntries(Object.entries(input).filter(([, x]) => x !== undefined)) } as DWorkItem;
     this.replaceItem(next);
-    this.audit(v, 'work_item.updated', 'work_order', item.workOrderId, { itemId });
+    this.audit(v, 'work_item.updated', 'work_item', itemId, { workOrderId: item.workOrderId, fields: Object.keys(input) });
+    this.invalidateIntakeIfChanged(item.workOrderId, v);
     this.changed();
     return this.map.workItem(next, v);
   }
 
-  private executableItem(v: Viewer, itemId: string): DWorkItem {
-    this.require(v, 'workItems.execute');
+  /** Ausführung wie in der API: Recht und Zuweisung (Domain `canExecuteWorkItem`), dann Übergang. */
+  private executeItem(v: Viewer, itemId: string, run: (state: { authorization: DWorkItem['authorization']; executionStatus: DWorkItem['executionStatus']; maintenanceTypeId: string | null }) => WorkItemTransitionResult) {
     const item = this.itemFor(v, itemId);
-    if (v.role === 'mechanic' && item.assignedTo !== v.user.id && !this.state.workOrders.find((w) => w.id === item.workOrderId)?.assigneeIds.includes(v.user.id)) {
-      throw ApiError.forbidden('Diese Position ist Ihnen nicht zugewiesen.');
+    const wo = this.state.workOrders.find((w) => w.id === item.workOrderId)!;
+    const decision = canExecuteWorkItem(this.actorOf(v), {
+      assignedToUserId: item.assignedTo,
+      workOrderAssigneeUserIds: wo.assigneeIds,
+      authorization: item.authorization,
+      workOrderStatus: wo.status,
+    });
+    if (!decision.allowed) {
+      if (decision.notFound) throw ApiError.notFound();
+      if (decision.reason === 'ITEM_NOT_AUTHORIZED') {
+        const reason = item.authorization === 'pending_approval' ? 'Die Position wartet auf Kundenfreigabe.' : 'Die Position wurde vom Kunden abgelehnt oder zurückgezogen und wird nicht ausgeführt.';
+        throw ApiError.conflict(API_ERROR_CODES.notAuthorized, reason);
+      }
+      throw ApiError.forbidden(decision.reason === 'NOT_ASSIGNED' ? 'Diese Position ist Ihnen nicht zugewiesen.' : decision.reason === 'WORK_ORDER_NOT_ACTIVE' ? 'Im aktuellen Auftragsstatus können keine Arbeiten ausgeführt werden.' : 'Dafür fehlt die Berechtigung.');
     }
-    if (!itemIsExecutable(item)) throw ApiError.conflict(ERROR_CODES.conflict, item.authorization === 'pending_approval' ? 'Wartet auf Kundenfreigabe.' : 'Diese Position darf nicht ausgeführt werden.');
-    return item;
+    const result = run({ authorization: item.authorization, executionStatus: item.executionStatus, maintenanceTypeId: item.maintenanceTypeId });
+    if (!result.ok) throw ApiError.conflict(apiCodeFromDomain(result.error.code), result.error.message);
+    return { item, wo, t: result.value };
   }
 
   private minutesSince(iso: string | null): number {
     return iso ? Math.max(0, Math.round((this.clock().getTime() - Date.parse(iso)) / 60_000)) : 0;
   }
 
-  async startWorkItem(itemId: string) {
-    await this.gate();
-    const v = this.viewer();
-    const item = this.executableItem(v, itemId);
-    if (item.executionStatus === 'done' || item.executionStatus === 'not_done') throw ApiError.conflict(ERROR_CODES.conflict, 'Die Position ist bereits abgeschlossen.');
-    const next: DWorkItem = { ...item, executionStatus: 'in_progress', runningSince: item.runningSince ?? this.nowIso(), assignedTo: item.assignedTo ?? v.user.id };
-    this.replaceItem(next);
-    this.refreshWorkStatus(item.workOrderId);
-    this.audit(v, 'work_item.started', 'work_order', item.workOrderId, { itemId });
-    this.changed();
-    return this.map.workItem(next, v);
+  private applyTimeEntry(item: DWorkItem, t: { timeEntry: { action: 'open' | 'close' | 'none' } }): Pick<DWorkItem, 'runningSince' | 'trackedMinutes'> {
+    if (t.timeEntry.action === 'open') return { runningSince: this.nowIso(), trackedMinutes: item.trackedMinutes };
+    if (t.timeEntry.action === 'close') return { runningSince: null, trackedMinutes: item.trackedMinutes + this.minutesSince(item.runningSince) };
+    return { runningSince: item.runningSince, trackedMinutes: item.trackedMinutes };
   }
 
-  async pauseWorkItem(itemId: string) {
+  async startWorkItem(itemId: string, options: { idempotencyKey?: string } = {}) {
     await this.gate();
     const v = this.viewer();
-    const item = this.executableItem(v, itemId);
-    const next: DWorkItem = { ...item, executionStatus: 'paused', trackedMinutes: item.trackedMinutes + this.minutesSince(item.runningSince), runningSince: null };
-    this.replaceItem(next);
-    this.audit(v, 'work_item.paused', 'work_order', item.workOrderId, { itemId });
-    this.changed();
-    return this.map.workItem(next, v);
+    return this.once(options.idempotencyKey, v.user.id, () => {
+      const { item, t } = this.executeItem(v, itemId, (s) => startItem(s, { now: this.clock() }));
+      const next: DWorkItem = { ...item, executionStatus: t.executionStatus, ...this.applyTimeEntry(item, t), assignedTo: item.assignedTo ?? v.user.id };
+      this.replaceItem(next);
+      this.audit(v, 'work_item.started', 'work_item', itemId, { workOrderId: item.workOrderId });
+      this.refreshWorkStatus(item.workOrderId);
+      this.changed();
+      return this.map.workItem(next, v);
+    });
   }
 
-  async finishWorkItem(itemId: string, input: FinishWorkItemInput) {
+  async pauseWorkItem(itemId: string, options: { idempotencyKey?: string } = {}) {
     await this.gate();
     const v = this.viewer();
-    const item = this.executableItem(v, itemId);
-    if (item.maintenanceTypeId && (input.odometerKm === undefined || input.odometerKm === null)) {
-      throw ApiError.validation('Für Wartungsarbeiten ist der Kilometerstand beim Abschluss Pflicht.');
-    }
-    const wo = this.state.workOrders.find((w) => w.id === item.workOrderId)!;
-    const next: DWorkItem = {
-      ...item,
-      executionStatus: 'done',
-      doneAt: this.nowIso(),
-      doneBy: v.user.id,
-      doneOdometerKm: input.odometerKm ?? null,
-      resultNotes: input.resultNotes ?? item.resultNotes,
-      intervalKm: input.intervalKm ?? item.intervalKm,
-      intervalMonths: input.intervalMonths ?? item.intervalMonths,
-      trackedMinutes: item.trackedMinutes + this.minutesSince(item.runningSince),
-      runningSince: null,
-    };
-    this.replaceItem(next);
-    if (input.odometerKm !== undefined && input.odometerKm !== null) {
-      this.state.odometer.push({ id: uuid(), vehicleId: wo.vehicleId, valueKm: input.odometerKm, recordedAt: this.nowIso(), source: 'work_completion', workOrderId: wo.id, plausibility: 'ok' });
-    }
-    this.refreshWorkStatus(item.workOrderId);
-    this.audit(v, 'work_item.finished', 'work_order', item.workOrderId, { itemId });
-    this.changed();
-    return this.map.workItem(next, v);
+    return this.once(options.idempotencyKey, v.user.id, () => {
+      const { item, t } = this.executeItem(v, itemId, (s) => pauseItem(s, { now: this.clock() }));
+      const next: DWorkItem = { ...item, executionStatus: t.executionStatus, ...this.applyTimeEntry(item, t) };
+      this.replaceItem(next);
+      this.audit(v, 'work_item.paused', 'work_item', itemId, { workOrderId: item.workOrderId });
+      this.changed();
+      return this.map.workItem(next, v);
+    });
   }
 
-  async notDoneWorkItem(itemId: string, input: NotDoneWorkItemInput) {
+  /**
+   * Abschluss (Domain `finishItem`): Wartungsposition verlangt km-Stand; ausdrücklich
+   * `odometerKm: null` heißt "km unbekannt". Fehlt das Feld: 409 `odometer_required`.
+   * Erzeugt nie selbst einen Serviceeintrag (erst der fachliche Abschluss).
+   */
+  async finishWorkItem(itemId: string, input: FinishWorkItemInput, options: { idempotencyKey?: string } = {}) {
     await this.gate();
     const v = this.viewer();
-    this.require(v, 'workItems.execute');
-    const item = this.itemFor(v, itemId);
-    const next: DWorkItem = { ...item, executionStatus: 'not_done', resultNotes: input.reason, runningSince: null };
-    this.replaceItem(next);
-    this.refreshWorkStatus(item.workOrderId);
-    this.audit(v, 'work_item.not_done', 'work_order', item.workOrderId, { itemId, reason: input.reason });
-    this.changed();
-    return this.map.workItem(next, v);
+    return this.once(options.idempotencyKey, v.user.id, () => {
+      const hasKmKey = Object.prototype.hasOwnProperty.call(input, 'odometerKm');
+      const { item, wo, t } = this.executeItem(v, itemId, (s) =>
+        finishItem(s, { now: this.clock(), odometerKm: input.odometerKm ?? null, odometerUnknown: hasKmKey && input.odometerKm === null, resultNotes: input.resultNotes ?? null }),
+      );
+      const next: DWorkItem = {
+        ...item,
+        executionStatus: t.executionStatus,
+        doneAt: t.doneAt ?? this.nowIso(),
+        doneBy: v.user.id,
+        doneOdometerKm: t.doneOdometerKm,
+        resultNotes: t.resultNotes,
+        intervalKm: input.intervalKm !== undefined ? input.intervalKm : item.intervalKm,
+        intervalMonths: input.intervalMonths !== undefined ? input.intervalMonths : item.intervalMonths,
+        ...this.applyTimeEntry(item, t),
+      };
+      this.replaceItem(next);
+      if (t.doneOdometerKm !== null) this.recordOdometer(wo.vehicleId, t.doneOdometerKm, this.nowIso(), 'work_completion', wo.id);
+      this.audit(v, 'work_item.finished', 'work_item', itemId, { workOrderId: item.workOrderId, odometerUnknown: t.odometerUnknown });
+      this.refreshWorkStatus(item.workOrderId);
+      this.changed();
+      return this.map.workItem(next, v);
+    });
   }
 
-  async addPart(itemId: string, input: PartUsedInput) {
+  async notDoneWorkItem(itemId: string, input: NotDoneWorkItemInput, options: { idempotencyKey?: string } = {}) {
     await this.gate();
     const v = this.viewer();
-    this.require(v, 'workItems.execute');
-    const item = this.itemFor(v, itemId);
-    this.replaceItem({ ...item, parts: [...item.parts, { partNumber: input.partNumber ?? null, description: input.description, quantity: input.quantity, unitPriceCents: input.unitPriceCents ?? null }] });
-    this.audit(v, 'work_item.part_added', 'work_order', item.workOrderId, { itemId });
-    this.changed();
+    return this.once(options.idempotencyKey, v.user.id, () => {
+      const { item, t } = this.executeItem(v, itemId, (s) => markNotDone(s, { now: this.clock(), reason: input.reason }));
+      const next: DWorkItem = { ...item, executionStatus: t.executionStatus, resultNotes: t.resultNotes, ...this.applyTimeEntry(item, t) };
+      this.replaceItem(next);
+      this.audit(v, 'work_item.not_done', 'work_item', itemId, { workOrderId: item.workOrderId, reason: input.reason });
+      this.refreshWorkStatus(item.workOrderId);
+      this.changed();
+      return this.map.workItem(next, v);
+    });
+  }
+
+  async addPart(itemId: string, input: PartUsedInput, options: { idempotencyKey?: string } = {}) {
+    await this.gate();
+    const v = this.viewer();
+    return this.once(options.idempotencyKey, v.user.id, () => {
+      const { item } = this.executeItem(v, itemId, (s) => ({ ok: true, value: { executionStatus: s.executionStatus, doneAt: null, doneOdometerKm: null, odometerUnknown: false, resultNotes: null, timeEntry: { action: 'none' } } }));
+      if (!input.description?.trim()) throw ApiError.validation('Bitte das Teil beschreiben.');
+      const next = { ...item, parts: [...item.parts, { partNumber: input.partNumber?.trim() || null, description: input.description.trim(), quantity: input.quantity, unitPriceCents: v.role === 'mechanic' ? null : (input.unitPriceCents ?? null) }] };
+      this.replaceItem(next);
+      this.audit(v, 'work_item.part_added', 'work_item', itemId, { workOrderId: item.workOrderId });
+      this.changed();
+      return this.map.workItem(next, v);
+    });
   }
 
   async listFindings(workOrderId: string) {
@@ -1540,7 +1821,10 @@ export class DemoApi implements WerkstattApi {
     if (!isStaff(v)) throw ApiError.notFound();
     this.workOrderFor(v, workOrderId);
     const map = this.map;
-    return this.state.findings.filter((f) => f.workOrderId === workOrderId).map((f) => map.finding(f));
+    return this.state.findings
+      .filter((f) => f.workOrderId === workOrderId)
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
+      .map((f) => map.finding(f));
   }
 
   async createFinding(workOrderId: string, input: FindingInput) {
@@ -1548,40 +1832,57 @@ export class DemoApi implements WerkstattApi {
     const v = this.viewer();
     this.require(v, 'findings.write');
     this.workOrderFor(v, workOrderId);
-    const existing = input.id ? this.state.findings.find((f) => f.id === input.id) : undefined;
-    if (existing) return this.map.finding(existing); // Offline-Wiederholung: keine Dublette
-    const f = { id: input.id ?? uuid(), workOrderId, workItemId: input.workItemId ?? null, description: input.description, severity: input.severity, status: 'new' as const, reportedBy: v.user.id, dictated: input.dictated ?? false, photoIds: input.photoIds ?? [], createdAt: this.nowIso() };
+    if (input.id) {
+      const existing = this.state.findings.find((f) => f.id === input.id);
+      if (existing) {
+        if (existing.workOrderId !== workOrderId || existing.reportedBy !== v.user.id) throw ApiError.conflict(API_ERROR_CODES.idInUse, 'Diese ID ist bereits vergeben.');
+        return this.map.finding(existing); // Offline-Wiederholung: keine Dublette
+      }
+    }
+    if (!input.description?.trim()) throw ApiError.validation('Bitte die Feststellung beschreiben.');
+    if (input.workItemId && !this.state.workItems.some((i) => i.id === input.workItemId && i.workOrderId === workOrderId)) {
+      throw ApiError.unprocessable(API_ERROR_CODES.invalidWorkItem, 'Die Position gehört nicht zu diesem Auftrag.');
+    }
+    const f = { id: input.id ?? uuid(), workOrderId, workItemId: input.workItemId ?? null, description: input.description.trim(), severity: input.severity, status: 'new' as const, reportedBy: v.user.id, dictated: input.dictated ?? false, photoIds: [] as string[], createdAt: this.nowIso() };
+    for (const photoId of input.photoIds ?? []) {
+      const photo = this.state.photos.find((p) => p.id === photoId && p.workOrderId === workOrderId);
+      if (photo) {
+        photo.findingId = f.id;
+        f.photoIds.push(photo.id);
+      }
+    }
     this.state.findings.push(f);
-    this.audit(v, 'finding.created', 'work_order', workOrderId, { findingId: f.id });
+    this.audit(v, 'finding.created', 'finding', f.id, { workOrderId, severity: f.severity });
     this.changed();
     return this.map.finding(f);
   }
 
-  async reportFinding(findingId: string) {
+  private changeFinding(v: Viewer, findingId: string, to: 'reported' | 'dismissed') {
+    const f = this.state.findings.find((x) => x.id === findingId);
+    if (!f) throw ApiError.notFound();
+    const wo = this.workOrderFor(v, f.workOrderId);
+    if (f.status === 'converted' || f.status === 'dismissed') throw ApiError.conflict(API_ERROR_CODES.findingClosed, 'Die Feststellung ist bereits erledigt.');
+    if (f.status === to) return f;
+    f.status = to;
+    this.audit(v, to === 'reported' ? 'finding.reported' : 'finding.dismissed', 'finding', f.id, { workOrderId: wo.id });
+    if (to === 'reported') this.notify(this.staffUserIds(), 'finding.reported', 'Zusatzarbeit gemeldet', `Zu Auftrag ${wo.orderNumber} wurde eine Zusatzarbeit gemeldet.`, `/werkstatt/auftraege/${wo.id}/arbeiten`);
+    this.changed();
+    return f;
+  }
+
+  async reportFinding(findingId: string, options: { idempotencyKey?: string } = {}) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'findings.write');
-    const f = this.state.findings.find((x) => x.id === findingId);
-    if (!f) throw ApiError.notFound();
-    this.workOrderFor(v, f.workOrderId);
-    f.status = 'reported';
-    const wo = this.state.workOrders.find((w) => w.id === f.workOrderId)!;
-    this.notify(this.staffUserIds(), 'finding.reported', 'Zusatzarbeit gemeldet', `${wo.orderNumber}: ${f.description.slice(0, 80)}`, `/werkstatt/auftraege/${wo.id}/arbeiten`);
-    this.audit(v, 'finding.reported', 'work_order', f.workOrderId, { findingId });
-    this.changed();
-    return this.map.finding(f);
+    return this.once(options.idempotencyKey, v.user.id, () => this.map.finding(this.changeFinding(v, findingId, 'reported')));
   }
 
   async dismissFinding(findingId: string) {
     await this.gate();
     const v = this.viewer();
-    this.require(v, 'workOrders.write');
-    const f = this.state.findings.find((x) => x.id === findingId);
-    if (!f) throw ApiError.notFound();
-    f.status = 'dismissed';
-    this.audit(v, 'finding.dismissed', 'work_order', f.workOrderId, { findingId });
-    this.changed();
-    return this.map.finding(f);
+    if (!isStaff(v)) throw ApiError.notFound();
+    if (!(can(v, 'approvals.request') || can(v, 'workOrders.write'))) throw ApiError.forbidden();
+    return this.map.finding(this.changeFinding(v, findingId, 'dismissed'));
   }
 
   async listPhotos(workOrderId: string) {
@@ -1589,7 +1890,10 @@ export class DemoApi implements WerkstattApi {
     const v = this.viewer();
     this.workOrderFor(v, workOrderId);
     const map = this.map;
-    return this.state.photos.filter((p) => p.workOrderId === workOrderId && (isStaff(v) || p.visibility === 'customer')).map((p) => map.photo(p));
+    return this.state.photos
+      .filter((p) => p.workOrderId === workOrderId && (isStaff(v) || p.visibility === 'customer'))
+      .sort((a, b) => (a.takenAt < b.takenAt ? -1 : 1))
+      .map((p) => map.photo(p));
   }
 
   async attachPhoto(workOrderId: string, input: AttachPhotoInput) {
@@ -1599,15 +1903,24 @@ export class DemoApi implements WerkstattApi {
     this.workOrderFor(v, workOrderId);
     if (input.id) {
       const existing = this.state.photos.find((p) => p.id === input.id);
-      if (existing) return this.map.photo(existing);
+      if (existing) {
+        if (existing.workOrderId !== workOrderId || existing.fileId !== input.fileId) throw ApiError.conflict(API_ERROR_CODES.idInUse, 'Diese ID ist bereits vergeben.');
+        return this.map.photo(existing);
+      }
     }
-    const photo = { id: input.id ?? uuid(), workOrderId, fileId: input.fileId, context: input.context, findingId: input.findingId ?? null, visibility: 'internal' as Visibility, caption: input.caption ?? null, takenAt: input.takenAt ?? this.nowIso() };
+    const file = this.state.files.find((f) => f.id === input.fileId);
+    if (!file) throw ApiError.unprocessable(API_ERROR_CODES.invalidPhotos, 'Die Datei wurde nicht gefunden.');
+    if (!IMAGE_TYPES.has(file.mimeType)) throw ApiError.unprocessable(API_ERROR_CODES.notAnImage, 'Fotos müssen Bilddateien sein (JPEG, PNG, WebP, HEIC).');
+    if (input.findingId && !this.state.findings.some((f) => f.id === input.findingId && f.workOrderId === workOrderId)) {
+      throw ApiError.unprocessable(API_ERROR_CODES.invalidFinding, 'Die Feststellung gehört nicht zu diesem Auftrag.');
+    }
+    const photo = { id: input.id ?? uuid(), workOrderId, fileId: input.fileId, context: input.context, findingId: input.findingId ?? null, visibility: 'internal' as Visibility, caption: input.caption?.trim() || null, takenAt: input.takenAt ?? this.nowIso() };
     this.state.photos.push(photo);
     if (photo.findingId) {
       const f = this.state.findings.find((x) => x.id === photo.findingId);
       if (f && !f.photoIds.includes(photo.id)) f.photoIds.push(photo.id);
     }
-    this.audit(v, 'photo.attached', 'work_order', workOrderId, { photoId: photo.id });
+    this.audit(v, 'photo.attached', 'photo', photo.id, { workOrderId, context: photo.context });
     this.changed();
     return this.map.photo(photo);
   }
@@ -1618,8 +1931,9 @@ export class DemoApi implements WerkstattApi {
     this.require(v, 'documents.publish');
     const photo = this.state.photos.find((p) => p.id === photoId);
     if (!photo) throw ApiError.notFound();
+    this.workOrderFor(v, photo.workOrderId);
     photo.visibility = visibility;
-    this.audit(v, 'photo.visibility', 'work_order', photo.workOrderId, { photoId, visibility });
+    this.audit(v, 'photo.visibility_changed', 'photo', photoId, { workOrderId: photo.workOrderId, visibility });
     this.changed();
     return this.map.photo(photo);
   }
@@ -1631,30 +1945,54 @@ export class DemoApi implements WerkstattApi {
     const wo = this.workOrderFor(v, workOrderId);
     const labels: Record<string, string> = {
       'work_order.created': 'Auftrag angelegt',
+      'work_order.updated': 'Auftrag geändert',
+      'work_order.status_changed': 'Arbeitsstatus geändert',
+      'work_order.assignees_changed': 'Mitarbeiter zugewiesen',
       'intake.saved': 'Annahme gespeichert',
       'intake.confirmed': 'Annahme bestätigt',
+      'intake.confirmation_invalidated': 'Annahme geändert, Bestätigung ungültig',
+      'work_item.added': 'Position hinzugefügt',
+      'work_item.updated': 'Position geändert',
+      'approval.created': 'Freigabeanfrage angelegt (Entwurf)',
       'approval.sent': 'Freigabeanfrage gesendet',
-      'approval.revised': 'Neue Version der Freigabeanfrage',
+      'approval.version_sent': 'Neue Version der Freigabeanfrage gesendet',
       'approval.withdrawn': 'Freigabeanfrage zurückgezogen',
       'approval.decided': 'Kundenentscheidung',
+      'finding.created': 'Feststellung erfasst',
+      'finding.reported': 'Zusatzarbeit an Service gemeldet',
+      'finding.dismissed': 'Feststellung verworfen',
+      'photo.attached': 'Foto hinzugefügt',
+      'photo.visibility_changed': 'Sichtbarkeit eines Fotos geändert',
       'work_item.started': 'Arbeit gestartet',
       'work_item.paused': 'Arbeit pausiert',
       'work_item.finished': 'Arbeit abgeschlossen',
+      'work_item.not_done': 'Position nicht durchgeführt',
+      'work_item.part_added': 'Teil erfasst',
       'work_order.completion_reviewed': 'Fachlicher Abschluss bestätigt',
       'service_entry.created': 'Serviceeintrag erzeugt',
       'work_order.ready_for_pickup': 'Abholbereit gemeldet',
       'work_order.picked_up': 'Abgeholt',
+      'document.created': 'Dokument hochgeladen',
+      'document.version_added': 'Neue Dokumentversion',
+      'document.published': 'Dokument veröffentlicht',
+      'document.unpublished': 'Veröffentlichung zurückgezogen',
+      'invoice.created': 'Rechnung angelegt (Entwurf)',
       'invoice.issued': 'Rechnung gestellt',
-      'payment.booked': 'Zahlung gebucht',
+      'invoice.cancelled': 'Rechnung storniert',
+      'payment.booked': 'Zahlung gebucht (Anbieter bestätigt)',
+      'payment.manual_recorded': 'Zahlung manuell zugeordnet',
+      'refund.requested': 'Erstattung ausgelöst',
     };
     const map = this.map;
     const fromAudit = this.state.audit
       .filter((a) => a.entityId === workOrderId || a.data.workOrderId === workOrderId)
+      .filter((a, i, all) => !(a.action === 'work_order.created' && all.findIndex((x) => x.action === 'work_order.created') !== i))
       .map((a) => {
         const entry = map.audit(a);
         return { id: a.id, occurredAt: a.occurredAt, actorDisplayName: entry.actorDisplayName, action: a.action, summary: labels[a.action] ?? a.action };
       });
-    const base = [{ id: `created-${wo.id}`, occurredAt: wo.createdAt, actorDisplayName: null, action: 'work_order.created', summary: 'Auftrag angelegt' }];
+    const hasCreated = fromAudit.some((e) => e.action === 'work_order.created');
+    const base = hasCreated ? [] : [{ id: `created-${wo.id}`, occurredAt: wo.createdAt, actorDisplayName: null, action: 'work_order.created', summary: 'Auftrag angelegt' }];
     return [...base, ...fromAudit].sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : -1));
   }
 
@@ -1666,6 +2004,7 @@ export class DemoApi implements WerkstattApi {
     await this.gate();
     const v = this.viewer();
     this.workOrderFor(v, workOrderId);
+    if (v.role === 'mechanic') throw ApiError.forbidden('Freigabeanfragen enthalten Preise und sind für Mechaniker nicht sichtbar.');
     const map = this.map;
     return this.state.approvals
       .filter((r) => r.workOrderId === workOrderId && (isStaff(v) || r.status !== 'draft'))
@@ -1673,18 +2012,31 @@ export class DemoApi implements WerkstattApi {
       .map((r) => map.approval(r, v));
   }
 
+  private validateApprovalReferences(workOrderId: string, input: ApprovalDraft) {
+    for (const id of input.photoIds ?? []) {
+      if (!this.state.photos.some((p) => p.id === id && p.workOrderId === workOrderId)) throw ApiError.unprocessable(API_ERROR_CODES.invalidPhotos, 'Ein Foto gehört nicht zu diesem Auftrag.');
+    }
+    if (input.findingId && !this.state.findings.some((f) => f.id === input.findingId && f.workOrderId === workOrderId)) {
+      throw ApiError.unprocessable(API_ERROR_CODES.invalidFinding, 'Die Feststellung gehört nicht zu diesem Auftrag.');
+    }
+  }
+
   async createApproval(workOrderId: string, input: ApprovalDraft) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'approvals.request');
-    this.workOrderFor(v, workOrderId);
+    const wo = this.workOrderFor(v, workOrderId);
+    if (!['draft', 'open', 'in_progress', 'work_completed'].includes(wo.status)) {
+      throw ApiError.conflict(API_ERROR_CODES.workOrderClosed, 'Zu einem abgeschlossenen Auftrag können keine Freigaben angefragt werden.');
+    }
+    this.validateApprovalReferences(workOrderId, input);
     const req = approvalRules.createDraft({ id: uuid(), versionId: uuid(), workOrderId, draft: input, createdBy: v.user.id, now: this.nowIso() });
     this.state.approvals.push(req);
     if (input.findingId) {
       const f = this.state.findings.find((x) => x.id === input.findingId);
       if (f) f.status = 'converted';
     }
-    this.audit(v, 'approval.created', 'approval_request', req.id, { workOrderId });
+    this.audit(v, 'approval.created', 'approval_request', req.id, { workOrderId, versionNo: 1, contentHash: approvalRules.currentVersion(req).contentHash });
     this.changed();
     return this.map.approval(req, v);
   }
@@ -1710,16 +2062,37 @@ export class DemoApi implements WerkstattApi {
     );
   }
 
+  /** Beim Senden werden die in der Version genannten Fotos für den Kunden sichtbar (R-FRG-2, wie die API). */
+  private shareVersionPhotos(r: DemoState['approvals'][number], v: Viewer) {
+    for (const photoId of approvalRules.currentVersion(r).photoIds) {
+      const photo = this.state.photos.find((p) => p.id === photoId);
+      if (photo && photo.visibility !== 'customer') {
+        photo.visibility = 'customer';
+        this.audit(v, 'photo.visibility_changed', 'photo', photo.id, { workOrderId: r.workOrderId, visibility: 'customer', reason: 'approval_sent' });
+      }
+    }
+  }
+
+  /** Status-Rückkehr nach Freigabe einer Zusatzarbeit (Arbeiten erledigt → in Arbeit). */
+  private reopenIfNeeded(workOrderId: string) {
+    this.refreshWorkStatus(workOrderId);
+  }
+
   private doRevise(v: Viewer, id: string, input: ApprovalDraft) {
     const r = this.approvalFor(v, id);
-    const wasSent = r.status !== 'draft';
+    this.validateApprovalReferences(r.workOrderId, input);
+    const before = approvalRules.currentVersion(r);
     const next = approvalRules.reviseRequest(r, input, { versionId: uuid(), createdBy: v.user.id, now: this.nowIso() });
     this.replaceApproval(next);
-    if (wasSent) {
-      this.state.workItems = approvalRules.syncItemsWithVersion(this.state.workItems, next, uuid);
+    const after = approvalRules.currentVersion(next);
+    if (after.id !== before.id) {
+      this.state.workItems = approvalRules.syncItemsWithVersion(this.state.workItems, next, uuid, { newVersion: true });
+      this.shareVersionPhotos(next, v);
       this.refreshWorkStatus(next.workOrderId);
       this.notifyApproval(next, true);
-      this.audit(v, 'approval.revised', 'approval_request', id, { workOrderId: next.workOrderId, versionNo: approvalRules.currentVersion(next).versionNo, contentHash: approvalRules.currentVersion(next).contentHash });
+      this.audit(v, 'approval.version_sent', 'approval_request', id, { workOrderId: next.workOrderId, versionNo: after.versionNo, contentHash: after.contentHash, supersededVersionId: before.id, totalGrossCents: after.totalGrossCents });
+    } else if (r.status === 'draft') {
+      this.audit(v, 'approval.revised', 'approval_request', id, { workOrderId: next.workOrderId, draft: true, contentHash: after.contentHash });
     }
     this.changed();
     return next;
@@ -1738,10 +2111,13 @@ export class DemoApi implements WerkstattApi {
     this.require(v, 'approvals.request');
     const r = approvalRules.sendRequest(this.approvalFor(v, id), this.nowIso());
     this.replaceApproval(r);
+    // Positionen entstehen erst beim Senden (keine Preise vor dem Senden im Auftrag)
     this.state.workItems = approvalRules.syncItemsWithVersion(this.state.workItems, r, uuid);
+    this.shareVersionPhotos(r, v);
     this.refreshWorkStatus(r.workOrderId);
     this.notifyApproval(r, false);
-    this.audit(v, 'approval.sent', 'approval_request', id, { workOrderId: r.workOrderId, contentHash: approvalRules.currentVersion(r).contentHash });
+    const cv = approvalRules.currentVersion(r);
+    this.audit(v, 'approval.sent', 'approval_request', id, { workOrderId: r.workOrderId, versionNo: cv.versionNo, contentHash: cv.contentHash, totalGrossCents: cv.totalGrossCents });
     this.changed();
     return this.map.approval(r, v);
   }
@@ -1750,19 +2126,23 @@ export class DemoApi implements WerkstattApi {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'approvals.request');
-    const r = approvalRules.withdrawRequest(this.approvalFor(v, id), this.nowIso());
-    this.replaceApproval(r);
-    this.state.workItems = approvalRules.withdrawItems(this.state.workItems, id);
-    this.refreshWorkStatus(r.workOrderId);
-    this.audit(v, 'approval.withdrawn', 'approval_request', id, { workOrderId: r.workOrderId });
+    const { request, items } = approvalRules.withdrawRequest(this.approvalFor(v, id), this.nowIso(), this.state.workItems);
+    this.replaceApproval(request);
+    this.state.workItems = items;
+    this.refreshWorkStatus(request.workOrderId);
+    this.audit(v, 'approval.withdrawn', 'approval_request', id, { workOrderId: request.workOrderId });
     this.changed();
-    return this.map.approval(r, v);
+    return this.map.approval(request, v);
   }
 
   async decideApproval(id: string, input: ApprovalDecisionInput) {
     await this.gate();
     const v = this.viewer();
-    const r = this.approvalFor(v, id);
+    const r = this.state.approvals.find((x) => x.id === id);
+    if (!r) throw ApiError.notFound();
+    // Mitarbeiter (auch Admin und Mechaniker) entscheiden nie für den Kunden
+    if (isStaff(v)) throw new ApiError(403, API_ERROR_CODES.notCustomer, 'Nur der Kunde selbst kann Freigaben erteilen oder ablehnen.');
+    this.workOrderFor(v, r.workOrderId);
     const wo = this.state.workOrders.find((w) => w.id === r.workOrderId)!;
     const next = approvalRules.decide(
       r,
@@ -1773,7 +2153,7 @@ export class DemoApi implements WerkstattApi {
     );
     this.replaceApproval(next);
     this.state.workItems = approvalRules.applyDecisionToItems(this.state.workItems, id, input.decision, input.versionId);
-    this.refreshWorkStatus(wo.id);
+    this.reopenIfNeeded(wo.id);
     const label = input.decision === 'approved' ? 'freigegeben' : 'abgelehnt';
     this.notify(this.staffUserIds(), 'approval.decided', `Kunde hat ${label}: ${r.title}`, `${wo.orderNumber}, ${customerName(this.state.customers.find((c) => c.id === wo.customerId))}`, `/werkstatt/auftraege/${wo.id}/freigaben/${id}`);
     this.notify(wo.assigneeIds, 'approval.decided', `Kunde hat ${label}: ${r.title}`, wo.orderNumber, `/mechaniker/auftraege/${wo.id}`);
@@ -1786,24 +2166,32 @@ export class DemoApi implements WerkstattApi {
   // Dateien und Dokumente
   // ---------------------------------------------------------------------------
 
-  async uploadFile(input: UploadInput) {
+  async uploadFile(input: UploadInput, options: { idempotencyKey?: string } = {}) {
     await this.gate();
     const v = this.viewer();
-    if (!input.mimeType.startsWith('image/') && input.mimeType !== 'application/pdf') throw ApiError.validation('Nur Fotos und PDF-Dateien sind erlaubt.');
-    if ((input.sizeBytes ?? 0) > 15 * 1024 * 1024) throw ApiError.validation('Die Datei ist größer als 15 MB.');
-    const f = { id: uuid(), originalName: input.name, mimeType: input.mimeType, sizeBytes: input.sizeBytes ?? 0, sha256: sha256Hex(`${input.uri}:${this.nowIso()}`), localUri: input.uri, placeholderLabel: null };
-    this.state.files.push(f);
-    this.audit(v, 'file.uploaded', 'file', f.id);
-    this.changed();
-    return { id: f.id, originalName: f.originalName, mimeType: f.mimeType, sizeBytes: f.sizeBytes, sha256: f.sha256 };
+    return this.once(options.idempotencyKey, v.user.id, () => {
+      if (!IMAGE_TYPES.has(input.mimeType) && input.mimeType !== 'application/pdf') {
+        throw new ApiError(415, API_ERROR_CODES.unsupportedFileType, 'Nur JPEG, PNG, WebP, HEIC und PDF sind erlaubt.');
+      }
+      if ((input.sizeBytes ?? 0) > 15 * 1024 * 1024) throw new ApiError(413, API_ERROR_CODES.payloadTooLarge, 'Die Datei ist größer als 15 MB.');
+      const f = { id: uuid(), originalName: input.name, mimeType: input.mimeType, sizeBytes: input.sizeBytes ?? 0, sha256: sha256Hex(`${input.uri}:${this.nowIso()}`), localUri: input.uri, placeholderLabel: null };
+      this.state.files.push(f);
+      this.audit(v, 'file.uploaded', 'file', f.id);
+      this.changed();
+      return { id: f.id, originalName: f.originalName, mimeType: f.mimeType, sizeBytes: f.sizeBytes, sha256: f.sha256 };
+    });
   }
 
   private documentsVisibleTo(v: Viewer) {
     const docs = this.state.documents.filter((d) => d.deletedAt === null);
     if (v.role === 'customer') return docs.filter((d) => customerCanSeeDocument(v.customerId ?? '', d));
+    if (v.role === 'mechanic') {
+      // Mechaniker: nie Angebote und Rechnungen (Preise), sonst nur zu eigenen Aufträgen
+      const orders = new Set(this.visibleWorkOrders(v).map((w) => w.id));
+      return docs.filter((d) => d.kind !== 'offer' && d.kind !== 'invoice' && d.workOrderId && orders.has(d.workOrderId) && (d.visibility === 'customer' || can(v, 'documents.readInternal')));
+    }
     if (can(v, 'documents.readInternal')) return docs;
-    const orders = new Set(this.visibleWorkOrders(v).map((w) => w.id));
-    return docs.filter((d) => d.visibility === 'customer' && d.publishedAt && d.workOrderId && orders.has(d.workOrderId));
+    return docs.filter((d) => d.visibility === 'customer');
   }
 
   async listDocuments(query: ListDocumentsQuery = {}) {
@@ -1818,15 +2206,15 @@ export class DemoApi implements WerkstattApi {
     return docs.sort((a, b) => ((a.publishedAt ?? a.createdAt) < (b.publishedAt ?? b.createdAt) ? 1 : -1)).map((d) => map.document(d));
   }
 
-  async createDocument(input: CreateDocumentInput) {
-    await this.gate();
-    const v = this.viewer();
-    this.require(v, 'documents.write');
+  private createDocumentInternal(v: Viewer, input: CreateDocumentInput) {
+    const file = this.state.files.find((f) => f.id === input.fileId);
+    if (!file) throw ApiError.unprocessable(API_ERROR_CODES.invalidDocument, 'Die Datei wurde nicht gefunden.');
     const wo = input.workOrderId ? this.state.workOrders.find((w) => w.id === input.workOrderId) : undefined;
+    if (input.workOrderId && !wo) throw ApiError.unprocessable(API_ERROR_CODES.invalidWorkOrder, 'Der Auftrag wurde nicht gefunden.');
     const d = {
       id: uuid(),
       kind: input.kind,
-      title: input.title,
+      title: input.title.trim(),
       customerId: input.customerId ?? wo?.customerId ?? null,
       vehicleId: input.vehicleId ?? wo?.vehicleId ?? null,
       workOrderId: input.workOrderId ?? null,
@@ -1837,7 +2225,17 @@ export class DemoApi implements WerkstattApi {
       versions: [{ id: uuid(), versionNo: 1, fileId: input.fileId, note: null, createdAt: this.nowIso() }],
     };
     this.state.documents.push(d);
-    this.audit(v, 'document.created', 'document', d.id, { workOrderId: d.workOrderId });
+    this.audit(v, 'document.created', 'document', d.id, { workOrderId: d.workOrderId, kind: d.kind });
+    return d;
+  }
+
+  async createDocument(input: CreateDocumentInput) {
+    await this.gate();
+    const v = this.viewer();
+    this.require(v, 'documents.write');
+    if (!input.title?.trim()) throw ApiError.validation('Bitte einen Titel angeben.');
+    if (!input.customerId && !input.vehicleId && !input.workOrderId) throw ApiError.validation('Dokument muss zugeordnet sein.');
+    const d = this.createDocumentInternal(v, input);
     this.changed();
     return this.map.document(d);
   }
@@ -1848,8 +2246,9 @@ export class DemoApi implements WerkstattApi {
     this.require(v, 'documents.write');
     const d = this.state.documents.find((x) => x.id === documentId);
     if (!d) throw ApiError.notFound();
-    d.versions.push({ id: uuid(), versionNo: d.versions.length + 1, fileId: input.fileId, note: input.note ?? null, createdAt: this.nowIso() });
-    this.audit(v, 'document.version_added', 'document', documentId);
+    if (!this.state.files.some((f) => f.id === input.fileId)) throw ApiError.unprocessable(API_ERROR_CODES.invalidDocument, 'Die Datei wurde nicht gefunden.');
+    d.versions.push({ id: uuid(), versionNo: d.versions.length + 1, fileId: input.fileId, note: input.note?.trim() || null, createdAt: this.nowIso() });
+    this.audit(v, 'document.version_added', 'document', documentId, { workOrderId: d.workOrderId, versionNo: d.versions.length });
     this.changed();
     return this.map.document(d);
   }
@@ -1860,7 +2259,7 @@ export class DemoApi implements WerkstattApi {
     this.require(v, 'documents.publish');
     const d = this.state.documents.find((x) => x.id === documentId);
     if (!d) throw ApiError.notFound();
-    if (!d.customerId) throw ApiError.validation('Nur Dokumente mit Kundenbezug können veröffentlicht werden.');
+    if (!d.customerId) throw ApiError.unprocessable(API_ERROR_CODES.customerRequired, 'Nur Dokumente mit Kundenbezug können veröffentlicht werden.');
     Object.assign(d, { visibility: 'customer', publishedAt: this.nowIso() });
     this.audit(v, 'document.published', 'document', documentId, { workOrderId: d.workOrderId });
     this.changed();
@@ -1885,13 +2284,11 @@ export class DemoApi implements WerkstattApi {
     const d = this.documentsVisibleTo(v).find((x) => x.id === documentId);
     if (!d) throw ApiError.notFound();
     const dto = this.map.document(d);
-    const pdf = makeDemoPdf([
-      'Beispieldokument (Demo)',
-      d.title,
-      `Version ${dto.currentVersion.versionNo}`,
-      'Autowerkstatt Witten, Entwurf mit Beispieldaten.',
-      'Kein echtes Dokument.',
-    ]);
+    const current = d.versions.reduce((acc, x) => (x.versionNo > acc.versionNo ? x : acc), d.versions[0]!);
+    const file = this.state.files.find((f) => f.id === current.fileId);
+    // Im Demo-Modus hochgeladene Datei (blob:) direkt öffnen, sonst ein Beispiel-PDF erzeugen
+    if (file?.localUri) return { uri: file.localUri, fileName: file.originalName, mimeType: file.mimeType };
+    const pdf = makeDemoPdf(['Beispieldokument (Demo)', d.title, `Version ${dto.currentVersion.versionNo}`, 'Autowerkstatt Witten, Entwurf mit Beispieldaten.', 'Kein echtes Dokument.']);
     return { uri: `data:application/pdf;base64,${toBase64(pdf)}`, fileName: dto.currentVersion.file.originalName, mimeType: 'application/pdf' };
   }
 
@@ -1940,8 +2337,20 @@ export class DemoApi implements WerkstattApi {
     const parsed = SendMessageRequestSchema.safeParse(input);
     if (!parsed.success) throw ApiError.validation(parsed.error.issues[0]?.message ?? 'Nachricht ist leer');
     const existing = this.state.messages.find((m) => m.authorUserId === v.user.id && m.clientMessageId === parsed.data.clientMessageId);
-    if (existing) return this.map.message(existing); // Wiederholung nach Verbindungsabbruch: keine Dublette
-    const m = { id: uuid(), workOrderId, authorUserId: v.user.id, body: parsed.data.body, fileIds: parsed.data.fileIds, clientMessageId: parsed.data.clientMessageId, createdAt: this.nowIso() };
+    if (existing) {
+      if (existing.workOrderId !== workOrderId) throw ApiError.conflict(API_ERROR_CODES.clientMessageIdInUse, 'Diese Nachrichten-ID wurde bereits verwendet.');
+      return this.map.message(existing); // Wiederholung nach Verbindungsabbruch: keine Dublette
+    }
+    // Anhänge werden Fotos (Kontext chat, für den Kunden sichtbar), wie in der API
+    const photoIds: string[] = [];
+    for (const fileId of parsed.data.fileIds) {
+      const file = this.state.files.find((f) => f.id === fileId);
+      if (!file || !IMAGE_TYPES.has(file.mimeType)) throw ApiError.unprocessable(API_ERROR_CODES.notAnImage, 'Im Chat können nur Fotos angehängt werden.');
+      const photo = { id: uuid(), workOrderId, fileId, context: 'chat' as const, findingId: null, visibility: 'customer' as Visibility, caption: null, takenAt: this.nowIso() };
+      this.state.photos.push(photo);
+      photoIds.push(photo.id);
+    }
+    const m = { id: uuid(), workOrderId, authorUserId: v.user.id, body: parsed.data.body, photoIds, clientMessageId: parsed.data.clientMessageId, createdAt: this.nowIso() };
     this.state.messages.push(m);
     this.markReadInternal(workOrderId, v.user.id);
     if (v.role === 'customer') {
@@ -1974,19 +2383,23 @@ export class DemoApi implements WerkstattApi {
     this.workOrderFor(v, workOrderId);
     return this.state.internalNotes
       .filter((n) => n.workOrderId === workOrderId)
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
       .map((n) => ({ id: n.id, workOrderId: n.workOrderId, author: { userId: n.authorUserId, displayName: this.userById(n.authorUserId)?.displayName ?? 'Unbekannt' }, body: n.body, createdAt: n.createdAt }));
   }
 
-  async addInternalNote(workOrderId: string, input: { body: string }) {
+  async addInternalNote(workOrderId: string, input: { body: string }, options: { idempotencyKey?: string } = {}) {
     await this.gate();
     const v = this.viewer();
     if (!isStaff(v)) throw ApiError.notFound();
-    this.workOrderFor(v, workOrderId);
-    if (!input.body.trim()) throw ApiError.validation('Die Notiz ist leer.');
-    const n = { id: uuid(), workOrderId, authorUserId: v.user.id, body: input.body.trim(), createdAt: this.nowIso() };
-    this.state.internalNotes.push(n);
-    this.changed();
-    return { id: n.id, workOrderId, author: { userId: v.user.id, displayName: v.user.displayName }, body: n.body, createdAt: n.createdAt };
+    return this.once(options.idempotencyKey, v.user.id, () => {
+      this.workOrderFor(v, workOrderId);
+      if (!input.body.trim()) throw ApiError.validation('Die Notiz ist leer.');
+      const n = { id: uuid(), workOrderId, authorUserId: v.user.id, body: input.body.trim(), createdAt: this.nowIso() };
+      this.state.internalNotes.push(n);
+      this.audit(v, 'internal_note.created', 'work_order', workOrderId, { workOrderId });
+      this.changed();
+      return { id: n.id, workOrderId, author: { userId: v.user.id, displayName: v.user.displayName }, body: n.body, createdAt: n.createdAt };
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1999,21 +2412,33 @@ export class DemoApi implements WerkstattApi {
     let list = this.state.invoices;
     if (v.role === 'customer') list = list.filter((i) => customerCanSeeInvoice(v.customerId ?? '', i));
     else this.require(v, 'invoices.read');
+    if (query.status) list = list.filter((i) => i.status === query.status);
     const map = this.map;
     let dtos = list.map((i) => map.invoice(i, v));
     if (query.paymentStatus) dtos = dtos.filter((i) => i.paymentStatus === query.paymentStatus);
     if (query.overdue !== undefined) dtos = dtos.filter((i) => i.overdue === query.overdue);
     if (query.customerId) dtos = dtos.filter((i) => i.customerId === query.customerId);
-    return dtos.sort((a, b) => ((a.issuedAt ?? '') < (b.issuedAt ?? '') ? 1 : -1));
+    return dtos.sort((a, b) => ((a.issuedAt ?? a.id) < (b.issuedAt ?? b.id) ? 1 : -1));
   }
 
   async createInvoice(input: CreateInvoiceInput) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'invoices.write');
-    const inv = { id: uuid(), invoiceNumber: null, workOrderId: input.workOrderId ?? null, customerId: input.customerId, status: 'draft' as const, issuedAt: null, dueDate: input.dueDate ?? null, totalGrossCents: input.totalGrossCents, currency: 'EUR' as const, vatBreakdown: input.vatBreakdown ?? [], documentId: null, createdAt: this.nowIso(), cancelledAt: null };
+    if (!this.state.customers.some((c) => c.id === input.customerId)) throw ApiError.unprocessable(API_ERROR_CODES.invalidCustomer, 'Kunde nicht gefunden.');
+    const wo = input.workOrderId ? this.state.workOrders.find((w) => w.id === input.workOrderId) : undefined;
+    if (input.workOrderId && (!wo || wo.customerId !== input.customerId)) throw ApiError.unprocessable(API_ERROR_CODES.workOrderMismatch, 'Auftrag und Kunde passen nicht zusammen.');
+    if (!Number.isInteger(input.totalGrossCents) || input.totalGrossCents <= 0) throw ApiError.validation('Der Rechnungsbetrag muss größer als 0 sein.');
+    let documentId: string | null = null;
+    if (input.documentFileId) {
+      const file = this.state.files.find((f) => f.id === input.documentFileId);
+      if (!file) throw ApiError.unprocessable(API_ERROR_CODES.invalidDocument, 'Die Datei wurde nicht gefunden.');
+      if (file.mimeType !== 'application/pdf') throw ApiError.unprocessable(API_ERROR_CODES.pdfRequired, 'Die Rechnung muss als PDF hochgeladen werden.');
+      documentId = this.createDocumentInternal(v, { kind: 'invoice', title: 'Rechnung', fileId: file.id, customerId: input.customerId, vehicleId: wo?.vehicleId ?? null, workOrderId: input.workOrderId ?? null }).id;
+    }
+    const inv = { id: uuid(), invoiceNumber: null, workOrderId: input.workOrderId ?? null, customerId: input.customerId, status: 'draft' as const, issuedAt: null, dueDate: input.dueDate ?? null, totalGrossCents: input.totalGrossCents, currency: 'EUR' as const, vatBreakdown: input.vatBreakdown ?? [], documentId, createdAt: this.nowIso(), cancelledAt: null };
     this.state.invoices.push(inv);
-    this.audit(v, 'invoice.created', 'invoice', inv.id, { workOrderId: inv.workOrderId });
+    this.audit(v, 'invoice.created', 'invoice', inv.id, { workOrderId: inv.workOrderId, totalGrossCents: inv.totalGrossCents });
     this.changed();
     return this.map.invoice(inv, v);
   }
@@ -2027,11 +2452,19 @@ export class DemoApi implements WerkstattApi {
   private doIssueInvoice(v: Viewer | null, id: string, invoiceNumber: string) {
     const inv = this.state.invoices.find((i) => i.id === id);
     if (!inv) throw ApiError.notFound();
-    if (inv.status !== 'draft') throw ApiError.conflict(ERROR_CODES.conflict, 'Nur Entwürfe können gestellt werden.');
+    if (inv.status !== 'draft') throw ApiError.conflict(API_ERROR_CODES.notDraft, 'Nur Entwürfe können gestellt werden.');
+    const number = invoiceNumber.trim();
+    if (!number) throw ApiError.validation('Die Rechnungsnummer ist Pflicht.');
+    if (this.state.invoices.some((i) => i.invoiceNumber === number)) throw ApiError.conflict(API_ERROR_CODES.invoiceNumberTaken, 'Diese Rechnungsnummer ist bereits vergeben.');
     const due = new Date(this.clock().getTime() + this.state.settings.paymentTermDays * 86_400_000);
-    Object.assign(inv, { status: 'issued', invoiceNumber, issuedAt: this.nowIso(), dueDate: inv.dueDate ?? todayLocal(due) });
-    this.notify(this.customerUserIds(inv.customerId), 'invoice.issued', `Rechnung ${invoiceNumber} bereitgestellt`, 'Sie können die Rechnung in der App ansehen und bezahlen.', `/kunde/rechnungen/${inv.id}`);
-    this.audit(v, 'invoice.issued', 'invoice', id, { workOrderId: inv.workOrderId, invoiceNumber });
+    Object.assign(inv, { status: 'issued', invoiceNumber: number, issuedAt: this.nowIso(), dueDate: inv.dueDate ?? todayLocal(due) });
+    if (inv.documentId) {
+      // Rechnungs-PDF wird mit dem Stellen für den Kunden bereitgestellt (wie die API)
+      const doc = this.state.documents.find((d) => d.id === inv.documentId);
+      if (doc) Object.assign(doc, { visibility: 'customer', publishedAt: this.nowIso(), title: `Rechnung ${number}` });
+    }
+    this.notify(this.customerUserIds(inv.customerId), 'invoice.issued', 'Rechnung bereitgestellt', `Ihre Rechnung ${number} liegt bereit.`, `/kunde/rechnungen/${inv.id}`);
+    this.audit(v, 'invoice.issued', 'invoice', id, { workOrderId: inv.workOrderId, invoiceNumber: number, totalGrossCents: inv.totalGrossCents, dueDate: inv.dueDate });
     return inv;
   }
 
@@ -2044,15 +2477,16 @@ export class DemoApi implements WerkstattApi {
     return this.map.invoice(inv, v);
   }
 
-  async cancelInvoice(id: string, input: { reason: string }) {
+  /** Storno wie in der API: offene Zahlungsversuche werden deaktiviert; Zahlungen bleiben (Überzahlung). */
+  async cancelInvoice(id: string, input: { reason?: string | null } = {}) {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'invoices.write');
     const inv = this.invoiceFor(v, id);
-    if (this.state.payments.some((p) => p.invoiceId === id)) throw ApiError.conflict(ERROR_CODES.conflict, 'Rechnungen mit Zahlungen können nicht storniert werden.');
+    if (inv.status === 'cancelled') throw ApiError.conflict(API_ERROR_CODES.alreadyCancelled, 'Die Rechnung ist bereits storniert.');
     Object.assign(inv, { status: 'cancelled', cancelledAt: this.nowIso() });
     for (const c of this.state.checkouts) if (c.invoiceId === id && (c.status === 'pending' || c.status === 'created')) c.status = 'deactivated';
-    this.audit(v, 'invoice.cancelled', 'invoice', id, { reason: input.reason });
+    this.audit(v, 'invoice.cancelled', 'invoice', id, { workOrderId: inv.workOrderId, reason: input.reason ?? null });
     this.changed();
     return this.map.invoice(inv, v);
   }
@@ -2062,9 +2496,13 @@ export class DemoApi implements WerkstattApi {
     const v = this.viewer();
     this.requireCustomer(v);
     const inv = this.invoiceFor(v, invoiceId);
+    const settings = this.state.settings;
+    if (settings.paymentProvider !== 'sumup' || !settings.paymentProviderConfigured) {
+      throw ApiError.conflict(API_ERROR_CODES.onlinePaymentUnavailable, 'Online-Zahlung ist derzeit nicht verfügbar. Bitte überweisen Sie den Betrag.');
+    }
     const summary = summarizeInvoice(inv, this.state.payments, this.state.refunds, this.today());
     const providerCheckoutId = `demo-chk-${base62(10)}`;
-    const { checkout, deactivatedIds } = startCheckout({
+    const { checkout, deactivatedIds, reused } = startCheckout({
       invoice: inv,
       summary,
       existing: this.state.checkouts,
@@ -2079,9 +2517,11 @@ export class DemoApi implements WerkstattApi {
       const own = this.state.checkouts.find((c) => c.providerCheckoutId === p.providerCheckoutId);
       if (own && deactivatedIds.includes(own.id) && p.status === 'PENDING') p.status = 'EXPIRED';
     }
-    this.state.checkouts.push(checkout);
-    this.state.providerCheckouts.push({ providerCheckoutId, checkoutReference: checkout.checkoutReference, merchantCode: DEMO_MERCHANT_CODE, amountCents: checkout.amountCents, currency: 'EUR', status: 'PENDING', transactionId: null });
-    this.audit(v, 'checkout.created', 'invoice', invoiceId, { checkoutId: checkout.id, amountCents: checkout.amountCents });
+    if (!reused) {
+      this.state.checkouts.push(checkout);
+      this.state.providerCheckouts.push({ providerCheckoutId, checkoutReference: checkout.checkoutReference, merchantCode: DEMO_MERCHANT_CODE, amountCents: checkout.amountCents, currency: 'EUR', status: 'PENDING', transactionId: null });
+      this.audit(v, 'checkout.created', 'invoice', invoiceId, { checkoutId: checkout.id, amountCents: checkout.amountCents });
+    }
     this.changed();
     // Der Rechnungsstatus bleibt unverändert (R-ZAHL-4).
     return { checkoutId: checkout.id, hostedUrl: checkout.hostedUrl, invoicePaymentStatus: summary.paymentStatus };
@@ -2090,7 +2530,7 @@ export class DemoApi implements WerkstattApi {
   /** Gleicht offene Zahlungsversuche mit dem (simulierten) Anbieter ab. */
   private reconcileInvoice(invoiceId: string, actor: Viewer | null) {
     let booked = 0;
-    for (const checkout of this.state.checkouts.filter((c) => c.invoiceId === invoiceId && (c.status === 'pending' || c.status === 'created'))) {
+    for (const checkout of this.state.checkouts.filter((c) => c.invoiceId === invoiceId && (c.status === 'pending' || c.status === 'created' || c.status === 'failed'))) {
       const provider = this.state.providerCheckouts.find((p) => p.providerCheckoutId === checkout.providerCheckoutId);
       const result = reconcileCheckout({ checkout, provider, payments: this.state.payments, merchantCode: this.state.settings.sumupMerchantCode ?? '', paymentId: uuid(), now: this.nowIso() });
       this.state.checkouts = this.state.checkouts.map((c) => (c.id === checkout.id ? result.checkout : c));
@@ -2099,7 +2539,7 @@ export class DemoApi implements WerkstattApi {
         booked++;
         const inv = this.state.invoices.find((i) => i.id === invoiceId)!;
         this.audit(actor, 'payment.booked', 'invoice', invoiceId, { workOrderId: inv.workOrderId, amountCents: result.payment.amountCents, providerTransactionId: result.payment.providerTransactionId });
-        this.notify(this.customerUserIds(inv.customerId), 'payment.confirmed', `Zahlung bestätigt: ${inv.invoiceNumber}`, 'Vielen Dank, Ihre Zahlung ist eingegangen.', `/kunde/rechnungen/${inv.id}`);
+        this.notify(this.customerUserIds(inv.customerId), 'payment.confirmed', 'Zahlung bestätigt', `Zahlung für Rechnung ${inv.invoiceNumber} ist eingegangen.`, `/kunde/rechnungen/${inv.id}`);
         this.notify(this.staffUserIds(), 'payment.confirmed', `Zahlung bestätigt: ${inv.invoiceNumber}`, customerName(this.state.customers.find((c) => c.id === inv.customerId)), `/werkstatt/rechnungen/${inv.id}`);
       } else if (result.outcome === 'rejected') {
         this.audit(actor, 'payment.verification_failed', 'invoice', invoiceId, { checkoutId: checkout.id, reason: result.reason });
@@ -2122,10 +2562,17 @@ export class DemoApi implements WerkstattApi {
     const v = this.viewer();
     this.require(v, 'payments.recordManual');
     const inv = this.invoiceFor(v, invoiceId);
-    validateManualPayment(summarizeInvoice(inv, this.state.payments, this.state.refunds, this.today()), input.amountCents);
-    if (!input.referenceText.trim()) throw ApiError.validation('Verwendungszweck bzw. Beleg ist Pflicht.');
-    this.state.payments.push({ id: uuid(), invoiceId, method: input.method, amountCents: input.amountCents, currency: 'EUR', provider: null, providerTransactionId: null, checkoutId: null, receivedAt: input.receivedAt, recordedBy: v.user.id, referenceText: input.referenceText.trim() });
-    this.audit(v, 'payment.recorded_manual', 'invoice', invoiceId, { workOrderId: inv.workOrderId, amountCents: input.amountCents, method: input.method, note: input.note ?? null });
+    validateManualPayment({
+      actor: this.actorOf(v),
+      invoice: inv,
+      summary: summarizeInvoice(inv, this.state.payments, this.state.refunds, this.today()),
+      payment: { method: input.method, amountCents: input.amountCents, receivedAt: input.receivedAt, referenceText: input.referenceText },
+      now: this.nowIso(),
+    });
+    const payment = { id: uuid(), invoiceId, method: input.method, amountCents: input.amountCents, currency: 'EUR' as const, provider: null, providerTransactionId: null, checkoutId: null, receivedAt: new Date(input.receivedAt).toISOString(), recordedBy: v.user.id, referenceText: input.referenceText.trim() };
+    this.state.payments.push(payment);
+    this.audit(v, 'payment.manual_recorded', 'payment', payment.id, { invoiceId, workOrderId: inv.workOrderId, method: input.method, amountCents: input.amountCents, referenceText: payment.referenceText, receivedAt: payment.receivedAt, note: input.note ?? null });
+    this.notify(this.customerUserIds(inv.customerId), 'payment.confirmed', 'Zahlung bestätigt', `Zahlung für Rechnung ${inv.invoiceNumber} ist eingegangen.`, `/kunde/rechnungen/${inv.id}`);
     this.changed();
     return this.map.invoice(inv, v);
   }
@@ -2137,39 +2584,60 @@ export class DemoApi implements WerkstattApi {
     const payment = this.state.payments.find((p) => p.id === paymentId);
     if (!payment) throw ApiError.notFound();
     const inv = this.invoiceFor(v, payment.invoiceId);
-    const existing = this.state.refunds.find((r) => r.idempotencyKey === input.idempotencyKey);
-    if (!existing) {
-      const refunded = this.state.refunds.filter((r) => r.paymentId === paymentId && r.status === 'succeeded').reduce((s, r) => s + r.amountCents, 0);
-      if (input.amountCents > payment.amountCents - refunded) throw ApiError.validation('Der Betrag übersteigt die erstattbare Summe.');
-      this.state.refunds.push({ id: uuid(), paymentId, amountCents: input.amountCents, status: 'succeeded', idempotencyKey: input.idempotencyKey, requestedBy: v.user.id, requestedAt: this.nowIso(), completedAt: this.nowIso(), failureReason: null });
-      this.audit(v, 'payment.refunded', 'invoice', inv.id, { amountCents: input.amountCents, reason: input.reason });
+    if (!input.reason?.trim()) throw ApiError.validation('Bitte einen Grund angeben.');
+    const plan = planRefund({ actor: this.actorOf(v), payment, refunds: this.state.refunds, amountCents: input.amountCents, idempotencyKey: input.idempotencyKey });
+    if (plan.action === 'create') {
+      const refund = { id: uuid(), paymentId, amountCents: input.amountCents, status: 'succeeded' as const, idempotencyKey: input.idempotencyKey, requestedBy: v.user.id, requestedAt: this.nowIso(), completedAt: this.nowIso(), failureReason: null };
+      this.state.refunds.push(refund);
+      this.audit(v, 'refund.requested', 'refund', refund.id, { invoiceId: inv.id, workOrderId: inv.workOrderId, paymentId, amountCents: input.amountCents, reason: input.reason, method: payment.method });
       this.changed();
     }
     return this.map.invoice(inv, v);
   }
 
-  async exportInvoicesCsv(query: ListInvoicesQuery = {}) {
-    const list = await this.listInvoices(query);
+  async exportInvoicesCsv(_query: ListInvoicesQuery = {}) {
+    await this.gate();
     const v = this.viewer();
     this.require(v, 'reports.export');
-    const rows = [['Rechnungsnummer', 'Kunde', 'Auftrag', 'Datum', 'Fällig', 'Betrag', 'Bezahlt', 'Offen', 'Status'].join(';')];
+    this.require(v, 'invoices.read');
+    const map = this.map;
+    const list = this.state.invoices.filter((i) => i.status !== 'draft').sort((a, b) => ((a.issuedAt ?? '') < (b.issuedAt ?? '') ? -1 : 1));
+    const euro = (c: number) => `${c < 0 ? '-' : ''}${Math.floor(Math.abs(c) / 100)},${String(Math.abs(c) % 100).padStart(2, '0')}`;
+    const cell = (value: string | number | null | undefined) => {
+      if (value === null || value === undefined) return '';
+      let s = String(value);
+      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+      if (/[;"\r\n]/.test(s)) s = `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const header = ['Rechnungsnummer', 'Rechnungsdatum', 'Fällig am', 'Kundennummer', 'Kunde', 'Auftrag', 'Status', 'Zahlungsstatus', 'Überfällig', 'Betrag brutto (EUR)', 'Bezahlt (EUR)', 'Erstattet (EUR)', 'Offen (EUR)'];
+    const lines = [header.join(';')];
     for (const i of list) {
-      rows.push([i.invoiceNumber ?? '', i.customerDisplayName, i.orderNumber ?? '', i.issuedAt?.slice(0, 10) ?? '', i.dueDate ?? '', (i.totalGrossCents / 100).toFixed(2).replace('.', ','), (i.paidCents / 100).toFixed(2).replace('.', ','), (i.openCents / 100).toFixed(2).replace('.', ','), i.paymentStatus].join(';'));
+      const dto = map.invoice(i, v);
+      const c = this.state.customers.find((x) => x.id === i.customerId);
+      lines.push(
+        [dto.invoiceNumber, dto.issuedAt ? berlinDateOf(dto.issuedAt) : '', dto.dueDate, c?.customerNumber, dto.customerDisplayName, dto.orderNumber ?? '', i.status === 'issued' ? 'gestellt' : 'storniert', paymentStatusLabels[dto.paymentStatus].label, dto.overdue ? 'ja' : 'nein', euro(dto.totalGrossCents), euro(dto.paidCents), euro(dto.refundedCents), euro(dto.openCents)]
+          .map(cell)
+          .join(';'),
+      );
     }
-    this.audit(v, 'report.exported', 'invoice', null, { rows: list.length });
+    this.audit(v, 'export.invoices_csv', 'export', null, { rows: list.length });
     this.changed();
-    return rows.join('\n');
+    return `﻿${lines.join('\r\n')}\r\n`;
   }
 
   // ---------------------------------------------------------------------------
   // Benachrichtigungen
   // ---------------------------------------------------------------------------
 
-  async listNotifications() {
+  async listNotifications(options: { unread?: boolean } = {}) {
     await this.gate();
     const v = this.viewer();
     const map = this.map;
-    return this.state.notifications.filter((n) => n.userId === v.user.id).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).map((n) => map.notification(n));
+    return this.state.notifications
+      .filter((n) => n.userId === v.user.id && (!options.unread || n.readAt === null))
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+      .map((n) => map.notification(n));
   }
 
   async readNotification(id: string) {
@@ -2191,7 +2659,9 @@ export class DemoApi implements WerkstattApi {
     const events: NotificationEvent[] =
       v.role === 'customer'
         ? ['approval.requested', 'message.received', 'invoice.issued', 'payment.confirmed', 'appointment.confirmed', 'appointment.proposed', 'work_order.ready_for_pickup', 'maintenance.due_soon']
-        : ['approval.decided', 'message.received', 'appointment.requested', 'finding.reported', 'payment.confirmed'];
+        : v.role === 'mechanic'
+          ? ['approval.decided', 'message.received']
+          : ['approval.decided', 'message.received', 'appointment.requested', 'finding.reported', 'payment.confirmed'];
     return events.flatMap((eventType) => (['push', 'email'] as const).map((channel) => ({ eventType, channel, enabled: channel === 'push' || eventType !== 'message.received' })));
   }
 
@@ -2207,10 +2677,7 @@ export class DemoApi implements WerkstattApi {
   async setNotificationPreferences(preferences: NotificationPreference[]) {
     await this.gate();
     const v = this.viewer();
-    this.state.notificationPreferences = [
-      ...this.state.notificationPreferences.filter((p) => p.userId !== v.user.id),
-      ...preferences.map((p) => ({ userId: v.user.id, ...p })),
-    ];
+    this.state.notificationPreferences = [...this.state.notificationPreferences.filter((p) => p.userId !== v.user.id), ...preferences.map((p) => ({ userId: v.user.id, ...p }))];
     this.changed();
     const map = new Map(preferences.map((p) => [`${p.eventType}:${p.channel}`, p.enabled]));
     return this.defaultPreferences(v).map((p) => ({ ...p, enabled: map.get(`${p.eventType}:${p.channel}`) ?? p.enabled }));
@@ -2223,7 +2690,7 @@ export class DemoApi implements WerkstattApi {
   async getSettings() {
     await this.gate();
     const v = this.viewer();
-    if (!isStaff(v)) throw ApiError.notFound();
+    if (!isStaff(v)) throw ApiError.forbidden();
     return this.map.settings();
   }
 
@@ -2231,6 +2698,7 @@ export class DemoApi implements WerkstattApi {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'settings.manage');
+    // Der Anbieterstatus ("konfiguriert") kommt aus der Serverkonfiguration, nie aus dem Formular
     const { paymentProviderConfigured: _ignored, ...rest } = input;
     Object.assign(this.state.settings, rest);
     this.audit(v, 'settings.updated', 'settings', null, { fields: Object.keys(rest) });
@@ -2241,7 +2709,7 @@ export class DemoApi implements WerkstattApi {
   async listMaintenanceTypes() {
     await this.gate();
     const v = this.viewer();
-    if (!isStaff(v)) throw ApiError.notFound();
+    if (!isStaff(v)) throw ApiError.forbidden();
     return this.state.maintenanceTypes;
   }
 
@@ -2249,11 +2717,12 @@ export class DemoApi implements WerkstattApi {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'settings.manage');
+    if (this.state.maintenanceTypes.some((t) => t.id !== id && t.key === input.key)) throw ApiError.conflict(API_ERROR_CODES.keyTaken, 'Dieser Schlüssel ist bereits vergeben.');
     const existing = this.state.maintenanceTypes.find((t) => t.id === id);
     const next = { id, ...input };
     if (existing) Object.assign(existing, next);
     else this.state.maintenanceTypes.push(next);
-    this.audit(v, 'settings.maintenance_type', 'maintenance_type', id);
+    this.audit(v, 'settings.maintenance_type_saved', 'maintenance_type', id, { name: input.name });
     this.changed();
     return next;
   }
@@ -2266,7 +2735,7 @@ export class DemoApi implements WerkstattApi {
     const next = { id, ...input };
     if (existing) Object.assign(existing, next);
     else this.state.resources.push(next);
-    this.audit(v, 'settings.resource', 'resource', id);
+    this.audit(v, 'settings.resource_saved', 'resource', id, { name: input.name });
     this.changed();
     return next;
   }
@@ -2283,12 +2752,18 @@ export class DemoApi implements WerkstattApi {
       : v.role === 'customer'
         ? { kind: 'customer', customerId: v.customerId ?? '' }
         : { kind: 'staff', canReadVehicles: can(v, 'vehicles.read'), homePath: '/werkstatt' };
-    return resolveQr({ token, vehicles: this.state.vehicles, ownerships: this.state.ownerships, entries: this.state.serviceEntries, viewer, workshopName: this.state.settings.name });
+    if (v?.role === 'mechanic' && !can(v, 'vehicles.read')) {
+      // QR-Scan eines Mechanikers: zugewiesener aktiver Auftrag des Fahrzeugs (wie die API)
+      const vehicle = this.state.vehicles.find((x) => x.qrToken === token && x.archivedAt === null);
+      const wo = vehicle ? this.visibleWorkOrders(v).filter((w) => w.vehicleId === vehicle.id && (w.status === 'open' || w.status === 'in_progress')).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0] : undefined;
+      if (vehicle && wo) return { mode: 'authorized', vehicleId: vehicle.id, targetPath: `/mechaniker/auftraege/${wo.id}` };
+    }
+    return resolveQr({ token, vehicles: this.state.vehicles, ownerships: this.state.ownerships, entries: this.state.serviceEntries, maintenanceTypes: this.state.maintenanceTypes, viewer, workshopName: this.state.settings.name });
   }
 
   async publicShare(token: string) {
     await this.gate();
-    const { share, view } = openShare({ token, shares: this.state.shares, vehicles: this.state.vehicles, ownerships: this.state.ownerships, entries: this.state.serviceEntries, now: this.nowIso(), workshopName: this.state.settings.name });
+    const { share, view } = openShare({ token, shares: this.state.shares, vehicles: this.state.vehicles, ownerships: this.state.ownerships, entries: this.state.serviceEntries, maintenanceTypes: this.state.maintenanceTypes, now: this.nowIso(), workshopName: this.state.settings.name });
     this.state.shares = this.state.shares.map((s) => (s.id === share.id ? share : s));
     this.audit(null, 'vehicle_share.accessed', 'vehicle_share', share.id);
     this.changed();
@@ -2306,8 +2781,15 @@ export class DemoApi implements WerkstattApi {
     this.require(v, 'audit.read');
     const map = this.map;
     return this.state.audit
-      .filter((a) => (!query.entityType || a.entityType === query.entityType) && (!query.entityId || a.entityId === query.entityId) && (!query.actorId || a.actorUserId === query.actorId))
+      .filter(
+        (a) =>
+          (!query.entityType || a.entityType === query.entityType) &&
+          (!query.entityId || a.entityId === query.entityId) &&
+          (!query.actorId || a.actorUserId === query.actorId) &&
+          (!query.action || a.action.startsWith(query.action)),
+      )
       .sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : -1))
+      .slice(0, query.limit ?? 200)
       .map((a) => map.audit(a));
   }
 
@@ -2338,6 +2820,7 @@ export class DemoApi implements WerkstattApi {
       this.failNextFlag = false;
       this.offlineFlag = false;
       this.submittedCheckouts.clear();
+      this.idempotent.clear();
       this.changed();
     },
     accounts: (): DemoAccount[] => {
@@ -2345,7 +2828,8 @@ export class DemoApi implements WerkstattApi {
         ['customer', 'Kundin', 'Zwei Fahrzeuge, offene Freigaben und Rechnungen', IDS.users.miriam],
         ['previousOwner', 'Vorbesitzer', 'Hat den Octavia an die Kundin verkauft', IDS.users.guenter],
         ['owner', 'Inhaber', 'Alle Rechte', IDS.users.owner],
-        ['service', 'Service', 'Sekretariat und Service', IDS.users.service],
+        ['service', 'Service', 'Sekretariat und Service, darf Zahlungen manuell zuordnen', IDS.users.service],
+        ['service2', 'Service (Aushilfe)', 'Ohne Rechnungsrecht und ohne manuelle Zahlungen', IDS.users.nadine],
         ['mechanic', 'Mechaniker', 'Nur zugewiesene Aufträge', IDS.users.emre],
       ];
       return def.map(([key, label, description, userId]) => {
@@ -2488,19 +2972,20 @@ export class DemoApi implements WerkstattApi {
       const service = this.userById(IDS.users.service)!;
       const wo = this.state.workOrders.find((w) => w.id === workOrderId);
       if (!wo) throw ApiError.notFound();
-      this.state.messages.push({ id: uuid(), workOrderId, authorUserId: service.id, body: 'Danke für Ihre Nachricht. Wir melden uns in Kürze bei Ihnen.', fileIds: [], clientMessageId: null, createdAt: this.nowIso() });
+      this.state.messages.push({ id: uuid(), workOrderId, authorUserId: service.id, body: 'Danke für Ihre Nachricht. Wir melden uns in Kürze bei Ihnen.', photoIds: [], clientMessageId: null, createdAt: this.nowIso() });
       this.notify(this.customerUserIds(wo.customerId), 'message.received', `Neue Nachricht zu ${wo.orderNumber}`, `${this.state.settings.name} hat Ihnen geschrieben.`, `/kunde/auftraege/${wo.id}/chat`);
       this.changed();
       return 'Die Werkstatt hat im Chat geantwortet.';
     },
     /**
-     * Werkstatt schließt einen Auftrag ab: offene freigegebene/vereinbarte Positionen werden
+     * Werkstatt schließt einen Auftrag ab: offene vereinbarte/freigegebene Positionen werden
      * erledigt, der fachliche Abschluss erzeugt die Serviceeinträge, das Fahrzeug wird
      * abholbereit gemeldet und die Rechnung gestellt. Abgelehnte Positionen bleiben außen vor.
      */
     workshopCompleteOrder: (workOrderId: string): string => {
       const service = this.viewerFor(this.userById(IDS.users.service)!);
       const wo = this.workOrderFor(service, workOrderId);
+      if (wo.status === 'completed' || wo.status === 'picked_up') return 'Der Auftrag ist bereits fachlich abgeschlossen. Es entstehen keine weiteren Serviceeinträge.';
       const items = this.state.workItems.filter((i) => i.workOrderId === workOrderId);
       if (items.some((i) => i.authorization === 'pending_approval')) return 'Es gibt noch offene Freigabeanfragen. Zuerst muss der Kunde entscheiden.';
       const km = this.state.odometer.filter((r) => r.vehicleId === wo.vehicleId).sort((a, b) => (a.recordedAt < b.recordedAt ? 1 : -1))[0]?.valueKm ?? null;
@@ -2514,14 +2999,10 @@ export class DemoApi implements WerkstattApi {
       this.refreshWorkStatus(workOrderId);
       const reviewed = this.doCompleteReview(service, workOrderId, km);
       this.replaceWorkOrder({ ...reviewed, readyForPickupAt: this.nowIso() });
-      this.notify(this.customerUserIds(wo.customerId), 'work_order.ready_for_pickup', 'Ihr Fahrzeug ist abholbereit', `${wo.orderNumber}: ${wo.title}`, `/kunde/auftraege/${wo.id}`);
+      this.notify(this.customerUserIds(wo.customerId), 'work_order.ready_for_pickup', 'Fahrzeug abholbereit', 'Ihr Fahrzeug ist abholbereit.', `/kunde/auftraege/${wo.id}`);
       const done = this.state.workItems.filter((i) => i.workOrderId === workOrderId && i.executionStatus === 'done' && itemIsExecutable(i));
-      const net = done.reduce((s, i) => s + Math.round(i.quantity * (i.unitPriceCents ?? 0)), 0);
-      const gross = done.reduce((s, i) => {
-        const n = Math.round(i.quantity * (i.unitPriceCents ?? 0));
-        return s + n + Math.round((n * i.vatRateBp) / 10_000);
-      }, 0);
-      const inv = { id: uuid(), invoiceNumber: null, workOrderId, customerId: wo.customerId, status: 'draft' as const, issuedAt: null, dueDate: null, totalGrossCents: gross, currency: 'EUR' as const, vatBreakdown: [{ vatRateBp: 1900, netCents: net, vatCents: gross - net }], documentId: null, createdAt: this.nowIso(), cancelledAt: null };
+      const totals = approvalRules.computeTotals(done.map((i) => ({ title: i.title, description: null, quantity: i.quantity, unit: i.unit, unitPriceCents: i.unitPriceCents ?? 0, vatRateBp: i.vatRateBp, maintenanceTypeId: null })));
+      const inv = { id: uuid(), invoiceNumber: null, workOrderId, customerId: wo.customerId, status: 'draft' as const, issuedAt: null, dueDate: null, totalGrossCents: totals.grossCents, currency: 'EUR' as const, vatBreakdown: [{ vatRateBp: 1900, netCents: totals.netCents, vatCents: totals.grossCents - totals.netCents }], documentId: null, createdAt: this.nowIso(), cancelledAt: null };
       this.state.invoices.push(inv);
       const number = `R-${this.clock().getFullYear()}-${String(++this.state.counters.invoice).padStart(4, '0')}`;
       this.doIssueInvoice(service, inv.id, number);
@@ -2530,6 +3011,7 @@ export class DemoApi implements WerkstattApi {
       return `Auftrag abgeschlossen: ${entries} ${entries === 1 ? 'Serviceeintrag' : 'Serviceeinträge'} erzeugt, abholbereit gemeldet, Rechnung ${number} gestellt.`;
     },
     customerEmail: () => DEMO_EMAILS.customer,
+    paymentMethodLabel: (m: keyof typeof paymentMethodLabels) => paymentMethodLabels[m],
   };
 }
 

@@ -12,7 +12,7 @@ import { router, useLocalSearchParams, type Href } from 'expo-router';
 import { useState } from 'react';
 import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { useApi } from '../../../../../src/data/ApiProvider';
-import { ApiError, ERROR_CODES } from '../../../../../src/data/errors';
+import { ApiError, ERROR_CODES, isApprovalOutdatedCode } from '../../../../../src/data/errors';
 import { useApiMutation, useApiQuery } from '../../../../../src/data/hooks';
 import { useIsOffline } from '../../../../../src/data/network';
 import { keepPlates, formatDate, formatDateTime, formatMoney } from '../../../../../src/lib/format';
@@ -345,8 +345,8 @@ export default function ApprovalDecisionScreen() {
     } catch (e) {
       setDialog(null);
       const err = e as ApiError;
-      if (err.code === ERROR_CODES.approvalVersionOutdated) setOutdated(true);
-      else if (err.code === ERROR_CODES.approvalAlreadyDecided) {
+      if (isApprovalOutdatedCode(err.code)) setOutdated(true);
+      else if (err.code === ERROR_CODES.alreadyDecided) {
         toast.show('Zu dieser Version liegt bereits eine Entscheidung vor.', 'info');
         void query.refetch();
       }

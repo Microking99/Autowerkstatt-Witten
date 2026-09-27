@@ -9,6 +9,7 @@ export const DEMO_PASSWORD = 'Beispiel2026';
 export const DEMO_EMAILS = {
   owner: 'ralf.lindemann@autowerkstatt-witten.example',
   service: 'petra.wiesmann@autowerkstatt-witten.example',
+  service2: 'nadine.kurz@autowerkstatt-witten.example',
   mechanic: 'emre.aydin@autowerkstatt-witten.example',
   mechanic2: 'lukas.brettschneider@autowerkstatt-witten.example',
   disabled: 'jonas.feldhaus@autowerkstatt-witten.example',

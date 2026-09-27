@@ -348,7 +348,8 @@ export interface DMessage {
   workOrderId: string;
   authorUserId: string;
   body: string;
-  fileIds: string[];
+  /** Anhänge sind Fotos (Kontext `chat`, für den Kunden sichtbar), wie in der API. */
+  photoIds: string[];
   clientMessageId: string | null;
   createdAt: Iso;
 }
@@ -537,6 +538,23 @@ export interface DNotificationPreference {
   enabled: boolean;
 }
 
+/** Teilebedarf eines Auftrags (Tabelle `part_demands`; Konfliktprüfung "fehlende Teile"). */
+export interface DPartDemand {
+  id: string;
+  workOrderId: string;
+  description: string;
+  status: 'needed' | 'ordered' | 'received' | 'installed';
+  expectedAt: Iso | null;
+}
+
+/** Arbeitszeit eines Mitarbeiters (Tabelle `staff_working_hours`), Wochentag 1 = Montag. */
+export interface DWorkingHours {
+  userId: string;
+  weekday: number;
+  startTime: string;
+  endTime: string;
+}
+
 export interface DemoState {
   schemaVersion: number;
   seededAt: Iso;
@@ -573,7 +591,10 @@ export interface DemoState {
   notifications: DNotification[];
   notificationPreferences: DNotificationPreference[];
   audit: DAudit[];
+  partDemands: DPartDemand[];
+  workingHours: DWorkingHours[];
   counters: { workOrder: number; invoice: number; customer: number };
 }
 
-export const DEMO_SCHEMA_VERSION = 1;
+/** Bei Änderungen am Zustandsmodell erhöhen: ältere Speicherstände werden verworfen. */
+export const DEMO_SCHEMA_VERSION = 2;

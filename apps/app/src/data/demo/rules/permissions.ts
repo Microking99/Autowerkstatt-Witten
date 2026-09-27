@@ -1,116 +1,39 @@
 /**
- * Rollenstandards und effektive Rechte (docs/rollen-und-rechte.md, Abschnitt 2).
- * Platzhalter für @werkstatt/domain/permissions; wird dort verbindlich umgesetzt.
+ * Rollenstandards und wirksame Rechte im Demo-Modus: vollständig aus @werkstatt/domain
+ * (Rechtekatalog nach docs/rollen-und-rechte.md, Abschnitt 2).
  */
 import type { Permission, Role } from '@werkstatt/contracts';
+import {
+  ASSIGNABLE_PERMISSIONS,
+  ROLE_DEFAULT_PERMISSIONS,
+  canDisableUser,
+  effectivePermissions as domainEffectivePermissions,
+  isPermissionAllowedForRole,
+  isStaffRole,
+  permissionsToList,
+  validatePermissionChange,
+} from '@werkstatt/domain';
 
-type StaffRole = Exclude<Role, 'customer'>;
-
-/** ✓ = Standard */
-const DEFAULTS: Record<StaffRole, Permission[]> = {
-  admin: [
-    'dashboard.view',
-    'customers.read',
-    'customers.write',
-    'customerAccounts.manage',
-    'vehicles.read',
-    'vehicles.write',
-    'vehicles.transferOwnership',
-    'appointments.read',
-    'appointments.write',
-    'workOrders.read',
-    'workOrders.write',
-    'workOrders.completeReview',
-    'workItems.execute',
-    'intake.write',
-    'findings.write',
-    'approvals.request',
-    'documents.readInternal',
-    'documents.write',
-    'documents.publish',
-    'messages.customerChat',
-    'invoices.read',
-    'invoices.write',
-    'payments.recordManual',
-    'payments.refund',
-    'serviceHistory.read',
-    'serviceHistory.correct',
-    'reports.export',
-    'users.manage',
-    'settings.manage',
-    'audit.read',
-  ],
-  service: [
-    'dashboard.view',
-    'customers.read',
-    'customers.write',
-    'customerAccounts.manage',
-    'vehicles.read',
-    'vehicles.write',
-    'vehicles.transferOwnership',
-    'appointments.read',
-    'appointments.write',
-    'workOrders.read',
-    'workOrders.write',
-    'workOrders.completeReview',
-    'intake.write',
-    'findings.write',
-    'approvals.request',
-    'documents.readInternal',
-    'documents.write',
-    'documents.publish',
-    'messages.customerChat',
-    'invoices.read',
-    'invoices.write',
-    'serviceHistory.read',
-    'reports.export',
-  ],
-  mechanic: ['dashboard.view', 'workItems.execute', 'findings.write'],
-};
-
-/** ○ = durch Admin zuweisbar */
-const ASSIGNABLE: Record<StaffRole, Permission[]> = {
-  admin: [],
-  service: ['workItems.execute', 'payments.recordManual', 'payments.refund', 'serviceHistory.correct', 'audit.read'],
-  mechanic: [
-    'customers.read',
-    'vehicles.read',
-    'appointments.read',
-    'workOrders.read',
-    'workOrders.completeReview',
-    'intake.write',
-    'documents.readInternal',
-    'messages.customerChat',
-    'serviceHistory.read',
-  ],
-};
+export { canDisableUser, validatePermissionChange };
 
 export function defaultPermissions(role: Role): Permission[] {
-  return role === 'customer' ? [] : [...DEFAULTS[role]];
+  return isStaffRole(role) ? [...ROLE_DEFAULT_PERMISSIONS[role]] : [];
 }
 
+/** Standard (✓) oder durch den Admin zuweisbar (○). */
 export function isAssignable(role: Role, permission: Permission): boolean {
-  if (role === 'customer') return false;
-  return DEFAULTS[role].includes(permission) || ASSIGNABLE[role].includes(permission);
+  return isPermissionAllowedForRole(role, permission);
 }
 
-export function effectivePermissions(
-  role: Role,
-  overrides: readonly { permission: Permission; granted: boolean }[],
-): Permission[] {
-  if (role === 'customer') return [];
-  const set = new Set(defaultPermissions(role));
-  for (const o of overrides) {
-    if (!isAssignable(role, o.permission)) continue;
-    if (o.granted) set.add(o.permission);
-    else set.delete(o.permission);
-  }
-  return [...set];
+export function assignablePermissions(role: Role): Permission[] {
+  return isStaffRole(role) ? [...ASSIGNABLE_PERMISSIONS[role]] : [];
 }
 
-export function hasPermission(
-  actor: { role: Role; permissionOverrides: readonly { permission: Permission; granted: boolean }[] },
-  permission: Permission,
-): boolean {
+/** Wirksame Rechte als Liste (Standard + gewährte − entzogene Overrides). */
+export function effectivePermissions(role: Role, overrides: readonly { permission: Permission; granted: boolean }[]): Permission[] {
+  return permissionsToList(domainEffectivePermissions(role, overrides));
+}
+
+export function hasPermission(actor: { role: Role; permissionOverrides: readonly { permission: Permission; granted: boolean }[] }, permission: Permission): boolean {
   return effectivePermissions(actor.role, actor.permissionOverrides).includes(permission);
 }

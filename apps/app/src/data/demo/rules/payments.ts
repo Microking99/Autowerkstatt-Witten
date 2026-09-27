@@ -1,16 +1,33 @@
 /**
- * Rechnungs- und Zahlungsregeln (R-ZAHL-1 bis R-ZAHL-12, AGENTS.md Regel 7).
+ * Rechnungs- und Zahlungsregeln im Demo-Modus (R-ZAHL-1 bis R-ZAHL-12, AGENTS.md Regel 7).
  *
- * - "Jetzt bezahlen" legt nur einen Zahlungsversuch (Checkout) an; der Rechnungsstatus bleibt.
- * - Bezahlt erst nach serverseitig geprüfter Anbieterbestätigung: Betrag, Währung, Händler
- *   und Rechnungszuordnung (Referenz) müssen passen.
- * - Doppelt gemeldete Ereignisse und wiederholte Statusabfragen buchen nie doppelt
- *   (eindeutig je Anbieter-Transaktion).
- *
- * Platzhalter für @werkstatt/domain; reine Funktionen.
+ * Die Regeln kommen aus @werkstatt/domain wie in der API:
+ * - Zahlungsstatus nur aus bestätigten Zahlungen und erfolgreichen Erstattungen
+ *   (`computeInvoicePaymentStatus`, `aggregatePaymentStatus`).
+ * - "Jetzt bezahlen" plant nur einen Zahlungsversuch (`planCheckout`), der Status bleibt.
+ * - Bezahlt erst nach Prüfung von Betrag, Währung, Händler und Rechnungszuordnung
+ *   (`verifyProviderCheckout`), gebucht höchstens einmal je Anbieter-Transaktion
+ *   (`planPaymentRecording`).
+ * - Manuelle Zahlung und Erstattung mit Recht und Pflichtangaben (`validateManualPayment`,
+ *   `validateRefund`).
+ * Hier wird nur zwischen Demo-Zustand und Domain übersetzt; Fehler als `ApiError` mit den
+ * Codes der API.
  */
-import type { PaymentStatus } from '@werkstatt/contracts';
-import { ApiError, ERROR_CODES } from '../../errors';
+import { API_ERROR_CODES, apiCodeFromDomain, type PaymentStatus } from '@werkstatt/contracts';
+import {
+  aggregatePaymentStatus as domainAggregate,
+  computeInvoicePaymentStatus,
+  planCheckout,
+  planPaymentRecording,
+  validateManualPayment as domainValidateManualPayment,
+  validateRefund as domainValidateRefund,
+  verifyProviderCheckout,
+  type Actor,
+  type InvoiceWithPayments,
+  type ManualPaymentInput,
+  type ProviderCheckout,
+} from '@werkstatt/domain';
+import { ApiError } from '../../errors';
 import type { DCheckout, DInvoice, DPayment, DProviderCheckout, DProviderEvent, DRefund } from '../model';
 
 export interface InvoiceSummary {
@@ -19,48 +36,32 @@ export interface InvoiceSummary {
   openCents: number;
   paymentStatus: PaymentStatus;
   overdue: boolean;
+  overpaidCents: number;
 }
 
-export function summarizeInvoice(
-  invoice: DInvoice,
-  payments: readonly DPayment[],
-  refunds: readonly DRefund[],
-  today: string,
-): InvoiceSummary {
+function invoiceInput(invoice: DInvoice, payments: readonly DPayment[], refunds: readonly DRefund[]): InvoiceWithPayments {
   const own = payments.filter((p) => p.invoiceId === invoice.id);
-  const paidCents = own.reduce((sum, p) => sum + p.amountCents, 0);
-  const paymentIds = new Set(own.map((p) => p.id));
-  const refundedCents = refunds
-    .filter((r) => paymentIds.has(r.paymentId) && r.status === 'succeeded')
-    .reduce((sum, r) => sum + r.amountCents, 0);
-  const openCents = Math.max(0, invoice.totalGrossCents - paidCents);
-
-  let paymentStatus: PaymentStatus;
-  if (invoice.status === 'cancelled') paymentStatus = 'cancelled';
-  else if (invoice.status === 'draft') paymentStatus = 'no_invoice';
-  else if (refundedCents > 0 && refundedCents >= paidCents) paymentStatus = 'refunded';
-  else if (refundedCents > 0) paymentStatus = 'partially_refunded';
-  else if (paidCents >= invoice.totalGrossCents) paymentStatus = 'paid';
-  else if (paidCents > 0) paymentStatus = 'partially_paid';
-  else paymentStatus = 'open';
-
-  const overdue =
-    invoice.status === 'issued' && openCents > 0 && invoice.dueDate !== null && invoice.dueDate < today.slice(0, 10);
-  return { paidCents, refundedCents, openCents, paymentStatus, overdue };
+  const ids = new Set(own.map((p) => p.id));
+  return {
+    invoice: { status: invoice.status, totalGrossCents: invoice.totalGrossCents, dueDate: invoice.dueDate },
+    payments: own.map((p) => ({ amountCents: p.amountCents })),
+    refunds: refunds.filter((r) => ids.has(r.paymentId)).map((r) => ({ amountCents: r.amountCents, status: r.status })),
+  };
 }
 
-/** Zahlungsstatus eines Auftrags aus seinen gestellten Rechnungen. */
-export function aggregatePaymentStatus(summaries: readonly InvoiceSummary[]): PaymentStatus {
-  const relevant = summaries.filter((s) => s.paymentStatus !== 'no_invoice' && s.paymentStatus !== 'cancelled');
-  if (relevant.length === 0) return 'no_invoice';
-  const order: PaymentStatus[] = ['open', 'partially_paid', 'partially_refunded', 'refunded', 'paid'];
-  for (const status of order) if (relevant.some((s) => s.paymentStatus === status)) return status;
-  return 'paid';
+export function summarizeInvoice(invoice: DInvoice, payments: readonly DPayment[], refunds: readonly DRefund[], today: string): InvoiceSummary {
+  const s = computeInvoicePaymentStatus({ ...invoiceInput(invoice, payments, refunds), today: today.slice(0, 10) });
+  return { paidCents: s.paidCents, refundedCents: s.refundedCents, openCents: s.openCents, paymentStatus: s.status, overdue: s.overdue, overpaidCents: s.overpaidCents };
+}
+
+/** Zahlungsstatus eines Auftrags aus seinen Rechnungen (Entwürfe zählen nicht). */
+export function aggregatePaymentStatus(invoices: readonly DInvoice[], payments: readonly DPayment[], refunds: readonly DRefund[], today: string): { status: PaymentStatus; overdue: boolean } {
+  return domainAggregate(invoices.map((i) => invoiceInput(i, payments, refunds)), today.slice(0, 10));
 }
 
 /**
- * "Jetzt bezahlen": neuer Zahlungsversuch über den offenen Betrag. Ältere offene Versuche
- * werden deaktiviert. Die Rechnung selbst wird nicht verändert.
+ * "Jetzt bezahlen" (Domain `planCheckout`): offenen Versuch wiederverwenden oder neuen über den
+ * offenen Betrag anlegen; ältere offene werden deaktiviert. Die Rechnung bleibt unverändert.
  */
 export function startCheckout(args: {
   invoice: DInvoice;
@@ -71,29 +72,35 @@ export function startCheckout(args: {
   userId: string;
   now: string;
   hostedUrl: string;
-}): { checkout: DCheckout; deactivatedIds: string[] } {
+}): { checkout: DCheckout; deactivatedIds: string[]; reused: boolean } {
   const { invoice, summary } = args;
-  if (invoice.status !== 'issued' || summary.openCents <= 0) {
-    throw ApiError.conflict(ERROR_CODES.invoiceNotPayable, 'Diese Rechnung kann nicht online bezahlt werden.');
+  const own = args.existing.filter((c) => c.invoiceId === invoice.id);
+  const plan = planCheckout({
+    invoice: { id: invoice.id, status: invoice.status },
+    existingCheckouts: own.map((c) => ({ id: c.id, status: c.status, amountCents: c.amountCents, validUntil: c.validUntil })),
+    now: new Date(args.now),
+    paymentStatus: { status: summary.paymentStatus, openCents: summary.openCents },
+  });
+  if (plan.action === 'reject') throw ApiError.conflict(apiCodeFromDomain(plan.code), plan.message);
+  if (plan.action === 'reuse') {
+    const checkout = own.find((c) => c.id === plan.checkoutId)!;
+    return { checkout, deactivatedIds: plan.deactivateCheckoutIds, reused: true };
   }
-  const deactivatedIds = args.existing
-    .filter((c) => c.invoiceId === invoice.id && (c.status === 'created' || c.status === 'pending'))
-    .map((c) => c.id);
-  const attempt = args.existing.filter((c) => c.invoiceId === invoice.id).length + 1;
-  const validUntil = new Date(new Date(args.now).getTime() + 30 * 60_000).toISOString();
+  const attempt = own.length + 1;
   return {
-    deactivatedIds,
+    deactivatedIds: plan.deactivateCheckoutIds,
+    reused: false,
     checkout: {
       id: args.checkoutId,
       invoiceId: invoice.id,
       provider: 'sumup',
       checkoutReference: `${invoice.invoiceNumber ?? invoice.id}-${attempt}`,
       providerCheckoutId: args.providerCheckoutId,
-      amountCents: summary.openCents,
+      amountCents: plan.amountCents,
       currency: 'EUR',
       status: 'pending',
       hostedUrl: args.hostedUrl,
-      validUntil,
+      validUntil: new Date(new Date(args.now).getTime() + 30 * 60_000).toISOString(),
       lastCheckedAt: null,
       providerTransactionId: null,
       createdByUserId: args.userId,
@@ -102,21 +109,23 @@ export function startCheckout(args: {
   };
 }
 
-export type VerificationResult = { ok: true } | { ok: false; reason: string };
-
-/** Prüft die Anbieterangaben gegen den eigenen Zahlungsversuch (R-ZAHL-5). */
-export function verifyProviderConfirmation(
-  checkout: DCheckout,
-  provider: DProviderCheckout,
-  merchantCode: string,
-): VerificationResult {
-  if (provider.status !== 'PAID') return { ok: false, reason: `Anbieterstatus ${provider.status}` };
-  if (provider.merchantCode !== merchantCode) return { ok: false, reason: 'Händlerkonto stimmt nicht überein' };
-  if (provider.checkoutReference !== checkout.checkoutReference) return { ok: false, reason: 'Rechnungszuordnung stimmt nicht überein' };
-  if (provider.currency !== checkout.currency) return { ok: false, reason: 'Währung stimmt nicht überein' };
-  if (provider.amountCents !== checkout.amountCents) return { ok: false, reason: 'Betrag stimmt nicht überein' };
-  if (!provider.transactionId) return { ok: false, reason: 'Keine Transaktionsnummer' };
-  return { ok: true };
+/** Simulierter Anbieterzustand in der Form der SumUp-Checkouts-API (Beträge in Euro). */
+export function toProviderCheckout(p: DProviderCheckout, now: string): ProviderCheckout {
+  const amount = p.amountCents / 100;
+  return {
+    id: p.providerCheckoutId,
+    checkout_reference: p.checkoutReference,
+    amount,
+    currency: p.currency,
+    merchant_code: p.merchantCode,
+    status: p.status,
+    transactions:
+      p.status === 'PAID' && p.transactionId
+        ? [{ id: p.transactionId, status: 'SUCCESSFUL', amount, currency: p.currency, timestamp: now, merchant_code: p.merchantCode }]
+        : p.status === 'FAILED'
+          ? [{ id: `${p.providerCheckoutId}-f`, status: 'FAILED', amount, currency: p.currency, timestamp: now, merchant_code: p.merchantCode }]
+          : [],
+  };
 }
 
 export interface ReconcileResult {
@@ -139,34 +148,44 @@ export function reconcileCheckout(args: {
   now: string;
 }): ReconcileResult {
   const checked = { ...args.checkout, lastCheckedAt: args.now };
-  const provider = args.provider;
-  if (!provider) return { checkout: checked, payment: null, outcome: 'pending' };
-
-  if (provider.status === 'PENDING') return { checkout: { ...checked, status: 'pending' }, payment: null, outcome: 'pending' };
-  if (provider.status === 'FAILED') return { checkout: { ...checked, status: 'failed' }, payment: null, outcome: 'failed' };
-  if (provider.status === 'EXPIRED') return { checkout: { ...checked, status: 'expired' }, payment: null, outcome: 'expired' };
-
-  const verification = verifyProviderConfirmation(args.checkout, provider, args.merchantCode);
-  if (!verification.ok) {
-    // Nicht buchen; der Versuch bleibt offen und wird im Protokoll zur Prüfung markiert.
-    return { checkout: checked, payment: null, outcome: 'rejected', reason: verification.reason };
-  }
-  const existing = args.payments.find((p) => p.provider === 'sumup' && p.providerTransactionId === provider.transactionId);
-  const paidCheckout: DCheckout = { ...checked, status: 'paid', providerTransactionId: provider.transactionId };
-  if (existing) return { checkout: paidCheckout, payment: null, outcome: 'already_booked' };
+  if (!args.provider) return { checkout: checked, payment: null, outcome: 'pending' };
+  const verification = verifyProviderCheckout({
+    localCheckout: {
+      id: args.checkout.id,
+      invoiceId: args.checkout.invoiceId,
+      checkoutReference: args.checkout.checkoutReference,
+      providerCheckoutId: args.checkout.providerCheckoutId,
+      amountCents: args.checkout.amountCents,
+      currency: args.checkout.currency,
+    },
+    invoice: { id: args.checkout.invoiceId },
+    provider: toProviderCheckout(args.provider, args.now),
+    expectedMerchantCode: args.merchantCode,
+  });
+  if (verification.kind === 'pending') return { checkout: { ...checked, status: 'pending' }, payment: null, outcome: 'pending' };
+  if (verification.kind === 'failed') return { checkout: { ...checked, status: 'failed' }, payment: null, outcome: 'failed' };
+  if (verification.kind === 'expired') return { checkout: { ...checked, status: 'expired' }, payment: null, outcome: 'expired' };
+  if (verification.kind === 'rejected') return { checkout: checked, payment: null, outcome: 'rejected', reason: verification.message };
+  const plan = planPaymentRecording({
+    existingPayments: args.payments.map((p) => ({ provider: p.provider, providerTransactionId: p.providerTransactionId })),
+    verification,
+    checkout: { id: args.checkout.id, invoiceId: args.checkout.invoiceId },
+  });
+  const paidCheckout: DCheckout = { ...checked, status: 'paid', providerTransactionId: verification.transactionId };
+  if (plan.action === 'noop') return { checkout: paidCheckout, payment: null, outcome: 'already_booked' };
   return {
     checkout: paidCheckout,
     outcome: 'booked',
     payment: {
       id: args.paymentId,
-      invoiceId: args.checkout.invoiceId,
+      invoiceId: plan.payment.invoiceId,
       method: 'sumup_online',
-      amountCents: provider.amountCents,
+      amountCents: plan.payment.amountCents,
       currency: 'EUR',
       provider: 'sumup',
-      providerTransactionId: provider.transactionId,
-      checkoutId: args.checkout.id,
-      receivedAt: args.now,
+      providerTransactionId: plan.payment.providerTransactionId,
+      checkoutId: plan.payment.checkoutId,
+      receivedAt: plan.payment.receivedAt,
       recordedBy: null,
       referenceText: args.checkout.checkoutReference,
     },
@@ -184,24 +203,39 @@ export function registerProviderEvent(
 ): { events: DProviderEvent[]; duplicate: boolean } {
   const existing = events.find((e) => e.dedupeKey === event.dedupeKey);
   if (existing) {
-    return {
-      duplicate: true,
-      events: events.map((e) => (e === existing ? { ...e, receiveCount: e.receiveCount + 1, lastReceivedAt: now } : e)),
-    };
+    return { duplicate: true, events: events.map((e) => (e === existing ? { ...e, receiveCount: e.receiveCount + 1, lastReceivedAt: now } : e)) };
   }
-  return {
-    duplicate: false,
-    events: [
-      ...events,
-      { ...event, receiveCount: 1, firstReceivedAt: now, lastReceivedAt: now, processedAt: null, result: null },
-    ],
-  };
+  return { duplicate: false, events: [...events, { ...event, receiveCount: 1, firstReceivedAt: now, lastReceivedAt: now, processedAt: null, result: null }] };
 }
 
-/** Manuelle Zuordnung (Überweisung, Bar): Pflichtangaben und kein Überzahlen. */
-export function validateManualPayment(summary: InvoiceSummary, amountCents: number): void {
-  if (amountCents <= 0) throw ApiError.validation('Betrag muss größer als 0 sein.');
-  if (amountCents > summary.openCents) {
-    throw ApiError.validation('Der Betrag ist höher als der offene Betrag der Rechnung.');
+/** Manuelle Zuordnung (Überweisung, Bar, Kartenterminal) nach Domain-Regeln (422 bei Ablehnung). */
+export function validateManualPayment(args: { actor: Actor; invoice: DInvoice; summary: InvoiceSummary; payment: ManualPaymentInput; now: string }): void {
+  const check = domainValidateManualPayment({
+    actor: args.actor,
+    invoice: { id: args.invoice.id, status: args.invoice.status },
+    paymentStatus: { openCents: args.summary.openCents },
+    payment: args.payment,
+    now: new Date(args.now),
+  });
+  if (!check.ok) {
+    if (check.error.code === 'MISSING_PERMISSION') throw ApiError.forbidden(check.error.message);
+    throw ApiError.unprocessable(apiCodeFromDomain(check.error.code), check.error.message);
   }
+}
+
+/** Erstattung nach Domain-Regeln; `existing` = gleicher Idempotenzschlüssel, nichts Neues. */
+export function planRefund(args: { actor: Actor; payment: DPayment; refunds: readonly DRefund[]; amountCents: number; idempotencyKey: string }): { action: 'create' } | { action: 'existing' } {
+  const check = domainValidateRefund({
+    actor: args.actor,
+    payment: { id: args.payment.id, amountCents: args.payment.amountCents },
+    existingRefunds: args.refunds.map((r) => ({ id: r.id, paymentId: r.paymentId, idempotencyKey: r.idempotencyKey, amountCents: r.amountCents, status: r.status })),
+    amountCents: args.amountCents,
+    idempotencyKey: args.idempotencyKey,
+  });
+  if (!check.ok) {
+    if (check.error.code === 'MISSING_PERMISSION') throw ApiError.forbidden(check.error.message);
+    if (check.error.code === 'IDEMPOTENCY_KEY_REUSED') throw ApiError.conflict(API_ERROR_CODES.idempotencyKeyReused, check.error.message);
+    throw ApiError.unprocessable(apiCodeFromDomain(check.error.code), check.error.message);
+  }
+  return { action: check.value.action };
 }

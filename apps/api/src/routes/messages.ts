@@ -14,6 +14,7 @@ import {
   SendMessageRequestSchema,
   type Conversation,
   type Message,
+  API_ERROR_CODES,
 } from '@werkstatt/contracts';
 import { canSendMessage, canViewInternalNotes, canViewMessages, type Actor } from '@werkstatt/domain';
 import type { DbOrTx } from '../db/index';
@@ -152,7 +153,7 @@ export async function messageRoutes(app: App): Promise<void> {
             .select()
             .from(messages)
             .where(and(eq(messages.authorUserId, actor.userId), eq(messages.clientMessageId, body.clientMessageId)));
-          if (!existing || existing.workOrderId !== loaded.wo.id) throw conflict('client_message_id_in_use', 'Diese Nachrichten-ID wurde bereits verwendet.');
+          if (!existing || existing.workOrderId !== loaded.wo.id) throw conflict(API_ERROR_CODES.clientMessageIdInUse, 'Diese Nachrichten-ID wurde bereits verwendet.');
           return { row: existing, created: false };
         }
         const message = inserted[0];

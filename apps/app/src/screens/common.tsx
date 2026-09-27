@@ -5,10 +5,11 @@
 import { homeForRole } from '@werkstatt/contracts';
 import { router, type Href } from 'expo-router';
 import type { ReactNode } from 'react';
-import { Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSession } from '../auth/session';
 import type { DownloadResult } from '../data/api';
+import { openFile } from '../lib/openFile';
 import type { QueryResult } from '../data/hooks';
 import { useBreakpoint, useTheme } from '../theme';
 import { AppText, Banner, Button, EmptyState, ErrorState, Icon, iconSize, LoadingState, Page } from '../ui';
@@ -94,23 +95,12 @@ export function PublicPanel({ children }: { children: ReactNode }) {
 export { Page };
 
 /**
- * Dokument öffnen. Browser: als Blob in neuem Tab. Nativ: offener Punkt (Datei im Cache
- * ablegen und über das Teilen-Menü öffnen, expo-file-system/expo-sharing).
+ * Dokument öffnen. Browser: PDF/Bilder in neuem Tab, sonst Download (Blob-URL wird wieder
+ * freigegeben). Nativ: Datei wurde mit Anmelde-Header in den Cache geladen
+ * (expo-file-system) und wird über das Teilen-Menü geöffnet (expo-sharing).
  */
-export async function openDownload(result: DownloadResult): Promise<'opened' | 'unsupported'> {
-  if (Platform.OS === 'web' && typeof window !== 'undefined') {
-    let url = result.uri;
-    if (url.startsWith('data:')) {
-      const [meta, data] = url.split(',');
-      const binary = atob(data ?? '');
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      url = URL.createObjectURL(new Blob([bytes], { type: meta?.split(':')[1]?.split(';')[0] ?? result.mimeType }));
-    }
-    window.open(url, '_blank', 'noopener');
-    return 'opened';
-  }
-  return 'unsupported';
+export async function openDownload(result: DownloadResult, title?: string): Promise<'opened' | 'unsupported'> {
+  return openFile(result, title);
 }
 
 const styles = StyleSheet.create({

@@ -14,9 +14,11 @@ import { AppText, Banner, Button, EmptyState } from '../../src/ui';
 
 function tokenProblem(error: ApiError | null): string | null {
   if (!error) return null;
-  if (error.code === ERROR_CODES.tokenExpired) return 'Diese Einladung ist abgelaufen. Einladungen gelten 7 Tage.';
-  if (error.code === ERROR_CODES.tokenUsed) return 'Diese Einladung wurde bereits verwendet. Melden Sie sich mit Ihrem Passwort an.';
-  if (error.code === ERROR_CODES.tokenInvalid || error.status === 404) return 'Dieser Einladungslink ist ungültig oder unvollständig.';
+  // Die API meldet ungültige, abgelaufene und benutzte Einladungen einheitlich (invitation_invalid)
+  // und nennt den Grund nur in der Meldung.
+  if (error.code === ERROR_CODES.invitationInvalid || error.status === 404 || error.status === 410) {
+    return error.message || 'Diese Einladung ist ungültig, abgelaufen oder wurde bereits verwendet.';
+  }
   return null;
 }
 

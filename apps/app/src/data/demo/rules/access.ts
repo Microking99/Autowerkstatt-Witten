@@ -1,8 +1,10 @@
 /**
  * Objektregeln (docs/rollen-und-rechte.md, Abschnitt 3): woran ein Kunde oder Mechaniker
  * Zugriff hat. Fremdes und Nicht-Vorhandenes wird für Kunden identisch als 404 behandelt.
- * Platzhalter für @werkstatt/domain/permissions.
+ * Die Ausführbarkeit kommt aus @werkstatt/domain (`isExecutableAuthorization`); die übrigen
+ * Prüfungen bilden die Objektregeln der API auf den Demo-Zustand ab.
  */
+import { isExecutableAuthorization } from '@werkstatt/domain';
 import type {
   DApprovalRequest,
   DAppointment,
@@ -87,5 +89,5 @@ export function mechanicCanSeeWorkOrder(
 
 /** Ausführung nur für vereinbarte oder vom Kunden freigegebene Positionen. */
 export function itemIsExecutable(item: DWorkItem): boolean {
-  return item.authorization === 'agreed' || item.authorization === 'approved';
+  return isExecutableAuthorization(item.authorization);
 }

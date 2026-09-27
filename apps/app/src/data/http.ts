@@ -55,7 +55,7 @@ import {
   type EndpointName,
 } from '@werkstatt/contracts';
 import { z, type ZodType } from 'zod';
-import type { WerkstattApi, ImageSourceSpec, DownloadResult, NotificationPreference } from './api';
+import type { WerkstattApi, ImageSourceSpec, DownloadResult, NotificationPreference, WriteOptions } from './api';
 import { ApiError, ERROR_CODES } from './errors';
 
 type Query = Record<string, string | number | boolean | undefined | null>;
@@ -77,7 +77,16 @@ export interface HttpApiOptions {
   /** UUID-Erzeugung (nativ: expo-crypto) */
   newId?: () => string;
   fetchImpl?: typeof fetch;
+  /**
+   * Nativ (iOS/Android): Datei mit Anmelde-Header herunterladen und lokal ablegen
+   * (expo-file-system). Fehlt die Funktion, wird die Antwort als Blob bzw. Daten-URI geliefert
+   * (Browser, Tests).
+   */
+  downloadFile?: (url: string, headers: Record<string, string>, fallbackName: string) => Promise<DownloadResult>;
 }
+
+/** Listen: API-Standard sind 50 Einträge je Seite; die Oberflächen laden bis 200. */
+const LIST_LIMIT = 200;
 
 const NotificationPreferencesSchema = z.array(
   z.object({ eventType: z.string(), channel: z.enum(['push', 'email']), enabled: z.boolean() }),
@@ -102,8 +111,10 @@ function defaultCode(status: number): string {
   if (status === 403) return ERROR_CODES.forbidden;
   if (status === 404) return ERROR_CODES.notFound;
   if (status === 409) return ERROR_CODES.conflict;
-  if (status === 422 || status === 400) return ERROR_CODES.validation;
-  return ERROR_CODES.server;
+  if (status === 400) return ERROR_CODES.badRequest;
+  if (status === 422) return ERROR_CODES.validationFailed;
+  if (status === 429) return ERROR_CODES.tooManyRequests;
+  return ERROR_CODES.internalError;
 }
 
 export class HttpApi implements WerkstattApi {
@@ -113,12 +124,14 @@ export class HttpApi implements WerkstattApi {
   private readonly validate: boolean;
   private readonly newId: () => string;
   private readonly fetchImpl: typeof fetch;
+  private readonly downloadFileImpl: HttpApiOptions['downloadFile'];
 
   constructor(options: HttpApiOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.validate = options.validateResponses ?? false;
     this.newId = options.newId ?? defaultNewId;
     this.fetchImpl = options.fetchImpl ?? ((...args) => fetch(...args));
+    this.downloadFileImpl = options.downloadFile;
   }
 
   setToken(token: string | null): void {
@@ -176,6 +189,42 @@ export class HttpApi implements WerkstattApi {
     return json as T;
   }
 
+  /** Binärdatei (Dokument, Export, QR-Aufkleber) mit Anmeldung laden. */
+  private async download(path: string, fallbackName: string, failureMessage: string): Promise<DownloadResult> {
+    const url = this.url(path);
+    if (this.downloadFileImpl) return this.downloadFileImpl(url, this.authHeaders(), fallbackName);
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, { headers: this.authHeaders() });
+    } catch {
+      throw ApiError.network();
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      let parsed: ReturnType<typeof ApiErrorSchema.safeParse> | null = null;
+      try {
+        parsed = ApiErrorSchema.safeParse(JSON.parse(text));
+      } catch {
+        parsed = null;
+      }
+      if (parsed?.success) throw new ApiError(res.status, parsed.data.error.code, parsed.data.error.message);
+      throw new ApiError(res.status, defaultCode(res.status), failureMessage);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get('content-disposition') ?? '';
+    const fileName = decodeURIComponent(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1] ?? fallbackName);
+    const mimeType = res.headers.get('content-type')?.split(';')[0] ?? 'application/octet-stream';
+    const g = globalThis as { URL?: { createObjectURL?: (b: Blob) => string } };
+    if (g.URL?.createObjectURL) return { uri: g.URL.createObjectURL(blob), fileName, mimeType };
+    const dataUri = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(ApiError.network());
+      reader.readAsDataURL(blob);
+    });
+    return { uri: dataUri, fileName, mimeType };
+  }
+
   private call<T>(name: EndpointName, opts: CallOptions = {}): Promise<T> {
     const def = endpoints[name];
     return this.request<T>(def.method, buildPath(def.path, opts.params), opts);
@@ -195,31 +244,33 @@ export class HttpApi implements WerkstattApi {
   inviteUser: WerkstattApi['inviteUser'] = (input) => this.call('inviteUser', { body: input, schema: StaffUserSchema });
   getUser: WerkstattApi['getUser'] = (id) => this.call('getUser', { params: { id }, schema: StaffUserSchema });
   updateUser: WerkstattApi['updateUser'] = (id, input) => this.call('updateUser', { params: { id }, body: input, schema: StaffUserSchema });
-  disableUser: WerkstattApi['disableUser'] = (id) => this.call('disableUser', { params: { id } });
-  enableUser: WerkstattApi['enableUser'] = (id) => this.call('enableUser', { params: { id } });
+  disableUser: WerkstattApi['disableUser'] = (id) => this.call('disableUser', { params: { id }, schema: StaffUserSchema });
+  enableUser: WerkstattApi['enableUser'] = (id) => this.call('enableUser', { params: { id }, schema: StaffUserSchema });
 
   dashboard: WerkstattApi['dashboard'] = () => this.call('dashboard', { schema: z.array(DashboardTileSchema) });
 
   // Kunden ---------------------------------------------------------------------
   listCustomers: WerkstattApi['listCustomers'] = (q = {}) =>
-    this.call('listCustomers', { query: { q: q.q, access: q.access, openItems: q.openItems, cursor: q.cursor }, schema: PageSchema(CustomerSummarySchema) });
+    this.call('listCustomers', { query: { q: q.q, access: q.access, openItems: q.openItems, cursor: q.cursor, limit: LIST_LIMIT }, schema: PageSchema(CustomerSummarySchema) });
   createCustomer: WerkstattApi['createCustomer'] = (input) => this.call('createCustomer', { body: input, schema: CustomerDetailSchema });
   getCustomer: WerkstattApi['getCustomer'] = (id) => this.call('getCustomer', { params: { id }, schema: CustomerDetailSchema });
   updateCustomer: WerkstattApi['updateCustomer'] = (id, input) => this.call('updateCustomer', { params: { id }, body: input, schema: CustomerDetailSchema });
-  archiveCustomer: WerkstattApi['archiveCustomer'] = (id) => this.call('archiveCustomer', { params: { id } });
-  inviteCustomer: WerkstattApi['inviteCustomer'] = (id, input) => this.call('inviteCustomer', { params: { id }, body: input });
-  disableCustomerAccount: WerkstattApi['disableCustomerAccount'] = (id) => this.call('disableCustomerAccount', { params: { id } });
+  archiveCustomer: WerkstattApi['archiveCustomer'] = (id) => this.call('archiveCustomer', { params: { id }, schema: CustomerDetailSchema });
+  inviteCustomer: WerkstattApi['inviteCustomer'] = (id, input) => this.call('inviteCustomer', { params: { id }, body: input, schema: CustomerDetailSchema });
+  disableCustomerAccount: WerkstattApi['disableCustomerAccount'] = (id) => this.call('disableCustomerAccount', { params: { id }, schema: CustomerDetailSchema });
+  exportCustomerData: WerkstattApi['exportCustomerData'] = (id) =>
+    this.download(buildPath(endpoints.exportCustomerData.path, { id }), 'kundendaten.zip', 'Der Export konnte nicht erstellt werden.');
 
   // Fahrzeuge ------------------------------------------------------------------
   listVehicles: WerkstattApi['listVehicles'] = (q = {}) =>
-    this.call('listVehicles', { query: { q: q.q, customerId: q.customerId, cursor: q.cursor }, schema: PageSchema(VehicleSummarySchema) });
+    this.call('listVehicles', { query: { q: q.q, customerId: q.customerId, cursor: q.cursor, limit: LIST_LIMIT }, schema: PageSchema(VehicleSummarySchema) });
   createVehicle: WerkstattApi['createVehicle'] = (input) => this.call('createVehicle', { body: input, schema: VehicleDetailSchema });
   getVehicle: WerkstattApi['getVehicle'] = (id) => this.call('getVehicle', { params: { id }, schema: VehicleDetailSchema });
   updateVehicle: WerkstattApi['updateVehicle'] = (id, input) => this.call('updateVehicle', { params: { id }, body: input, schema: VehicleDetailSchema });
   listOdometer: WerkstattApi['listOdometer'] = (id) => this.call('listOdometer', { params: { id }, schema: z.array(OdometerReadingSchema) });
   addOdometer: WerkstattApi['addOdometer'] = (id, input) => this.call('addOdometer', { params: { id }, body: input, schema: OdometerReadingSchema });
   listOwnerships: WerkstattApi['listOwnerships'] = (id) => this.call('listOwnerships', { params: { id }, schema: z.array(OwnershipSchema) });
-  transferOwnership: WerkstattApi['transferOwnership'] = (id, input) => this.call('transferOwnership', { params: { id }, body: input });
+  transferOwnership: WerkstattApi['transferOwnership'] = (id, input) => this.call('transferOwnership', { params: { id }, body: input, schema: VehicleDetailSchema });
   setQrPublicView: WerkstattApi['setQrPublicView'] = (id, enabled) => this.call('setQrPublicView', { params: { id }, body: { enabled }, schema: VehicleDetailSchema });
   rotateQr: WerkstattApi['rotateQr'] = (id) => this.call('rotateQr', { params: { id }, schema: VehicleDetailSchema });
   qrStickerSource = (id: string): ImageSourceSpec => ({ uri: this.url(buildPath(endpoints.qrSticker.path, { id })), headers: this.authHeaders() });
@@ -227,10 +278,11 @@ export class HttpApi implements WerkstattApi {
   getServiceEntry: WerkstattApi['getServiceEntry'] = (id) => this.call('getServiceEntry', { params: { id }, schema: ServiceEntrySchema });
   correctServiceEntry: WerkstattApi['correctServiceEntry'] = (id, input) => this.call('correctServiceEntry', { params: { id }, body: input, schema: ServiceEntrySchema });
   maintenanceDue: WerkstattApi['maintenanceDue'] = (id) => this.call('maintenanceDue', { params: { id }, schema: z.array(MaintenanceDueSchema) });
-  maintenanceDueAll: WerkstattApi['maintenanceDueAll'] = () => this.call('maintenanceDueAll', { schema: z.array(MaintenanceDueSchema) });
+  maintenanceDueAll: WerkstattApi['maintenanceDueAll'] = (options = {}) =>
+    this.call('maintenanceDueAll', { query: { all: options.all ? 'true' : undefined }, schema: z.array(MaintenanceDueSchema) });
   listShares: WerkstattApi['listShares'] = (id) => this.call('listShares', { params: { id }, schema: z.array(VehicleShareSchema) });
   createShare: WerkstattApi['createShare'] = (id, input) => this.call('createShare', { params: { id }, body: input, schema: VehicleShareSchema });
-  revokeShare: WerkstattApi['revokeShare'] = (id) => this.call('revokeShare', { params: { id } });
+  revokeShare: WerkstattApi['revokeShare'] = (id) => this.call('revokeShare', { params: { id }, schema: VehicleShareSchema });
 
   // Termine --------------------------------------------------------------------
   listAppointments: WerkstattApi['listAppointments'] = (q = {}) =>
@@ -238,42 +290,56 @@ export class HttpApi implements WerkstattApi {
   createAppointment: WerkstattApi['createAppointment'] = (input) => this.call('createAppointment', { body: input, schema: AppointmentSchema });
   requestAppointment: WerkstattApi['requestAppointment'] = (input) => this.call('requestAppointment', { body: input, schema: AppointmentSchema });
   getAppointment: WerkstattApi['getAppointment'] = (id) => this.call('getAppointment', { params: { id }, schema: AppointmentSchema });
-  checkConflicts: WerkstattApi['checkConflicts'] = (input) => this.call('checkConflicts', { body: input, schema: z.array(SchedulingConflictSchema) });
-  confirmAppointment: WerkstattApi['confirmAppointment'] = (id) => this.call('confirmAppointment', { params: { id }, schema: AppointmentSchema });
+  checkConflicts: WerkstattApi['checkConflicts'] = (input) =>
+    this.call('checkConflicts', {
+      body: { id: input.id ?? null, startsAt: input.startsAt, endsAt: input.endsAt, resourceId: input.resourceId ?? null, assigneeIds: input.assigneeIds ?? [], workOrderId: input.workOrderId ?? null },
+      schema: z.array(SchedulingConflictSchema),
+    });
+  confirmAppointment: WerkstattApi['confirmAppointment'] = (id, input = {}) => this.call('confirmAppointment', { params: { id }, body: input, schema: AppointmentSchema });
   proposeAlternative: WerkstattApi['proposeAlternative'] = (id, input) => this.call('proposeAlternative', { params: { id }, body: input, schema: AppointmentSchema });
   acceptProposal: WerkstattApi['acceptProposal'] = (id, proposalId) => this.call('acceptProposal', { params: { id, proposalId }, schema: AppointmentSchema });
-  declineProposal: WerkstattApi['declineProposal'] = (id, proposalId) => this.call('declineProposal', { params: { id, proposalId }, schema: AppointmentSchema });
+  declineProposal: WerkstattApi['declineProposal'] = (id, proposalId, input = {}) =>
+    this.call('declineProposal', { params: { id, proposalId }, body: { cancel: input.cancel ?? false }, schema: AppointmentSchema });
   cancelAppointment: WerkstattApi['cancelAppointment'] = (id, input) => this.call('cancelAppointment', { params: { id }, body: input, schema: AppointmentSchema });
   listResources: WerkstattApi['listResources'] = () => this.call('listResources', { schema: z.array(ResourceSchema) });
 
   // Aufträge -------------------------------------------------------------------
   listWorkOrders: WerkstattApi['listWorkOrders'] = (q = {}) =>
     this.call('listWorkOrders', {
-      query: { work: q.work, approval: q.approval, payment: q.payment, assigneeId: q.assigneeId, readyForPickup: q.readyForPickup, customerId: q.customerId, vehicleId: q.vehicleId, cursor: q.cursor },
+      query: { work: q.work, q: q.q, approval: q.approval, payment: q.payment, assigneeId: q.assigneeId, readyForPickup: q.readyForPickup, customerId: q.customerId, vehicleId: q.vehicleId, cursor: q.cursor, limit: LIST_LIMIT },
       schema: PageSchema(WorkOrderSummarySchema),
     });
-  createWorkOrder: WerkstattApi['createWorkOrder'] = (input) => this.call('createWorkOrder', { body: input, schema: WorkOrderDetailSchema });
+  createWorkOrder: WerkstattApi['createWorkOrder'] = (input, options = {}) =>
+    this.call('createWorkOrder', { body: input, query: { draft: options.draft ? 'true' : undefined }, schema: WorkOrderDetailSchema });
   getWorkOrder: WerkstattApi['getWorkOrder'] = (id) => this.call('getWorkOrder', { params: { id }, schema: WorkOrderDetailSchema });
   updateWorkOrder: WerkstattApi['updateWorkOrder'] = (id, input) => this.call('updateWorkOrder', { params: { id }, body: input, schema: WorkOrderDetailSchema });
   transitionWorkOrder: WerkstattApi['transitionWorkOrder'] = (id, input) => this.call('transitionWorkOrder', { params: { id }, body: input, schema: WorkOrderDetailSchema });
   completeReview: WerkstattApi['completeReview'] = (id, input) => this.call('completeReview', { params: { id }, body: input, schema: WorkOrderDetailSchema });
   readyForPickup: WerkstattApi['readyForPickup'] = (id) => this.call('readyForPickup', { params: { id }, schema: WorkOrderDetailSchema });
   pickedUp: WerkstattApi['pickedUp'] = (id) => this.call('pickedUp', { params: { id }, schema: WorkOrderDetailSchema });
-  setAssignees: WerkstattApi['setAssignees'] = (id, userIds) => this.call('setAssignees', { params: { id }, body: { userIds }, schema: WorkOrderDetailSchema });
+  // Vertragsergänzung der API: Körper { assigneeIds }
+  setAssignees: WerkstattApi['setAssignees'] = (id, userIds) => this.call('setAssignees', { params: { id }, body: { assigneeIds: userIds }, schema: WorkOrderDetailSchema });
   getIntake: WerkstattApi['getIntake'] = (id) => this.call('getIntake', { params: { id }, schema: IntakeSchema });
   saveIntake: WerkstattApi['saveIntake'] = (id, input) => this.call('saveIntake', { params: { id }, body: input, schema: IntakeSchema });
   confirmIntake: WerkstattApi['confirmIntake'] = (id, input) => this.call('confirmIntake', { params: { id }, body: input, schema: IntakeSchema });
   addWorkItem: WerkstattApi['addWorkItem'] = (id, input) => this.call('addWorkItem', { params: { id }, body: input, schema: WorkItemSchema });
   updateWorkItem: WerkstattApi['updateWorkItem'] = (id, input) => this.call('updateWorkItem', { params: { id }, body: input, schema: WorkItemSchema });
-  startWorkItem: WerkstattApi['startWorkItem'] = (id) => this.call('startWorkItem', { params: { id }, schema: WorkItemSchema });
-  pauseWorkItem: WerkstattApi['pauseWorkItem'] = (id) => this.call('pauseWorkItem', { params: { id }, schema: WorkItemSchema });
-  finishWorkItem: WerkstattApi['finishWorkItem'] = (id, input) => this.call('finishWorkItem', { params: { id }, body: input, schema: WorkItemSchema });
-  notDoneWorkItem: WerkstattApi['notDoneWorkItem'] = (id, input) => this.call('notDoneWorkItem', { params: { id }, body: input, schema: WorkItemSchema });
-  addPart: WerkstattApi['addPart'] = (id, input) => this.call('addPart', { params: { id }, body: input });
+  startWorkItem: WerkstattApi['startWorkItem'] = (id, o: WriteOptions = {}) =>
+    this.call('startWorkItem', { params: { id }, schema: WorkItemSchema, idempotencyKey: o.idempotencyKey });
+  pauseWorkItem: WerkstattApi['pauseWorkItem'] = (id, o: WriteOptions = {}) =>
+    this.call('pauseWorkItem', { params: { id }, schema: WorkItemSchema, idempotencyKey: o.idempotencyKey });
+  // `odometerKm: null` wird mitgesendet (= km unbekannt); fehlt das Feld, verlangt die API den km-Stand.
+  finishWorkItem: WerkstattApi['finishWorkItem'] = (id, input, o: WriteOptions = {}) =>
+    this.call('finishWorkItem', { params: { id }, body: input, schema: WorkItemSchema, idempotencyKey: o.idempotencyKey });
+  notDoneWorkItem: WerkstattApi['notDoneWorkItem'] = (id, input, o: WriteOptions = {}) =>
+    this.call('notDoneWorkItem', { params: { id }, body: input, schema: WorkItemSchema, idempotencyKey: o.idempotencyKey });
+  addPart: WerkstattApi['addPart'] = (id, input, o: WriteOptions = {}) =>
+    this.call('addPart', { params: { id }, body: input, schema: WorkItemSchema, idempotencyKey: o.idempotencyKey });
   listFindings: WerkstattApi['listFindings'] = (id) => this.call('listFindings', { params: { id }, schema: z.array(FindingSchema) });
   createFinding: WerkstattApi['createFinding'] = (id, input) =>
     this.call('createFinding', { params: { id }, body: input, schema: FindingSchema, idempotencyKey: input.id ?? undefined });
-  reportFinding: WerkstattApi['reportFinding'] = (id) => this.call('reportFinding', { params: { id }, schema: FindingSchema });
+  reportFinding: WerkstattApi['reportFinding'] = (id, o: WriteOptions = {}) =>
+    this.call('reportFinding', { params: { id }, schema: FindingSchema, idempotencyKey: o.idempotencyKey });
   dismissFinding: WerkstattApi['dismissFinding'] = (id) => this.call('dismissFinding', { params: { id }, schema: FindingSchema });
   listPhotos: WerkstattApi['listPhotos'] = (id) => this.call('listPhotos', { params: { id }, schema: z.array(PhotoSchema) });
   attachPhoto: WerkstattApi['attachPhoto'] = (id, input) => this.call('attachPhoto', { params: { id }, body: input, schema: PhotoSchema, idempotencyKey: input.id ?? undefined });
@@ -291,7 +357,7 @@ export class HttpApi implements WerkstattApi {
     this.call('decideApproval', { params: { id }, body: input, schema: ApprovalRequestSchema, idempotencyKey: `decision:${input.versionId}:${input.decision}` });
 
   // Dateien und Dokumente --------------------------------------------------------
-  uploadFile: WerkstattApi['uploadFile'] = async (input) => {
+  uploadFile: WerkstattApi['uploadFile'] = async (input, o: WriteOptions = {}) => {
     const form = new FormData();
     if (input.uri.startsWith('blob:') || input.uri.startsWith('data:')) {
       const blob = await (await this.fetchImpl(input.uri)).blob();
@@ -300,7 +366,7 @@ export class HttpApi implements WerkstattApi {
       // React Native: Dateiobjekt mit uri/name/type
       form.append('file', { uri: input.uri, name: input.name, type: input.mimeType } as unknown as Blob);
     }
-    return this.call('uploadFile', { body: form, schema: FileRefSchema });
+    return this.call('uploadFile', { body: form, schema: FileRefSchema, idempotencyKey: o.idempotencyKey });
   };
   listDocuments: WerkstattApi['listDocuments'] = (q = {}) =>
     this.call('listDocuments', { query: { workOrderId: q.workOrderId, vehicleId: q.vehicleId, customerId: q.customerId, kind: q.kind }, schema: z.array(DocumentSchema) });
@@ -308,28 +374,8 @@ export class HttpApi implements WerkstattApi {
   addDocumentVersion: WerkstattApi['addDocumentVersion'] = (id, input) => this.call('addDocumentVersion', { params: { id }, body: input, schema: DocumentSchema });
   publishDocument: WerkstattApi['publishDocument'] = (id) => this.call('publishDocument', { params: { id }, schema: DocumentSchema });
   unpublishDocument: WerkstattApi['unpublishDocument'] = (id) => this.call('unpublishDocument', { params: { id }, schema: DocumentSchema });
-  downloadDocument = async (id: string): Promise<DownloadResult> => {
-    let res: Response;
-    try {
-      res = await this.fetchImpl(this.url(buildPath(endpoints.downloadDocument.path, { id })), { headers: this.authHeaders() });
-    } catch {
-      throw ApiError.network();
-    }
-    if (!res.ok) throw new ApiError(res.status, defaultCode(res.status), 'Das Dokument konnte nicht geladen werden.');
-    const blob = await res.blob();
-    const disposition = res.headers.get('content-disposition') ?? '';
-    const fileName = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1] ?? 'dokument.pdf';
-    const mimeType = res.headers.get('content-type') ?? 'application/pdf';
-    const g = globalThis as { URL?: { createObjectURL?: (b: Blob) => string }; FileReader?: typeof FileReader };
-    if (g.URL?.createObjectURL) return { uri: g.URL.createObjectURL(blob), fileName: decodeURIComponent(fileName), mimeType };
-    const dataUri = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(ApiError.network());
-      reader.readAsDataURL(blob);
-    });
-    return { uri: dataUri, fileName: decodeURIComponent(fileName), mimeType };
-  };
+  downloadDocument: WerkstattApi['downloadDocument'] = (id) =>
+    this.download(buildPath(endpoints.downloadDocument.path, { id }), 'dokument.pdf', 'Das Dokument konnte nicht geladen werden.');
   imageSource = (contentUrl: string): ImageSourceSpec => ({
     uri: contentUrl.startsWith('http') ? contentUrl : `${this.baseUrl}${contentUrl}`,
     headers: this.authHeaders(),
@@ -342,15 +388,16 @@ export class HttpApi implements WerkstattApi {
     this.call('sendMessage', { params: { id }, body: input, schema: MessageSchema, idempotencyKey: `message:${input.clientMessageId}` });
   markRead: WerkstattApi['markRead'] = (id) => this.call('markRead', { params: { id } });
   listInternalNotes: WerkstattApi['listInternalNotes'] = (id) => this.call('listInternalNotes', { params: { id }, schema: z.array(InternalNoteSchema) });
-  addInternalNote: WerkstattApi['addInternalNote'] = (id, input) => this.call('addInternalNote', { params: { id }, body: input, schema: InternalNoteSchema });
+  addInternalNote: WerkstattApi['addInternalNote'] = (id, input, o: WriteOptions = {}) =>
+    this.call('addInternalNote', { params: { id }, body: input, schema: InternalNoteSchema, idempotencyKey: o.idempotencyKey });
 
   // Rechnungen und Zahlungen -----------------------------------------------------
   listInvoices: WerkstattApi['listInvoices'] = (q = {}) =>
-    this.call('listInvoices', { query: { paymentStatus: q.paymentStatus, overdue: q.overdue, customerId: q.customerId }, schema: z.array(InvoiceSchema) });
+    this.call('listInvoices', { query: { status: q.status, paymentStatus: q.paymentStatus, overdue: q.overdue, customerId: q.customerId }, schema: z.array(InvoiceSchema) });
   createInvoice: WerkstattApi['createInvoice'] = (input) => this.call('createInvoice', { body: input, schema: InvoiceSchema });
   getInvoice: WerkstattApi['getInvoice'] = (id) => this.call('getInvoice', { params: { id }, schema: InvoiceSchema });
   issueInvoice: WerkstattApi['issueInvoice'] = (id, input) => this.call('issueInvoice', { params: { id }, body: input, schema: InvoiceSchema });
-  cancelInvoice: WerkstattApi['cancelInvoice'] = (id, input) => this.call('cancelInvoice', { params: { id }, body: input, schema: InvoiceSchema });
+  cancelInvoice: WerkstattApi['cancelInvoice'] = (id, input = {}) => this.call('cancelInvoice', { params: { id }, body: input, schema: InvoiceSchema });
   startCheckout: WerkstattApi['startCheckout'] = (id) => this.call('startCheckout', { params: { id }, schema: StartCheckoutResponseSchema });
   refreshPaymentStatus: WerkstattApi['refreshPaymentStatus'] = (id) => this.call('refreshPaymentStatus', { params: { id }, schema: InvoiceSchema });
   recordManualPayment: WerkstattApi['recordManualPayment'] = (id, input) => this.call('recordManualPayment', { params: { id }, body: input, schema: InvoiceSchema });
@@ -370,7 +417,8 @@ export class HttpApi implements WerkstattApi {
   };
 
   // Benachrichtigungen -----------------------------------------------------------
-  listNotifications: WerkstattApi['listNotifications'] = () => this.call('listNotifications', { schema: z.array(NotificationSchema) });
+  listNotifications: WerkstattApi['listNotifications'] = (options = {}) =>
+    this.call('listNotifications', { query: { unread: options.unread ? 'true' : undefined }, schema: z.array(NotificationSchema) });
   readNotification: WerkstattApi['readNotification'] = (id) => this.call('readNotification', { params: { id } });
   registerDevice: WerkstattApi['registerDevice'] = (input) => this.call('registerDevice', { body: input, idempotencyKey: `device:${input.pushToken}` });
   getNotificationPreferences = async (): Promise<NotificationPreference[]> =>
@@ -394,6 +442,8 @@ export class HttpApi implements WerkstattApi {
   publicShare: WerkstattApi['publicShare'] = (token) => this.call('publicShare', { params: { token }, schema: PublicVehicleViewSchema });
   health: WerkstattApi['health'] = () => this.call('health');
 
+  exportOwnData: WerkstattApi['exportOwnData'] = () => this.download(endpoints.exportOwnData.path, 'meine-daten.zip', 'Der Export konnte nicht erstellt werden.');
+
   listAudit: WerkstattApi['listAudit'] = (q = {}) =>
-    this.call('listAudit', { query: { entityType: q.entityType, entityId: q.entityId, actorId: q.actorId }, schema: z.array(AuditEntrySchema) });
+    this.call('listAudit', { query: { entityType: q.entityType, entityId: q.entityId, actorId: q.actorId, action: q.action, limit: q.limit }, schema: z.array(AuditEntrySchema) });
 }
