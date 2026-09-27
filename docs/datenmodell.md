@@ -122,8 +122,8 @@ Wartungsfälligkeiten sind **keine** Termine; sie werden aus `service_entries` b
 wartet auf Kunden) | `decided` (alle entschieden). Zusätzlich Zähler freigegeben/abgelehnt.
 
 **Zahlungsstatus** (berechnet aus `invoices`/`payments`/`refunds`): `no_invoice` | `open` |
-`partially_paid` | `paid` | `refunded` | `partially_refunded`; `overdue` als zusätzliches
-Merkmal bei überschrittenem Fälligkeitsdatum.
+`partially_paid` | `paid` | `refunded` | `partially_refunded` | `cancelled` (Rechnung storniert);
+`overdue` als zusätzliches Merkmal bei überschrittenem Fälligkeitsdatum.
 
 **Position** `work_items.authorization`: `agreed` (bei Annahme vereinbart) |
 `pending_approval` | `approved` | `rejected` | `withdrawn`.

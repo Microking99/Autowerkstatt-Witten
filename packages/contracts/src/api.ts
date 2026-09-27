@@ -180,6 +180,10 @@ export const endpoints = {
   publicShare: e('GET', '/public/shares/:token', 'Freigegebene Historie → PublicVehicleView', 'public'),
   health: e('GET', '/health', 'Betriebsbereitschaft', 'public'),
 
+  // Datenschutz (Auskunft/Datenübertragbarkeit, DSGVO Art. 15/20)
+  exportOwnData: e('GET', '/me/export', 'Eigene Daten als ZIP (JSON + freigegebene Dokumente); Kunde'),
+  exportCustomerData: e('GET', '/customers/:id/export', 'Daten eines Kunden als ZIP (customers.read + reports.export)'),
+
   // Audit
   listAudit: e('GET', '/audit', 'Protokoll (?entityType, ?entityId, ?actorId) → AuditEntry[]'),
 } as const satisfies Record<string, EndpointDef>;

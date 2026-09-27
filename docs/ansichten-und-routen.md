@@ -66,6 +66,8 @@ ohne Maus per `Tab` erreichbar, Fokus immer sichtbar.
 | `/kunde/fahrzeuge/[id]/teilen` | Freigaben für Dritte | Neue Freigabe (Einträge wählen, Ablauf, FIN ja/nein) → Link teilen; Widerrufen (Bestätigung) | Fahrzeug |
 | `/kunde/auftraege` | Meine Aufträge (laufend/abgeschlossen) mit drei getrennten Status | Auftrag → Detail | Start |
 | `/kunde/auftraege/[id]` | Auftrag: Arbeitsstand, Positionen (freigegeben/abgelehnt/offen), Termine, Dokumente, Rechnung | Chat; offene Freigabe; Rechnung | Aufträge |
+| `/kunde/auftraege/[id]/annahme` | Fahrzeugannahme bestätigen: Beanstandung, Kilometerstand, Schäden mit Fotos, vereinbarte Leistungen, Kostenrahmen (keine internen Hinweise) | "Annahme bestätigen" (Bestätigungsdialog: gilt nur für die aufgeführten Leistungen, nicht für spätere Zusatzarbeiten) → Auftrag | Auftrag |
+| `/kunde/konto/datenexport` | Eigene Daten herunterladen (DSGVO Art. 15/20) | "Export anfordern" → Datei (JSON und Dokumente als ZIP) nach Rechteprüfung | Konto |
 | `/kunde/auftraege/[id]/chat` | Chat zum Auftrag | Nachricht/Foto senden (bei Verbindungsfehler: "Nicht gesendet, erneut senden") | Auftrag |
 | `/kunde/auftraege/[id]/freigaben/[anfrageId]` | **Entscheidung**: Beschreibung, Fotos, Positionen, Kosten, Terminänderung, Version | "Freigeben" / "Ablehnen" → Bestätigungsdialog mit Betrag → Ergebnis-Ansicht; veraltete Version → Hinweis "Das Angebot wurde geändert" + neue Version laden | Auftrag |
 | `/kunde/termine` | Termine (angefragt, Alternative vorgeschlagen, bestätigt) | Anfragen; Alternative annehmen/ablehnen | Start |

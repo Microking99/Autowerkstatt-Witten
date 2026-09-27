@@ -36,6 +36,8 @@ export const routes = {
     workOrders: () => '/kunde/auftraege',
     workOrder: (id: string) => `/kunde/auftraege/${id}`,
     chat: (workOrderId: string) => `/kunde/auftraege/${workOrderId}/chat`,
+    intake: (workOrderId: string) => `/kunde/auftraege/${workOrderId}/annahme`,
+    dataExport: () => '/kunde/konto/datenexport',
     approval: (workOrderId: string, requestId: string) => `/kunde/auftraege/${workOrderId}/freigaben/${requestId}`,
     appointments: () => '/kunde/termine',
     requestAppointment: (vehicleId?: string) => (vehicleId ? `/kunde/termine/anfragen?fahrzeug=${vehicleId}` : '/kunde/termine/anfragen'),

@@ -156,12 +156,13 @@ Statuswerte: `geplant`, `in Arbeit`, `zur Prüfung`, `erledigt`, `blockiert (Gru
 | ID | Inhalt | Vorgesehen für | Umgesetzt von | Status | Stand | Notiz |
 |---|---|---|---|---|---|---|
 | P-01 | Projektgrundlage: Monorepo, AGENTS.md, Anforderungen, Rechte, Datenmodell, Routen, Designsystem, `packages/contracts`, `packages/design-tokens` | Claude | Claude | erledigt | 26.09.2026 | Commit `a42708c`; Tests grün (contracts 9, design-tokens 8) |
-| P-02 | Domain-Logik `packages/domain`: Rechte, Statusübergänge, Freigabe-Hash, Zahlungsprüfung, Servicehistorie, Fälligkeiten | Codex | Claude-Unteragent (Codex nicht angebunden) | in Arbeit | 26.09.2026 | Review durch Codex: C-01 bis C-03 |
+| P-02 | Domain-Logik `packages/domain`: Rechte, Statusübergänge, Freigabe-Hash, Zahlungsprüfung, Servicehistorie, Fälligkeiten | Codex | Claude-Unteragent (Codex nicht angebunden) | erledigt, Review offen | 27.09.2026 | Zusammengeführt (`b0c2d4a`, Ergänzung `7c547ba`); 245 Tests grün; unabhängiges Review durch Codex: C-01 bis C-03 |
 | P-03 | API `apps/api`: Fastify, Drizzle-Schema und Migrationen, Anmeldung, Routen, SumUp-Adapter, Outbox, WebSocket | Claude-Unteragent | Claude-Unteragent | in Arbeit | 26.09.2026 | Paket gestartet (Arbeitszweig vorhanden); Ergebnis noch nicht zusammengeführt |
 | P-04 | App Kern und Kundensicht `apps/app`: Navigation, Anmeldung, Kundenbereich, Demo-Modus, Browser-Tests | Claude-Unteragent | Claude-Unteragent | in Arbeit | 26.09.2026 | Ergebnis noch nicht zusammengeführt |
 | P-05 | App Werkstatt und Mechaniker, Offline-Warteschlange | Claude-Unteragent | | geplant | 26.09.2026 | Abhängig von P-03, P-04 |
-| P-06 | Windows-Hülle `apps/desktop` (Tauri 2, NSIS) und CI-Workflows | Claude | Claude | in Arbeit | 26.09.2026 | Erster Stand auf dem Integrationszweig (Commit `498afdf`, `9477348`); Windows-Build nie ausgeführt, Installer unsigniert |
-| D-01 | Architektur-, Ablauf- und Prozessdokumentation (`docs/architektur.md`, `docs/adr/`, `docs/ablaeufe.md` u. a.) | Claude | Claude-Unteragent | zur Prüfung | 26.09.2026 | Mermaid-Diagramme mit mermaid-cli gerendert |
+| P-06 | Windows-Hülle `apps/desktop` (Tauri 2, NSIS) und CI-Workflows | Claude | Claude | erledigt (ohne Windows-Build) | 27.09.2026 | `cargo check` Linux und Ziel `x86_64-pc-windows-msvc` erfolgreich; Windows-Build nie ausgeführt, Installer unsigniert |
+| D-01 | Architektur-, Ablauf- und Prozessdokumentation (`docs/architektur.md`, `docs/adr/`, `docs/ablaeufe.md` u. a.) | Claude | Claude-Unteragent | erledigt | 27.09.2026 | Zusammengeführt; 32 Mermaid-Diagramme mit mermaid-cli gerendert |
+| P-07 | Datenexport für Betroffene (DSGVO Art. 15/20): `/me/export`, `/customers/:id/export`, Kundenroute `/kunde/konto/datenexport` | Claude | | geplant | 27.09.2026 | Endpunkte im Vertrag ergänzt |
 | C-01 | Unabhängiges Review Rechte und Objektregeln (domain und api) | Codex | | blockiert (Codex nicht eingerichtet; P-02/P-03 nicht fertig) | 26.09.2026 | Übergabe vorbereitet |
 | C-02 | Unabhängiges Review Zahlungslogik inkl. SumUp-Abgleich | Codex | | blockiert (Codex nicht eingerichtet; P-02/P-03 nicht fertig) | 26.09.2026 | Übergabe vorbereitet |
 | C-03 | Unabhängiges Review Servicehistorie und Fälligkeiten | Codex | | blockiert (Codex nicht eingerichtet; P-02/P-03 nicht fertig) | 26.09.2026 | Übergabe vorbereitet |
