@@ -1,13 +1,28 @@
 /**
- * Terminanfragen und Alternativvorschläge (R-KAL-5): Eine Anfrage ist keine Buchung.
- * Bestätigung oder Alternativvorschlag der Werkstatt ist ein eigener Schritt; nimmt der
- * Kunde eine Alternative an, ist der Termin bestätigt.
- *
- * Platzhalter für @werkstatt/domain; reine Funktionen.
+ * Terminanfragen, Alternativen und Konfliktprüfung im Demo-Modus (R-KAL-4, R-KAL-5) mit den
+ * Regeln aus @werkstatt/domain: Statuswechsel (`APPOINTMENT_TRANSITIONS`), Vorschläge
+ * (`proposeAlternative`, `acceptProposal`, `declineProposal`) und Konflikte
+ * (`detectConflicts`: Doppelbelegung von Hebebühne und Mitarbeiter, außerhalb Arbeits- bzw.
+ * Öffnungszeit, fehlende Teile). Eine Anfrage ist keine Buchung; nur bestätigte Termine
+ * blockieren.
  */
-import type { AppointmentKind } from '@werkstatt/contracts';
-import { ApiError, ERROR_CODES } from '../../errors';
+import { apiCodeFromDomain, type AppointmentKind, type AppointmentStatus, type SchedulingConflict } from '@werkstatt/contracts';
+import {
+  APPOINTMENT_TRANSITIONS,
+  acceptProposal as domainAccept,
+  declineProposal as domainDecline,
+  detectConflicts,
+  proposeAlternative as domainPropose,
+  type OpeningHoursSlot,
+  type PartDemandInput,
+  type WorkingHoursSlot,
+} from '@werkstatt/domain';
+import { ApiError } from '../../errors';
 import type { DAppointment } from '../model';
+
+function ensureTransition(appointment: DAppointment, to: AppointmentStatus, message: string) {
+  if (!APPOINTMENT_TRANSITIONS[appointment.status].includes(to)) throw ApiError.conflict(apiCodeFromDomain('TRANSITION_NOT_ALLOWED'), message);
+}
 
 export function createRequest(args: {
   id: string;
@@ -19,12 +34,8 @@ export function createRequest(args: {
   customerNote: string | null;
   now: string;
 }): DAppointment {
-  if (!(Date.parse(args.preferredEnd) > Date.parse(args.preferredStart))) {
-    throw ApiError.validation('Das Ende muss nach dem Beginn liegen.');
-  }
-  if (Date.parse(args.preferredStart) < Date.parse(args.now)) {
-    throw ApiError.validation('Der Wunschtermin liegt in der Vergangenheit.');
-  }
+  if (!(Date.parse(args.preferredEnd) > Date.parse(args.preferredStart))) throw ApiError.validation('Das Ende muss nach dem Beginn liegen.');
+  if (Date.parse(args.preferredStart) < Date.parse(args.now)) throw ApiError.validation('Der Wunschtermin liegt in der Vergangenheit.');
   return {
     id: args.id,
     kind: args.kind,
@@ -47,69 +58,59 @@ export function createRequest(args: {
   };
 }
 
-export function confirm(appointment: DAppointment, now: string): DAppointment {
-  if (appointment.status !== 'requested') {
-    throw ApiError.conflict(ERROR_CODES.conflict, 'Nur angefragte Termine können bestätigt werden.');
-  }
-  return { ...appointment, status: 'confirmed', confirmedAt: now };
+export function confirm(appointment: DAppointment, now: string, patch: Partial<Pick<DAppointment, 'resourceId' | 'assigneeIds' | 'internalNote'>> = {}): DAppointment {
+  if (appointment.status !== 'requested') throw ApiError.conflict(apiCodeFromDomain('TRANSITION_NOT_ALLOWED'), 'Nur angefragte Termine können bestätigt werden.');
+  ensureTransition(appointment, 'confirmed', 'Nur angefragte Termine können bestätigt werden.');
+  return { ...appointment, ...patch, status: 'confirmed', confirmedAt: now };
 }
 
-export function proposeAlternative(
-  appointment: DAppointment,
-  proposal: { id: string; startsAt: string; endsAt: string },
-  now: string,
-): DAppointment {
-  if (appointment.status !== 'requested' && appointment.status !== 'proposed') {
-    throw ApiError.conflict(ERROR_CODES.conflict, 'Für diesen Termin kann keine Alternative vorgeschlagen werden.');
+export function proposeAlternative(appointment: DAppointment, proposal: { id: string; startsAt: string; endsAt: string }, now: string): DAppointment {
+  const result = domainPropose(appointment, proposal);
+  if (!result.ok) {
+    if (result.error.code === 'INVALID_TIME_RANGE') throw ApiError.validation(result.error.message);
+    throw ApiError.conflict(apiCodeFromDomain(result.error.code), result.error.message);
   }
-  if (!(Date.parse(proposal.endsAt) > Date.parse(proposal.startsAt))) {
-    throw ApiError.validation('Das Ende muss nach dem Beginn liegen.');
-  }
+  const superseded = new Set(result.value.supersededProposalIds);
   return {
     ...appointment,
     status: 'proposed',
     proposals: [
-      ...appointment.proposals.map((p) => (p.status === 'open' ? { ...p, status: 'superseded' as const, respondedAt: now } : p)),
-      { id: proposal.id, startsAt: proposal.startsAt, endsAt: proposal.endsAt, status: 'open', createdAt: now, respondedAt: null },
+      ...appointment.proposals.map((p) => (superseded.has(p.id) ? { ...p, status: 'superseded' as const, respondedAt: now } : p)),
+      { id: proposal.id, startsAt: result.value.newProposal.startsAt, endsAt: result.value.newProposal.endsAt, status: 'open', createdAt: now, respondedAt: null },
     ],
   };
 }
 
-function openProposal(appointment: DAppointment, proposalId: string) {
-  const proposal = appointment.proposals.find((p) => p.id === proposalId);
-  if (!proposal) throw ApiError.notFound();
-  if (proposal.status !== 'open' || appointment.status !== 'proposed') {
-    throw ApiError.conflict(ERROR_CODES.conflict, 'Dieser Vorschlag ist nicht mehr gültig.');
-  }
-  return proposal;
-}
-
 export function acceptProposal(appointment: DAppointment, proposalId: string, now: string): DAppointment {
-  const proposal = openProposal(appointment, proposalId);
+  const result = domainAccept(appointment, proposalId, new Date(now));
+  if (!result.ok) throw ApiError.conflict(apiCodeFromDomain(result.error.code), result.error.message);
+  const superseded = new Set(result.value.supersededProposalIds);
   return {
     ...appointment,
     status: 'confirmed',
-    startsAt: proposal.startsAt,
-    endsAt: proposal.endsAt,
-    confirmedAt: now,
-    proposals: appointment.proposals.map((p) => (p.id === proposalId ? { ...p, status: 'accepted', respondedAt: now } : p)),
+    startsAt: result.value.startsAt,
+    endsAt: result.value.endsAt,
+    confirmedAt: result.value.confirmedAt,
+    proposals: appointment.proposals.map((p) =>
+      p.id === proposalId ? { ...p, status: 'accepted', respondedAt: now } : superseded.has(p.id) ? { ...p, status: 'superseded', respondedAt: now } : p,
+    ),
   };
 }
 
-/** Ablehnen der Alternative: Anfrage bleibt offen, die Werkstatt wird informiert. */
-export function declineProposal(appointment: DAppointment, proposalId: string, now: string): DAppointment {
-  openProposal(appointment, proposalId);
+/** Ablehnen der Alternative: Anfrage bleibt offen (oder wird mit `cancel` abgesagt), die Werkstatt wird informiert. */
+export function declineProposal(appointment: DAppointment, proposalId: string, now: string, options: { cancel?: boolean } = {}): DAppointment {
+  const result = domainDecline(appointment, proposalId, options);
+  if (!result.ok) throw ApiError.conflict(apiCodeFromDomain(result.error.code), result.error.message);
   return {
     ...appointment,
-    status: 'requested',
+    status: result.value.status,
+    ...(result.value.status === 'cancelled' ? { cancelledAt: now, cancelReason: 'Vorschlag abgelehnt und Anfrage zurückgezogen' } : {}),
     proposals: appointment.proposals.map((p) => (p.id === proposalId ? { ...p, status: 'declined', respondedAt: now } : p)),
   };
 }
 
 export function cancel(appointment: DAppointment, reason: string, now: string): DAppointment {
-  if (!['requested', 'proposed', 'confirmed'].includes(appointment.status)) {
-    throw ApiError.conflict(ERROR_CODES.conflict, 'Dieser Termin kann nicht mehr abgesagt werden.');
-  }
+  ensureTransition(appointment, 'cancelled', 'Dieser Termin kann nicht mehr abgesagt werden.');
   if (!reason.trim()) throw ApiError.validation('Bitte geben Sie einen Grund an.');
   return {
     ...appointment,
@@ -118,4 +119,27 @@ export function cancel(appointment: DAppointment, reason: string, now: string): 
     cancelReason: reason.trim(),
     proposals: appointment.proposals.map((p) => (p.status === 'open' ? { ...p, status: 'superseded', respondedAt: now } : p)),
   };
+}
+
+/** Konfliktprüfung wie in der API (Domain `detectConflicts`). */
+export function conflictsFor(args: {
+  candidate: { id?: string | null; startsAt: string; endsAt: string; resourceId: string | null; assigneeIds: readonly string[]; workOrderId?: string | null };
+  appointments: readonly DAppointment[];
+  workingHours: readonly WorkingHoursSlot[];
+  openingHours: readonly OpeningHoursSlot[];
+  partDemands: readonly PartDemandInput[];
+  resourceNames: Record<string, string>;
+  staffNames: Record<string, string>;
+}): SchedulingConflict[] {
+  if (!(Date.parse(args.candidate.endsAt) > Date.parse(args.candidate.startsAt))) throw ApiError.validation('Das Ende muss nach dem Beginn liegen.');
+  return detectConflicts({
+    candidate: args.candidate,
+    existing: args.appointments.map((a) => ({ id: a.id, status: a.status, startsAt: a.startsAt, endsAt: a.endsAt, resourceId: a.resourceId, assigneeIds: a.assigneeIds })),
+    workingHours: args.workingHours,
+    openingHours: args.openingHours,
+    // Teile eines Auftrags zählen nur für Termine dieses Auftrags
+    partDemands: args.candidate.workOrderId ? args.partDemands.filter((p) => p.workOrderId === args.candidate.workOrderId) : [],
+    resourceNames: args.resourceNames,
+    staffNames: args.staffNames,
+  });
 }

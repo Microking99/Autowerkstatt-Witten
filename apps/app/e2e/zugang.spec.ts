@@ -71,7 +71,10 @@ test.describe('Zugang und Navigation', () => {
     await expect(byTestId(page, 'werkstatt-uebersicht')).toBeVisible();
     await expect(byTestId(page, 'kachel-pending_approvals')).toContainText('2');
     await byTestId(page, 'kachel-pending_approvals').click();
-    await expect(byTestId(page, 'ansicht-folgt')).toBeVisible();
+    // Kachel führt zur gefilterten Auftragsliste (Filter in der URL)
+    await expect(page).toHaveURL(/\/werkstatt\/auftraege\?freigabe=pending/);
+    await expect(byTestId(page, 'werkstatt-auftraege')).toBeVisible();
+    await expect(byTestId(page, 'auftrag-A-2026-0187')).toBeVisible();
     await logout(page);
     await loginAs(page, 'mechanic');
     await expect(byTestId(page, 'mechaniker-heute')).toBeVisible();

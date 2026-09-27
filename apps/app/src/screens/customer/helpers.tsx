@@ -13,6 +13,14 @@ export const dueStateLabels: Record<MaintenanceDue['state'], StatusLabel> = {
 
 export const estimateLabel: StatusLabel = { label: 'km geschätzt', tone: 'info', icon: 'Gauge' };
 
+/**
+ * Beruht die km-Angabe dieser Fälligkeit auf einer Schätzung? Nur bei einer km-Grenze; bei
+ * reinen Zeitintervallen (z. B. HU) ist ein geschätzter km-Stand ohne Bedeutung.
+ */
+export function isKmEstimate(d: Pick<MaintenanceDue, 'dueKm' | 'estimatedCurrentKm' | 'basis'>): boolean {
+  return d.basis === 'km_estimated' || (d.dueKm !== null && d.estimatedCurrentKm !== null);
+}
+
 export function dueSummary(d: MaintenanceDue): string {
   const parts: string[] = [];
   if (d.dueDate) parts.push(`am ${formatDate(d.dueDate)}`);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ApiError, ERROR_CODES } from '../errors';
+import { ApiError, ERROR_CODES, isApprovalOutdatedCode } from '../errors';
 import { DEMO_EMAILS, DEMO_PASSWORD, DEMO_TOKENS } from './constants';
 import { DemoApi } from './DemoApi';
 import { IDS } from './seed';
@@ -38,12 +38,13 @@ describe('DemoApi: Anmeldung', () => {
 
   it('behandelt Einladungen: gültig, abgelaufen, benutzt', async () => {
     const api = new DemoApi({ latencyMs: 0, now: () => NOW });
-    await expectError(api.acceptInvitation({ token: DEMO_TOKENS.invitationExpired, password: 'ein-langes-passwort' }), 410, ERROR_CODES.tokenExpired);
-    await expectError(api.acceptInvitation({ token: DEMO_TOKENS.invitationUsed, password: 'ein-langes-passwort' }), 410, ERROR_CODES.tokenUsed);
-    await expectError(api.acceptInvitation({ token: 'unbekannter-token-123456', password: 'ein-langes-passwort' }), 404, ERROR_CODES.tokenInvalid);
+    // wie die API: einheitlich 400 invitation_invalid, der Grund steht nur im Text
+    await expectError(api.acceptInvitation({ token: DEMO_TOKENS.invitationExpired, password: 'ein-langes-passwort' }), 400, ERROR_CODES.invitationInvalid);
+    await expectError(api.acceptInvitation({ token: DEMO_TOKENS.invitationUsed, password: 'ein-langes-passwort' }), 400, ERROR_CODES.invitationInvalid);
+    await expectError(api.acceptInvitation({ token: 'unbekannter-token-123456', password: 'ein-langes-passwort' }), 400, ERROR_CODES.invitationInvalid);
     const res = await api.acceptInvitation({ token: DEMO_TOKENS.invitationValid, password: 'ein-langes-passwort' });
     expect(res.user.role).toBe('customer');
-    await expectError(api.acceptInvitation({ token: DEMO_TOKENS.invitationValid, password: 'ein-langes-passwort' }), 410, ERROR_CODES.tokenUsed);
+    await expectError(api.acceptInvitation({ token: DEMO_TOKENS.invitationValid, password: 'ein-langes-passwort' }), 400, ERROR_CODES.invitationInvalid);
   });
 });
 
@@ -81,14 +82,16 @@ describe('DemoApi: Objektregeln Kunde', () => {
     expect(photos.every((p) => p.visibility === 'customer')).toBe(true);
   });
 
-  it('Fälligkeiten: korrigierte Revision zählt, Golf-km ist als Schätzung gekennzeichnet', async () => {
+  it('Fälligkeiten: korrigierte Revision zählt; ohne neueren km-Stand wird geschätzt und so gekennzeichnet', async () => {
     const api = await as(DEMO_EMAILS.customer);
     const octavia = await api.maintenanceDue(IDS.vehicles.octavia);
     const oil = octavia.find((d) => d.title.startsWith('Ölwechsel'))!;
     expect(oil.dueKm).toBe(99_020);
     expect(oil.state).not.toBe('overdue');
-    const golf = await api.maintenanceDue(IDS.vehicles.golf);
-    expect(golf.some((d) => d.estimatedCurrentKm !== null && d.explanation.includes('geschätzt'))).toBe(true);
+    // Corsa: letzter km-Stand beim Ölwechsel, davor ein weiterer; aktueller Stand geschätzt
+    const staff = await as(DEMO_EMAILS.service);
+    const corsa = await staff.maintenanceDue(IDS.vehicles.corsa);
+    expect(corsa.some((d) => d.estimatedCurrentKm !== null && d.explanation.includes('geschätzt'))).toBe(true);
   });
 
   it('Mechaniker sieht keine Preise und nur zugewiesene Aufträge', async () => {
@@ -103,19 +106,21 @@ describe('DemoApi: Objektregeln Kunde', () => {
 
 describe('DemoApi: Freigaben', () => {
   it('Kundin gibt frei; Entscheidung ist an Version und Hash gebunden; Mechaniker kann nicht freigeben', async () => {
+    const api = await as(DEMO_EMAILS.customer);
+    const req = await api.getApproval(IDS.approvals.brakes);
     const mech = await as(DEMO_EMAILS.mechanic);
-    const reqForMech = await mech.getApproval(IDS.approvals.brakes);
+    // Mechaniker sehen Freigabeanfragen nicht (Preise) und entscheiden nie für den Kunden
+    await expectError(mech.getApproval(IDS.approvals.brakes), 403);
     await expectError(
-      mech.decideApproval(IDS.approvals.brakes, { versionId: reqForMech.currentVersion.id, contentHash: reqForMech.currentVersion.contentHash, decision: 'approved', channel: 'web' }),
+      mech.decideApproval(IDS.approvals.brakes, { versionId: req.currentVersion.id, contentHash: req.currentVersion.contentHash, decision: 'approved', channel: 'web' }),
       403,
+      ERROR_CODES.notCustomer,
     );
     // Positionen warten und sind für den Mechaniker gesperrt
     const wo = await mech.getWorkOrder(IDS.workOrders.octaviaInspection);
     const pending = wo.items.find((i) => i.authorization === 'pending_approval')!;
-    await expectError(mech.startWorkItem(pending.id), 409);
+    await expectError(mech.startWorkItem(pending.id), 409, ERROR_CODES.notAuthorized);
 
-    const api = await as(DEMO_EMAILS.customer);
-    const req = await api.getApproval(IDS.approvals.brakes);
     const decided = await api.decideApproval(IDS.approvals.brakes, { versionId: req.currentVersion.id, contentHash: req.currentVersion.contentHash, decision: 'approved', channel: 'web' });
     expect(decided.status).toBe('approved');
     const after = await api.getWorkOrder(IDS.workOrders.octaviaInspection);
@@ -127,11 +132,11 @@ describe('DemoApi: Freigaben', () => {
     const req = await api.getApproval(IDS.approvals.timingBeltOffer);
     expect(req.versions).toHaveLength(2);
     api.controls.workshopReviseApproval(IDS.approvals.timingBeltOffer);
-    await expectError(
-      api.decideApproval(IDS.approvals.timingBeltOffer, { versionId: req.currentVersion.id, contentHash: req.currentVersion.contentHash, decision: 'approved', channel: 'web' }),
-      409,
-      ERROR_CODES.approvalVersionOutdated,
-    );
+    const err = await api
+      .decideApproval(IDS.approvals.timingBeltOffer, { versionId: req.currentVersion.id, contentHash: req.currentVersion.contentHash, decision: 'approved', channel: 'web' })
+      .then(() => null, (e: unknown) => e as ApiError);
+    expect(err?.status).toBe(409);
+    expect(isApprovalOutdatedCode(err?.code ?? '')).toBe(true);
     const fresh = await api.getApproval(IDS.approvals.timingBeltOffer);
     expect(fresh.currentVersion.versionNo).toBe(3);
   });
@@ -145,14 +150,87 @@ describe('DemoApi: Freigaben', () => {
     const wo = await api.getWorkOrder(IDS.workOrders.octaviaInspection);
     expect(wo.status.work).toBe('completed');
     expect(wo.status.readyForPickup).toBe(true);
-    expect(wo.items.filter((i) => i.approvalRequestId === IDS.approvals.brakes).every((i) => i.executionStatus === 'not_done')).toBe(true);
+    // abgelehnte Positionen bleiben unausgeführt (nie "erledigt") und gesperrt
+    expect(wo.items.filter((i) => i.approvalRequestId === IDS.approvals.brakes).every((i) => i.authorization === 'rejected' && i.executionStatus !== 'done')).toBe(true);
     const entries = await api.listServiceEntries(IDS.vehicles.octavia);
     const titles = entries.map((e) => e.title);
     expect(titles).toContain('Inspektion');
     expect(titles.some((t) => t.includes('Brems'))).toBe(false);
     // Abschluss wiederholen erzeugt keine Duplikate
-    expect(() => api.controls.workshopCompleteOrder(IDS.workOrders.octaviaInspection)).toThrow();
+    expect(api.controls.workshopCompleteOrder(IDS.workOrders.octaviaInspection)).toContain('keine weiteren Serviceeinträge');
     expect((await api.listServiceEntries(IDS.vehicles.octavia)).length).toBe(entries.length);
+  });
+});
+
+/** Eine Demo-Instanz, in der die Rolle gewechselt wird (gemeinsamer Zustand). */
+function shared() {
+  const api = new DemoApi({ latencyMs: 0, now: () => NOW });
+  return {
+    api,
+    async as(email: string) {
+      api.setToken((await api.login({ email, password: DEMO_PASSWORD })).token);
+      return api;
+    },
+  };
+}
+
+describe('DemoApi: Regeln aus dem API-Review (bb882be)', () => {
+  it('nach bestätigter Annahme: Umfang/Preis nur über Freigabe, Zuweisung bleibt änderbar', async () => {
+    const s = shared();
+    const api = await s.as(DEMO_EMAILS.service);
+    const wo = await api.getWorkOrder(IDS.workOrders.yaris);
+    const agreed = wo.items.find((i) => i.origin === 'intake' && i.executionStatus === 'planned')!;
+    await expectError(api.updateWorkItem(agreed.id, { unitPriceCents: 1 }), 409, ERROR_CODES.approvalRequired);
+    await expectError(api.addWorkItem(wo.id, { kind: 'labor', title: 'Zusatz', quantity: 1, unit: 'Std.', unitPriceCents: 7_800, vatRateBp: 1900 }), 409, ERROR_CODES.approvalRequired);
+    const reassigned = await api.updateWorkItem(agreed.id, { assignedTo: IDS.users.lukas });
+    expect(reassigned.assignedTo?.userId).toBe(IDS.users.lukas);
+  });
+
+  it('Anfrage mit begonnener Arbeit lässt sich nicht mehr überarbeiten (approval_in_execution)', async () => {
+    const s = shared();
+    const customer = await s.as(DEMO_EMAILS.customer);
+    const req = await customer.getApproval(IDS.approvals.brakes);
+    await customer.decideApproval(req.id, { versionId: req.currentVersion.id, contentHash: req.currentVersion.contentHash, decision: 'approved', channel: 'web' });
+    const mech = await s.as(DEMO_EMAILS.mechanic);
+    const wo = await mech.getWorkOrder(IDS.workOrders.octaviaInspection);
+    const brakeItem = wo.items.find((i) => i.approvalRequestId === IDS.approvals.brakes)!;
+    await mech.startWorkItem(brakeItem.id);
+    const service = await s.as(DEMO_EMAILS.service);
+    const current = await service.getApproval(IDS.approvals.brakes);
+    await expectError(
+      service.reviseApproval(current.id, { kind: current.kind, title: current.title, summaryCustomer: 'Geändert', lines: current.currentVersion.lines, photoIds: [] }),
+      409,
+      ERROR_CODES.approvalInExecution,
+    );
+  });
+
+  it('Stornierung zieht gesendete offene Anfragen zurück', async () => {
+    const s = shared();
+    const api = await s.as(DEMO_EMAILS.service);
+    expect((await api.getApproval(IDS.approvals.timingBeltOffer)).status).toBe('pending_customer');
+    await api.transitionWorkOrder(IDS.workOrders.octaviaTimingBelt, { to: 'cancelled', reason: 'Kundin verkauft das Fahrzeug' });
+    expect((await api.getApproval(IDS.approvals.timingBeltOffer)).status).toBe('withdrawn');
+  });
+
+  it('gesperrten Kundenzugang wieder freischalten', async () => {
+    const s = shared();
+    const service = await s.as(DEMO_EMAILS.service);
+    await service.disableCustomerAccount(IDS.customers.miriam);
+    await expectError(service.login({ email: DEMO_EMAILS.customer, password: DEMO_PASSWORD }), 403, ERROR_CODES.accountDisabled);
+    const enabled = await service.enableCustomerAccount(IDS.customers.miriam);
+    expect(enabled.accessStatus).toBe('active');
+    await expectError(service.enableCustomerAccount(IDS.customers.miriam), 409, ERROR_CODES.notDisabled);
+    await expect(service.login({ email: DEMO_EMAILS.customer, password: DEMO_PASSWORD })).resolves.toBeTruthy();
+  });
+
+  it('Mechaniker sieht Fahrzeugakte und Historie nur über laufende Zuweisungen', async () => {
+    const mech = await as(DEMO_EMAILS.mechanic);
+    // Octavia: laufender Auftrag, zugewiesen
+    await expect(mech.getVehicle(IDS.vehicles.octavia)).resolves.toBeTruthy();
+    await expect(mech.listServiceEntries(IDS.vehicles.octavia)).resolves.toBeTruthy();
+    // Corsa: nur ein bereits abgeholter Auftrag war ihm zugewiesen
+    await expectError(mech.getVehicle(IDS.vehicles.corsa), 403);
+    await expectError(mech.listServiceEntries(IDS.vehicles.corsa), 403);
   });
 });
 

@@ -23,6 +23,7 @@ import {
   routes,
   type OdometerReading,
   type VehicleShare,
+  API_ERROR_CODES,
 } from '@werkstatt/contracts';
 import {
   berlinDateOf,
@@ -213,10 +214,10 @@ export async function vehicleRoutes(app: App): Promise<void> {
     const { ownerCustomerId, ...input } = request.body;
     const vehicle = await db.transaction(async (tx) => {
       const [owner] = await tx.select().from(customers).where(eq(customers.id, ownerCustomerId));
-      if (!owner || owner.archivedAt) throw unprocessable('owner_invalid', 'Der Halter wurde nicht gefunden oder ist archiviert.');
+      if (!owner || owner.archivedAt) throw unprocessable(API_ERROR_CODES.ownerInvalid, 'Der Halter wurde nicht gefunden oder ist archiviert.');
       if (input.vin) {
         const [dup] = await tx.select({ id: vehicles.id }).from(vehicles).where(eq(vehicles.vin, input.vin));
-        if (dup) throw conflict('vin_taken', 'Ein Fahrzeug mit dieser FIN ist bereits angelegt.');
+        if (dup) throw conflict(API_ERROR_CODES.vinTaken, 'Ein Fahrzeug mit dieser FIN ist bereits angelegt.');
       }
       const plate = normalizeLicensePlate(input.licensePlate);
       const [row] = await tx
@@ -255,7 +256,7 @@ export async function vehicleRoutes(app: App): Promise<void> {
           .select({ id: vehicles.id })
           .from(vehicles)
           .where(and(eq(vehicles.vin, request.body.vin), ne(vehicles.id, request.params.id)));
-        if (dup) throw conflict('vin_taken', 'Ein Fahrzeug mit dieser FIN ist bereits angelegt.');
+        if (dup) throw conflict(API_ERROR_CODES.vinTaken, 'Ein Fahrzeug mit dieser FIN ist bereits angelegt.');
       }
       const [row] = await tx.update(vehicles).set(patch).where(eq(vehicles.id, request.params.id)).returning();
       await audit(tx, auditContextFrom(request), { action: 'vehicle.updated', entityType: 'vehicle', entityId: row!.id, data: { fields: Object.keys(request.body) } });
@@ -311,7 +312,7 @@ export async function vehicleRoutes(app: App): Promise<void> {
         source = 'staff';
       }
       const recordedAt = request.body.recordedAt ? new Date(request.body.recordedAt) : now;
-      if (recordedAt.getTime() > now.getTime() + 5 * 60_000) throw unprocessable('recorded_in_future', 'Der Zeitpunkt liegt in der Zukunft.');
+      if (recordedAt.getTime() > now.getTime() + 5 * 60_000) throw unprocessable(API_ERROR_CODES.recordedInFuture, 'Der Zeitpunkt liegt in der Zukunft.');
       const row = await db.transaction(async (tx) => {
         const created = await recordOdometer(tx, { vehicleId: request.params.id, valueKm: request.body.valueKm, recordedAt, source, recordedBy: actor.userId });
         await audit(tx, auditContextFrom(request), {
@@ -362,7 +363,7 @@ export async function vehicleRoutes(app: App): Promise<void> {
         const [vehicle] = await tx.select().from(vehicles).where(eq(vehicles.id, request.params.id)).for('update');
         ensureFound(vehicle);
         const [newOwner] = await tx.select().from(customers).where(eq(customers.id, request.body.newCustomerId));
-        if (!newOwner || newOwner.archivedAt) throw unprocessable('owner_invalid', 'Der neue Halter wurde nicht gefunden oder ist archiviert.');
+        if (!newOwner || newOwner.archivedAt) throw unprocessable(API_ERROR_CODES.ownerInvalid, 'Der neue Halter wurde nicht gefunden oder ist archiviert.');
         const [current] = await tx
           .select()
           .from(vehicleOwnerships)
@@ -614,15 +615,15 @@ export async function vehicleRoutes(app: App): Promise<void> {
       const { access } = await loadVisibleVehicle(db, actor, request.params.id);
       ensure(canManageVehicleShares(actor, access));
       const expiresAt = new Date(request.body.expiresAt);
-      if (expiresAt.getTime() <= now.getTime()) throw unprocessable('expires_in_past', 'Das Ablaufdatum muss in der Zukunft liegen.');
-      if (expiresAt.getTime() > now.getTime() + 366 * 86_400_000) throw unprocessable('expires_too_late', 'Freigaben gelten höchstens ein Jahr.');
+      if (expiresAt.getTime() <= now.getTime()) throw unprocessable(API_ERROR_CODES.expiresInPast, 'Das Ablaufdatum muss in der Zukunft liegen.');
+      if (expiresAt.getTime() > now.getTime() + 366 * 86_400_000) throw unprocessable(API_ERROR_CODES.expiresTooLate, 'Freigaben gelten höchstens ein Jahr.');
       const ids = [...new Set(request.body.serviceEntryIds)];
       const entries = await db
         .select({ id: serviceEntries.id, status: serviceEntries.status })
         .from(serviceEntries)
         .where(and(eq(serviceEntries.vehicleId, request.params.id), inArray(serviceEntries.id, ids)));
       if (entries.length !== ids.length || entries.some((e) => e.status !== 'valid')) {
-        throw unprocessable('invalid_entries', 'Nur gültige Serviceeinträge dieses Fahrzeugs können freigegeben werden.');
+        throw unprocessable(API_ERROR_CODES.invalidEntries, 'Nur gültige Serviceeinträge dieses Fahrzeugs können freigegeben werden.');
       }
       const token = randomToken(32);
       const row = await db.transaction(async (tx) => {

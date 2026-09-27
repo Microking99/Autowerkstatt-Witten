@@ -212,6 +212,13 @@ export default function WorkOrderScreen() {
                       <AppText variant="small" tone="subtle">
                         Die Bestätigung der Annahme gilt nur für die dort vereinbarten Arbeiten, nicht für spätere Zusatzarbeiten.
                       </AppText>
+                      <Button
+                        label={order.intake.confirmedAt ? 'Annahme ansehen' : 'Annahme prüfen und bestätigen'}
+                        variant={order.intake.confirmedAt ? 'secondary' : 'primary'}
+                        icon={order.intake.confirmedAt ? 'Eye' : 'Signature'}
+                        onPress={() => router.push(routes.customer.intake(order.id) as Href)}
+                        testID="annahme-oeffnen"
+                      />
                     </Section>
                   ) : null}
 
@@ -244,7 +251,7 @@ export default function WorkOrderScreen() {
                               try {
                                 const res = await api.downloadDocument(d.id);
                                 const r = await openDownload(res);
-                                if (r === 'unsupported') toast.show('Das Öffnen von Dokumenten auf dem Gerät folgt in einer späteren Version.', 'info');
+                                if (r === 'unsupported') toast.show('Auf diesem Gerät gibt es keine App zum Öffnen der Datei. Bitte im Browser öffnen.', 'info');
                               } catch {
                                 toast.show('Das Dokument konnte nicht geladen werden.', 'danger');
                               }

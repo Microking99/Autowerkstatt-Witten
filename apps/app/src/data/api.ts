@@ -20,6 +20,8 @@ import type {
   ApprovalOverviewStatus,
   ApprovalRequest,
   AttachPhotoRequestSchema,
+  CustomerAccessStatus,
+  InvoiceStatus,
   AuditEntry,
   CancelRequestSchema,
   ChangePasswordRequestSchema,
@@ -142,8 +144,8 @@ export type { CustomerInput, LoginRequest, VehicleInput };
 
 export interface ListCustomersQuery {
   q?: string;
-  /** App-Zugang ja/nein */
-  access?: 'yes' | 'no';
+  /** Zugangsstatus zur App (wie die API: none, invited, active, disabled) */
+  access?: CustomerAccessStatus;
   openItems?: boolean;
   cursor?: string;
 }
@@ -163,7 +165,10 @@ export interface ListAppointmentsQuery {
 }
 
 export interface ListWorkOrdersQuery {
-  work?: WorkOrderStatus;
+  /** Arbeitsstatus; `active` = offen, in Arbeit oder Arbeiten erledigt */
+  work?: WorkOrderStatus | 'active';
+  /** Suche in Auftragsnummer und Titel */
+  q?: string;
   approval?: ApprovalOverviewStatus;
   payment?: PaymentStatus;
   assigneeId?: string;
@@ -181,6 +186,7 @@ export interface ListDocumentsQuery {
 }
 
 export interface ListInvoicesQuery {
+  status?: InvoiceStatus;
   paymentStatus?: PaymentStatus;
   overdue?: boolean;
   customerId?: string;
@@ -190,6 +196,27 @@ export interface ListAuditQuery {
   entityType?: string;
   entityId?: string;
   actorId?: string;
+  action?: string;
+  limit?: number;
+}
+
+/** Konfliktprüfung (Körper von POST /appointments/conflicts, siehe Übergabe API Abschnitt 8). */
+export interface ConflictCheckInput {
+  /** bestehender Termin (wird nicht mit sich selbst verglichen) */
+  id?: string | null;
+  startsAt: string;
+  endsAt: string;
+  resourceId?: string | null;
+  assigneeIds?: string[];
+  workOrderId?: string | null;
+}
+
+/**
+ * Optionen für schreibende Aufrufe, die auch aus der Offline-Warteschlange kommen: gleicher
+ * `Idempotency-Key` bei jeder Wiederholung, damit der Server nichts doppelt ausführt.
+ */
+export interface WriteOptions {
+  idempotencyKey?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,8 +280,8 @@ export interface WerkstattApi {
   inviteUser(input: InviteStaffInput): Promise<StaffUser>;
   getUser(id: string): Promise<StaffUser>;
   updateUser(id: string, input: UpdateStaffInput): Promise<StaffUser>;
-  disableUser(id: string): Promise<void>;
-  enableUser(id: string): Promise<void>;
+  disableUser(id: string): Promise<StaffUser>;
+  enableUser(id: string): Promise<StaffUser>;
 
   // Dashboard
   dashboard(): Promise<DashboardTile[]>;
@@ -264,9 +291,13 @@ export interface WerkstattApi {
   createCustomer(input: CustomerInputData): Promise<CustomerDetail>;
   getCustomer(id: string): Promise<CustomerDetail>;
   updateCustomer(id: string, input: Partial<CustomerInputData>): Promise<CustomerDetail>;
-  archiveCustomer(id: string): Promise<void>;
-  inviteCustomer(id: string, input: { email: string }): Promise<void>;
-  disableCustomerAccount(id: string): Promise<void>;
+  archiveCustomer(id: string): Promise<CustomerDetail>;
+  inviteCustomer(id: string, input: { email: string }): Promise<CustomerDetail>;
+  disableCustomerAccount(id: string): Promise<CustomerDetail>;
+  /** Gesperrten Zugang wieder freischalten (nie aktiviertes Konto bleibt eingeladen) */
+  enableCustomerAccount(id: string): Promise<CustomerDetail>;
+  /** Datenexport eines Kunden (ZIP, customers.read + reports.export), DSGVO Art. 15/20 */
+  exportCustomerData(customerId: string): Promise<DownloadResult>;
 
   // Fahrzeuge
   listVehicles(query?: ListVehiclesQuery): Promise<Page<VehicleSummary>>;
@@ -276,7 +307,7 @@ export interface WerkstattApi {
   listOdometer(vehicleId: string): Promise<OdometerReading[]>;
   addOdometer(vehicleId: string, input: OdometerInput): Promise<OdometerReading>;
   listOwnerships(vehicleId: string): Promise<Ownership[]>;
-  transferOwnership(vehicleId: string, input: OwnershipTransferInput): Promise<void>;
+  transferOwnership(vehicleId: string, input: OwnershipTransferInput): Promise<VehicleDetail>;
   setQrPublicView(vehicleId: string, enabled: boolean): Promise<VehicleDetail>;
   rotateQr(vehicleId: string): Promise<VehicleDetail>;
   /** URL des QR-Aufklebers (SVG), nur mit Anmeldung abrufbar */
@@ -285,27 +316,30 @@ export interface WerkstattApi {
   getServiceEntry(id: string): Promise<ServiceEntry>;
   correctServiceEntry(id: string, input: ServiceEntryCorrectionInput): Promise<ServiceEntry>;
   maintenanceDue(vehicleId: string): Promise<MaintenanceDue[]>;
-  maintenanceDueAll(): Promise<MaintenanceDue[]>;
+  /** Standard: nur überfällige und bald fällige; `all: true` für alle */
+  maintenanceDueAll(options?: { all?: boolean }): Promise<MaintenanceDue[]>;
   listShares(vehicleId: string): Promise<VehicleShare[]>;
   createShare(vehicleId: string, input: CreateVehicleShareInput): Promise<VehicleShare>;
-  revokeShare(shareId: string): Promise<void>;
+  revokeShare(shareId: string): Promise<VehicleShare>;
 
   // Termine
   listAppointments(query?: ListAppointmentsQuery): Promise<Appointment[]>;
   createAppointment(input: AppointmentInput): Promise<Appointment>;
   requestAppointment(input: AppointmentRequestInput): Promise<Appointment>;
   getAppointment(id: string): Promise<Appointment>;
-  checkConflicts(input: AppointmentInput): Promise<SchedulingConflict[]>;
-  confirmAppointment(id: string): Promise<Appointment>;
+  checkConflicts(input: ConflictCheckInput): Promise<SchedulingConflict[]>;
+  /** Bei Konflikten (409 scheduling_conflicts) nur mit Begründung */
+  confirmAppointment(id: string, input?: { overrideConflictsReason?: string | null }): Promise<Appointment>;
   proposeAlternative(id: string, input: ProposeAlternativeInput): Promise<Appointment>;
   acceptProposal(appointmentId: string, proposalId: string): Promise<Appointment>;
-  declineProposal(appointmentId: string, proposalId: string): Promise<Appointment>;
+  declineProposal(appointmentId: string, proposalId: string, input?: { cancel?: boolean }): Promise<Appointment>;
   cancelAppointment(id: string, input: CancelInput): Promise<Appointment>;
   listResources(): Promise<Resource[]>;
 
   // Aufträge
   listWorkOrders(query?: ListWorkOrdersQuery): Promise<Page<WorkOrderSummary>>;
-  createWorkOrder(input: CreateWorkOrderInput): Promise<WorkOrderDetail>;
+  /** `draft: true` legt einen Entwurf an (für Kunden unsichtbar), sonst Status "Offen" */
+  createWorkOrder(input: CreateWorkOrderInput, options?: { draft?: boolean }): Promise<WorkOrderDetail>;
   getWorkOrder(id: string): Promise<WorkOrderDetail>;
   updateWorkOrder(id: string, input: UpdateWorkOrderInput): Promise<WorkOrderDetail>;
   transitionWorkOrder(id: string, input: WorkOrderTransitionInput): Promise<WorkOrderDetail>;
@@ -318,14 +352,20 @@ export interface WerkstattApi {
   confirmIntake(workOrderId: string, input: ConfirmIntakeInput): Promise<Intake>;
   addWorkItem(workOrderId: string, input: WorkItemInputData): Promise<WorkItem>;
   updateWorkItem(itemId: string, input: Partial<WorkItemInputData>): Promise<WorkItem>;
-  startWorkItem(itemId: string): Promise<WorkItem>;
-  pauseWorkItem(itemId: string): Promise<WorkItem>;
-  finishWorkItem(itemId: string, input: FinishWorkItemInput): Promise<WorkItem>;
-  notDoneWorkItem(itemId: string, input: NotDoneWorkItemInput): Promise<WorkItem>;
-  addPart(itemId: string, input: PartUsedInput): Promise<void>;
+  startWorkItem(itemId: string, options?: WriteOptions): Promise<WorkItem>;
+  pauseWorkItem(itemId: string, options?: WriteOptions): Promise<WorkItem>;
+  /**
+   * Abschluss. Bei Wartungspositionen ist der km-Stand Pflicht; ausdrücklich
+   * `odometerKm: null` bedeutet "km-Stand unbekannt". Fehlt das Feld: 409 `odometer_required`.
+   */
+  finishWorkItem(itemId: string, input: FinishWorkItemInput, options?: WriteOptions): Promise<WorkItem>;
+  notDoneWorkItem(itemId: string, input: NotDoneWorkItemInput, options?: WriteOptions): Promise<WorkItem>;
+  /** Verbautes Teil; Mechaniker erfassen keine Preise. Antwort: Position */
+  addPart(itemId: string, input: PartUsedInput, options?: WriteOptions): Promise<WorkItem>;
   listFindings(workOrderId: string): Promise<Finding[]>;
+  /** idempotent über `input.id` (Client-UUID) */
   createFinding(workOrderId: string, input: FindingInput): Promise<Finding>;
-  reportFinding(findingId: string): Promise<Finding>;
+  reportFinding(findingId: string, options?: WriteOptions): Promise<Finding>;
   dismissFinding(findingId: string): Promise<Finding>;
   listPhotos(workOrderId: string): Promise<Photo[]>;
   attachPhoto(workOrderId: string, input: AttachPhotoInput): Promise<Photo>;
@@ -344,7 +384,7 @@ export interface WerkstattApi {
   decideApproval(id: string, input: ApprovalDecisionInput): Promise<ApprovalRequest>;
 
   // Dateien und Dokumente
-  uploadFile(input: UploadInput): Promise<FileRef>;
+  uploadFile(input: UploadInput, options?: WriteOptions): Promise<FileRef>;
   listDocuments(query?: ListDocumentsQuery): Promise<DocumentDto[]>;
   createDocument(input: CreateDocumentInput): Promise<DocumentDto>;
   addDocumentVersion(documentId: string, input: { fileId: string; note?: string | null }): Promise<DocumentDto>;
@@ -361,14 +401,14 @@ export interface WerkstattApi {
   sendMessage(workOrderId: string, input: SendMessageInput): Promise<Message>;
   markRead(workOrderId: string): Promise<void>;
   listInternalNotes(workOrderId: string): Promise<InternalNote[]>;
-  addInternalNote(workOrderId: string, input: { body: string }): Promise<InternalNote>;
+  addInternalNote(workOrderId: string, input: { body: string }, options?: WriteOptions): Promise<InternalNote>;
 
   // Rechnungen und Zahlungen
   listInvoices(query?: ListInvoicesQuery): Promise<Invoice[]>;
   createInvoice(input: CreateInvoiceInput): Promise<Invoice>;
   getInvoice(id: string): Promise<Invoice>;
   issueInvoice(id: string, input: IssueInvoiceInput): Promise<Invoice>;
-  cancelInvoice(id: string, input: { reason: string }): Promise<Invoice>;
+  cancelInvoice(id: string, input?: { reason?: string | null }): Promise<Invoice>;
   /** "Jetzt bezahlen": legt gehosteten Checkout an. Der Rechnungsstatus bleibt unverändert. */
   startCheckout(invoiceId: string): Promise<StartCheckoutResponse>;
   /** Offene Zahlungsversuche beim Anbieter prüfen (Status nur nach Serverprüfung) */
@@ -378,7 +418,7 @@ export interface WerkstattApi {
   exportInvoicesCsv(query?: ListInvoicesQuery): Promise<string>;
 
   // Benachrichtigungen
-  listNotifications(): Promise<NotificationDto[]>;
+  listNotifications(options?: { unread?: boolean }): Promise<NotificationDto[]>;
   readNotification(id: string): Promise<void>;
   registerDevice(input: RegisterDeviceInput): Promise<void>;
   getNotificationPreferences(): Promise<NotificationPreference[]>;
@@ -395,6 +435,10 @@ export interface WerkstattApi {
   resolveQr(token: string): Promise<QrResolution>;
   publicShare(token: string): Promise<PublicVehicleView>;
   health(): Promise<{ ok: boolean }>;
+
+  // Datenschutz
+  /** Eigene Daten als ZIP (Kunde), DSGVO Art. 15/20 */
+  exportOwnData(): Promise<DownloadResult>;
 
   // Audit
   listAudit(query?: ListAuditQuery): Promise<AuditEntry[]>;

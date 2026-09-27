@@ -42,7 +42,7 @@ export default function ResetPasswordScreen() {
     <PublicPage>
       <PublicPanel>
         <AppText variant="display">Neues Passwort</AppText>
-        {reset.error && reset.error.status !== 404 && reset.error.status !== 410 ? (
+        {reset.error && reset.error.code !== ERROR_CODES.resetInvalid && reset.error.status !== 404 && reset.error.status !== 410 ? (
           <Banner tone="danger" title="Nicht gespeichert" message={reset.error.isNetwork ? 'Keine Verbindung. Bitte versuchen Sie es erneut.' : reset.error.message} />
         ) : null}
         <PasswordForm
@@ -54,14 +54,9 @@ export default function ResetPasswordScreen() {
               setState('done');
             } catch (e) {
               const err = e as ApiError;
-              if (err.status === 404 || err.status === 410) {
-                setReason(
-                  err.code === ERROR_CODES.tokenExpired
-                    ? 'Dieser Link ist abgelaufen (Links gelten eine Stunde).'
-                    : err.code === ERROR_CODES.tokenUsed
-                      ? 'Dieser Link wurde bereits verwendet.'
-                      : 'Dieser Link ist ungültig.',
-                );
+              // Die API meldet ungültige, abgelaufene und benutzte Links einheitlich (reset_invalid).
+              if (err.code === ERROR_CODES.resetInvalid || err.status === 404 || err.status === 410) {
+                setReason(err.message || 'Dieser Link ist ungültig oder abgelaufen.');
                 setState('invalid');
               }
             }

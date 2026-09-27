@@ -4,7 +4,7 @@
  */
 import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { MaintenanceTypeSchema, ResourceSchema, WorkshopSettingsSchema, type WorkshopSettings } from '@werkstatt/contracts';
+import { MaintenanceTypeSchema, ResourceSchema, WorkshopSettingsSchema, type WorkshopSettings, API_ERROR_CODES } from '@werkstatt/contracts';
 import { hasPermission } from '@werkstatt/domain';
 import { maintenanceTypes, resources, workshopSettings } from '../db/schema/index';
 import { audit, auditContextFrom } from '../lib/audit';
@@ -79,7 +79,7 @@ export async function settingsRoutes(app: App): Promise<void> {
       const { db } = app.deps;
       const row = await db.transaction(async (tx) => {
         const [sameKey] = await tx.select({ id: maintenanceTypes.id }).from(maintenanceTypes).where(eq(maintenanceTypes.key, request.body.key));
-        if (sameKey && sameKey.id !== request.params.id) throw conflict('key_taken', 'Dieser Schlüssel wird bereits verwendet.');
+        if (sameKey && sameKey.id !== request.params.id) throw conflict(API_ERROR_CODES.keyTaken, 'Dieser Schlüssel wird bereits verwendet.');
         const [saved] = await tx
           .insert(maintenanceTypes)
           .values({ id: request.params.id, ...request.body })

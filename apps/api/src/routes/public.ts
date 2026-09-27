@@ -6,7 +6,7 @@
  */
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { PublicVehicleViewSchema, QrResolutionSchema, routes, type QrResolution } from '@werkstatt/contracts';
+import { PublicVehicleViewSchema, QrResolutionSchema, routes, type QrResolution, API_ERROR_CODES } from '@werkstatt/contracts';
 import { canViewVehicle, publicViewFromQr, publicViewFromShare, type Actor, type PublicEntrySource } from '@werkstatt/domain';
 import type { DbOrTx } from '../db/index';
 import { maintenanceTypes, serviceEntries, vehicleShares, vehicles, workItems, workOrderAssignees, workOrders } from '../db/schema/index';
@@ -101,8 +101,8 @@ export async function publicRoutes(app: App): Promise<void> {
       const now = clock();
       const [share] = await db.select().from(vehicleShares).where(eq(vehicleShares.tokenHash, sha256Hex(request.params.token)));
       if (!share) throw notFound('Freigabe nicht gefunden.');
-      if (share.revokedAt) throw new HttpError(410, 'share_revoked', 'Diese Freigabe wurde vom Halter widerrufen.');
-      if (share.expiresAt.getTime() <= now.getTime()) throw new HttpError(410, 'share_expired', 'Diese Freigabe ist abgelaufen.');
+      if (share.revokedAt) throw new HttpError(410, API_ERROR_CODES.shareRevoked, 'Diese Freigabe wurde vom Halter widerrufen.');
+      if (share.expiresAt.getTime() <= now.getTime()) throw new HttpError(410, API_ERROR_CODES.shareExpired, 'Diese Freigabe ist abgelaufen.');
       const [vehicle] = await db.select().from(vehicles).where(eq(vehicles.id, share.vehicleId));
       if (!vehicle) throw notFound('Freigabe nicht gefunden.');
       const settings = await loadSettings(db);
@@ -112,7 +112,7 @@ export async function publicRoutes(app: App): Promise<void> {
         { includeVin: share.includeVin, serviceEntryIds: share.serviceEntryIds, expiresAt: share.expiresAt.toISOString(), revokedAt: null },
         { now, workshopName: settings.name },
       );
-      if (!view) throw new HttpError(410, 'share_expired', 'Diese Freigabe ist nicht mehr gültig.');
+      if (!view) throw new HttpError(410, API_ERROR_CODES.shareExpired, 'Diese Freigabe ist nicht mehr gültig.');
       await db.transaction(async (tx) => {
         await tx
           .update(vehicleShares)

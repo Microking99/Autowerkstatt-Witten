@@ -1,51 +1,56 @@
 /**
- * Getrennte Statusanzeigen eines Auftrags (R-AUF-5, AGENTS.md Regel 6):
- * Arbeitsstatus (gespeichert), Freigabestatus und Zahlungsstatus (berechnet).
- *
- * Platzhalter für @werkstatt/domain; reine Funktionen.
+ * Getrennte Statusanzeigen eines Auftrags (R-AUF-5, AGENTS.md Regel 6) und automatisches
+ * Weiterschalten des Arbeitsstatus, wie in der API aus @werkstatt/domain
+ * (`computeStatusTriple`, `canTransitionWorkOrder`, `allExecutableItemsFinished`).
  */
-import type { ApprovalOverviewStatus, StatusTriple } from '@werkstatt/contracts';
-import type { DApprovalRequest, DWorkItem, DWorkOrder } from '../model';
-import { itemIsExecutable } from './access';
-import { aggregatePaymentStatus, type InvoiceSummary } from './payments';
-
-export function approvalOverview(requests: readonly DApprovalRequest[]): { status: ApprovalOverviewStatus; pending: number } {
-  const relevant = requests.filter((r) => r.status !== 'draft' && r.status !== 'withdrawn');
-  const pending = relevant.filter((r) => r.status === 'pending_customer').length;
-  if (relevant.length === 0) return { status: 'none', pending: 0 };
-  return { status: pending > 0 ? 'pending' : 'decided', pending };
-}
+import type { StatusTriple } from '@werkstatt/contracts';
+import { allExecutableItemsFinished, canTransitionWorkOrder, computeStatusTriple, isExecutableAuthorization } from '@werkstatt/domain';
+import type { DApprovalRequest, DInvoice, DPayment, DRefund, DWorkItem, DWorkOrder } from '../model';
 
 export function statusTriple(
   workOrder: DWorkOrder,
   requests: readonly DApprovalRequest[],
-  invoiceSummaries: readonly InvoiceSummary[],
+  invoices: readonly DInvoice[],
+  payments: readonly DPayment[],
+  refunds: readonly DRefund[],
+  today: string,
 ): StatusTriple {
-  const approval = approvalOverview(requests.filter((r) => r.workOrderId === workOrder.id));
-  return {
-    work: workOrder.status,
-    approval: approval.status,
-    payment: aggregatePaymentStatus(invoiceSummaries),
-    overdue: invoiceSummaries.some((s) => s.overdue),
-    readyForPickup: workOrder.readyForPickupAt !== null && workOrder.pickedUpAt === null,
-    pendingApprovalCount: approval.pending,
-  };
+  return computeStatusTriple({
+    workStatus: workOrder.status,
+    approvalRequests: requests.filter((r) => r.workOrderId === workOrder.id),
+    invoices: invoices
+      .filter((i) => i.workOrderId === workOrder.id)
+      .map((i) => {
+        const own = payments.filter((p) => p.invoiceId === i.id);
+        const ids = new Set(own.map((p) => p.id));
+        return {
+          invoice: { status: i.status, totalGrossCents: i.totalGrossCents, dueDate: i.dueDate },
+          payments: own.map((p) => ({ amountCents: p.amountCents })),
+          refunds: refunds.filter((r) => ids.has(r.paymentId)).map((r) => ({ amountCents: r.amountCents, status: r.status })),
+        };
+      }),
+    today: today.slice(0, 10),
+    readyForPickupAt: workOrder.readyForPickupAt,
+    pickedUpAt: workOrder.pickedUpAt,
+  });
 }
 
 /**
- * Nach jeder Positionsänderung: Sind alle ausführbaren Positionen erledigt bzw. nicht
- * durchgeführt und keine Freigabe offen, wechselt "in Arbeit" zu "Arbeiten erledigt".
+ * Nach jeder Positionsänderung wie die API (`autoAdvanceWorkOrder`): offen → in Arbeit, sobald
+ * eine ausführbare Position begonnen ist; in Arbeit → Arbeiten erledigt, wenn alle ausführbaren
+ * Positionen erledigt oder nicht durchgeführt sind; zurück zu in Arbeit, wenn wieder eine
+ * ausführbare Position offen ist (z. B. nachträglich freigegebene Zusatzarbeit).
  */
 export function recomputeWorkStatus(workOrder: DWorkOrder, items: readonly DWorkItem[], now: string): DWorkOrder {
   const own = items.filter((i) => i.workOrderId === workOrder.id);
-  const executable = own.filter(itemIsExecutable);
-  const anyStarted = executable.some((i) => i.executionStatus !== 'planned');
-  const allFinished =
-    executable.length > 0 &&
-    executable.every((i) => i.executionStatus === 'done' || i.executionStatus === 'not_done') &&
-    !own.some((i) => i.authorization === 'pending_approval');
-  if (workOrder.status === 'open' && anyStarted) return { ...workOrder, status: allFinished ? 'work_completed' : 'in_progress', updatedAt: now };
-  if (workOrder.status === 'in_progress' && allFinished) return { ...workOrder, status: 'work_completed', updatedAt: now };
-  if (workOrder.status === 'work_completed' && !allFinished) return { ...workOrder, status: 'in_progress', updatedAt: now };
-  return workOrder;
+  const executable = own.filter((i) => isExecutableAuthorization(i.authorization));
+  const system = { items: own, permissions: new Set(['workOrders.write', 'workItems.execute'] as const) };
+  let status = workOrder.status;
+  if (status === 'open' && executable.some((i) => i.executionStatus !== 'planned') && canTransitionWorkOrder('open', 'in_progress', system).allowed) status = 'in_progress';
+  if (status === 'in_progress' && executable.length > 0 && allExecutableItemsFinished(own)) {
+    if (canTransitionWorkOrder('in_progress', 'work_completed', system).allowed) status = 'work_completed';
+  } else if (status === 'work_completed' && !allExecutableItemsFinished(own)) {
+    if (canTransitionWorkOrder('work_completed', 'in_progress', system).allowed) status = 'in_progress';
+  }
+  return status === workOrder.status ? workOrder : { ...workOrder, status, updatedAt: now };
 }

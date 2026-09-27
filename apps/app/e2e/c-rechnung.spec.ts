@@ -58,14 +58,18 @@ test.describe('Klickweg C: Rechnung', () => {
     await expect(page.getByText('Online (SumUp)').filter({ visible: true })).toHaveCount(1);
   });
 
-  test('Fehlgeschlagen beim Anbieter → nicht abgeschlossen, Rechnung offen', async ({ page }) => {
+  test('Fehlgeschlagen beim Anbieter → keine Bestätigung, Rechnung offen', async ({ page }) => {
     await loginAs(page, 'customer', invoicePath);
     await startPayment(page);
     await byTestId(page, 'anbieter-abschliessen').click();
     await openDemoPanel(page);
     await byTestId(page, 'anbieter-failed').click();
     await closeSheet(page);
-    await expect(byTestId(page, 'zahlung-abgebrochen')).toBeVisible({ timeout: 15_000 });
+    // Kunden sehen keine Zahlungsversuche: Die Seite sagt nur, dass keine Bestätigung vorliegt
+    await expect(byTestId(page, 'zahlung-unbestaetigt')).toBeVisible({ timeout: 25_000 });
+    await expect(visibleText(page, /Offen:/)).toBeVisible();
+    await byTestId(page, 'zur-rechnung').click();
+    await expect(byTestId(page, 'rechnung-status')).toContainText('Offen');
   });
 
   test('Verbindungsfehler beim Start der Zahlung → Hinweis, nichts abgebucht', async ({ page }) => {

@@ -1,19 +1,29 @@
 /**
- * Versionierte Freigaben (R-FRG-1 bis R-FRG-6, AGENTS.md Regel 4 und 5).
+ * Versionierte Freigaben im Demo-Modus (R-FRG-1 bis R-FRG-6, AGENTS.md Regel 4 und 5).
  *
- * - Jede gesendete Version ist unveränderlich und trägt einen Inhalts-Hash.
- * - Eine Entscheidung gilt genau für die Version (versionId + contentHash), die der Kunde
- *   gesehen hat. Passt beides nicht zur aktuellen Version: 409 "Das Angebot wurde geändert".
- * - Änderung von Umfang oder Preis erzeugt eine neue Version; die alte Entscheidung gilt nicht.
- * - Nur das Kundenkonto des Auftragskunden entscheidet; Mitarbeiter (auch Mechaniker) nie.
- * - Ablehnung betrifft nur die Positionen dieser Anfrage.
- *
- * Platzhalter für @werkstatt/domain; reine Funktionen ohne Seiteneffekte.
+ * Die Regeln kommen aus @werkstatt/domain (wie in der API): Inhalts-Hash
+ * (`hashApprovalContent`), Summen (`calculateTotals`), Versionen (`reviseApproval`,
+ * `sendApproval`), Entscheidung (`validateDecision`, `applyDecision`), Rückzug
+ * (`withdrawApproval`) und das Zurücksetzen der Positionen bei neuer Version
+ * (`resetItemsForNewVersion`). Diese Datei übersetzt nur zwischen dem Demo-Zustand und den
+ * Domain-Funktionen und wirft `ApiError` mit denselben Codes wie die API.
  */
-import type { ApprovalDecisionValue, ApprovalDraftInput, ApprovalLine, ClientChannel, Role } from '@werkstatt/contracts';
-import { ApiError, ERROR_CODES } from '../../errors';
+import { API_ERROR_CODES, apiCodeFromDomain, type ApprovalDecisionValue, type ApprovalDraftInput, type ApprovalLine, type ClientChannel, type Role } from '@werkstatt/contracts';
+import {
+  applyDecision,
+  calculateTotals,
+  canonicalApprovalContent,
+  computeContentHash,
+  createActor,
+  resetItemsForNewVersion,
+  reviseApproval,
+  sendApproval,
+  validateDecision,
+  withdrawApproval,
+  type ApprovalContentInput,
+} from '@werkstatt/domain';
+import { ApiError } from '../../errors';
 import type { DApprovalRequest, DApprovalVersion, DWorkItem } from '../model';
-import { contentHash } from './hash';
 
 export interface LineTotals {
   netCents: number;
@@ -21,20 +31,16 @@ export interface LineTotals {
   grossCents: number;
 }
 
+/** Summen einer Zeile (Domain-Rundung). */
 export function lineTotals(line: Pick<ApprovalLine, 'quantity' | 'unitPriceCents' | 'vatRateBp'>): LineTotals {
-  const netCents = Math.round(line.quantity * line.unitPriceCents);
-  const vatCents = Math.round((netCents * line.vatRateBp) / 10_000);
-  return { netCents, vatCents, grossCents: netCents + vatCents };
+  const t = calculateTotals([line]);
+  return { netCents: t.totalNetCents, vatCents: t.totalVatCents, grossCents: t.totalGrossCents };
 }
 
+/** Summen aller Zeilen: Netto je Zeile, USt je Satz einmal gerundet (Domain `calculateTotals`). */
 export function computeTotals(lines: readonly ApprovalLine[]): { netCents: number; grossCents: number } {
-  return lines.reduce(
-    (acc, line) => {
-      const t = lineTotals(line);
-      return { netCents: acc.netCents + t.netCents, grossCents: acc.grossCents + t.grossCents };
-    },
-    { netCents: 0, grossCents: 0 },
-  );
+  const t = calculateTotals(lines);
+  return { netCents: t.totalNetCents, grossCents: t.totalGrossCents };
 }
 
 export type ApprovalContent = Pick<
@@ -42,32 +48,24 @@ export type ApprovalContent = Pick<
   'kind' | 'title' | 'summaryCustomer' | 'lines' | 'scheduleChange' | 'newReadyAt' | 'photoIds' | 'documentVersionId'
 >;
 
-/** Hash über den kanonischen Inhalt, den der Kunde sieht (inkl. Summen und Versionsnummer). */
-export function versionHash(requestId: string, versionNo: number, content: ApprovalContent): string {
-  const totals = computeTotals(content.lines);
-  return contentHash({
-    requestId,
-    versionNo,
-    kind: content.kind,
-    title: content.title,
+function contentInput(content: ApprovalContent): ApprovalContentInput {
+  return {
     summaryCustomer: content.summaryCustomer,
-    lines: content.lines.map((l) => ({
-      title: l.title,
-      description: l.description ?? null,
-      quantity: l.quantity,
-      unit: l.unit,
-      unitPriceCents: l.unitPriceCents,
-      vatRateBp: l.vatRateBp,
-      maintenanceTypeId: l.maintenanceTypeId ?? null,
-    })),
-    totalNetCents: totals.netCents,
-    totalGrossCents: totals.grossCents,
-    currency: 'EUR',
+    lines: content.lines.map((l) => ({ ...l, description: l.description ?? null, maintenanceTypeId: l.maintenanceTypeId ?? null })),
     scheduleChange: content.scheduleChange ?? null,
     newReadyAt: content.newReadyAt ?? null,
     photoIds: content.photoIds ?? [],
     documentVersionId: content.documentVersionId ?? null,
-  });
+  };
+}
+
+/** Inhalts-Hash wie in der API (`computeContentHash` über den kanonischen Inhalt). */
+export function versionHash(content: ApprovalContent): string {
+  try {
+    return computeContentHash(canonicalApprovalContent(contentInput(content)));
+  } catch (e) {
+    throw ApiError.unprocessable(API_ERROR_CODES.invalidContent, e instanceof Error ? e.message : 'Ungültiger Inhalt.');
+  }
 }
 
 export function buildVersion(args: {
@@ -78,20 +76,25 @@ export function buildVersion(args: {
   createdBy: string;
   sentAt: string | null;
 }): DApprovalVersion {
-  const totals = computeTotals(args.content.lines);
+  let canonical;
+  try {
+    canonical = canonicalApprovalContent(contentInput(args.content));
+  } catch (e) {
+    throw ApiError.unprocessable(API_ERROR_CODES.invalidContent, e instanceof Error ? e.message : 'Ungültiger Inhalt.');
+  }
   return {
     id: args.id,
     versionNo: args.versionNo,
-    summaryCustomer: args.content.summaryCustomer,
+    summaryCustomer: args.content.summaryCustomer.trim(),
     lines: args.content.lines.map((l) => ({ ...l, description: l.description ?? null, maintenanceTypeId: l.maintenanceTypeId ?? null })),
-    totalNetCents: totals.netCents,
-    totalGrossCents: totals.grossCents,
+    totalNetCents: canonical.totalNetCents,
+    totalGrossCents: canonical.totalGrossCents,
     currency: 'EUR',
     scheduleChange: args.content.scheduleChange ?? null,
     newReadyAt: args.content.newReadyAt ?? null,
     photoIds: [...(args.content.photoIds ?? [])],
     documentVersionId: args.content.documentVersionId ?? null,
-    contentHash: versionHash(args.requestId, args.versionNo, args.content),
+    contentHash: computeContentHash(canonical),
     createdBy: args.createdBy,
     sentAt: args.sentAt,
     supersededAt: null,
@@ -100,22 +103,12 @@ export function buildVersion(args: {
 }
 
 export function currentVersion(request: DApprovalRequest): DApprovalVersion {
-  const current = request.versions.reduce<DApprovalVersion | undefined>(
-    (acc, v) => (!acc || v.versionNo > acc.versionNo ? v : acc),
-    undefined,
-  );
+  const current = request.versions.reduce<DApprovalVersion | undefined>((acc, v) => (!acc || v.versionNo > acc.versionNo ? v : acc), undefined);
   if (!current) throw new Error(`Freigabeanfrage ${request.id} ohne Version`);
   return current;
 }
 
-export function createDraft(args: {
-  id: string;
-  versionId: string;
-  workOrderId: string;
-  draft: ApprovalDraftInput;
-  createdBy: string;
-  now: string;
-}): DApprovalRequest {
+export function createDraft(args: { id: string; versionId: string; workOrderId: string; draft: ApprovalDraftInput; createdBy: string; now: string }): DApprovalRequest {
   return {
     id: args.id,
     workOrderId: args.workOrderId,
@@ -125,75 +118,57 @@ export function createDraft(args: {
     findingId: args.draft.findingId ?? null,
     createdBy: args.createdBy,
     createdAt: args.now,
-    versions: [
-      buildVersion({ id: args.versionId, requestId: args.id, versionNo: 1, content: args.draft, createdBy: args.createdBy, sentAt: null }),
-    ],
+    versions: [buildVersion({ id: args.versionId, requestId: args.id, versionNo: 1, content: args.draft, createdBy: args.createdBy, sentAt: null })],
   };
 }
 
-/** Entwurf an den Kunden senden. Danach ist die Version unveränderlich. */
+const versionState = (v: DApprovalVersion) => ({ id: v.id, versionNo: v.versionNo, contentHash: v.contentHash, sentAt: v.sentAt, supersededAt: v.supersededAt });
+
+/** Entwurf an den Kunden senden (Domain `sendApproval`). Danach ist die Version unveränderlich. */
 export function sendRequest(request: DApprovalRequest, now: string): DApprovalRequest {
-  if (request.status !== 'draft') {
-    throw ApiError.conflict(ERROR_CODES.conflict, 'Nur Entwürfe können gesendet werden.');
-  }
   const current = currentVersion(request);
-  return {
-    ...request,
-    status: 'pending_customer',
-    versions: request.versions.map((v) => (v.id === current.id ? { ...v, sentAt: now } : v)),
-  };
+  const result = sendApproval({ id: request.id, status: request.status }, versionState(current), new Date(now));
+  if (!result.ok) throw ApiError.conflict(apiCodeFromDomain(result.error.code), result.error.message);
+  return { ...request, status: result.value.requestStatus, versions: request.versions.map((v) => (v.id === current.id ? { ...v, sentAt: result.value.sentAt } : v)) };
 }
 
 /**
- * Inhalt ändern. Entwurf: aktuelle (ungesendete) Version wird ersetzt.
- * Bereits gesendet oder entschieden: neue Version (sofort gesendet), alte wird "superseded",
- * ihre Entscheidung bleibt protokolliert, gilt aber nicht mehr.
+ * Inhalt ändern (Domain `reviseApproval`): Entwurf wird ersetzt; gesendete Anfrage erhält eine
+ * neue Version (sofort gesendet), die alte wird ersetzt und ihre Entscheidung gilt nicht mehr.
+ * Unveränderter Inhalt erzeugt keine neue Version.
  */
-export function reviseRequest(
-  request: DApprovalRequest,
-  draft: ApprovalContent,
-  args: { versionId: string; createdBy: string; now: string },
-): DApprovalRequest {
-  if (request.status === 'withdrawn') {
-    throw ApiError.conflict(ERROR_CODES.conflict, 'Zurückgezogene Anfragen können nicht geändert werden.');
-  }
+export function reviseRequest(request: DApprovalRequest, draft: ApprovalContent, args: { versionId: string; createdBy: string; now: string }): DApprovalRequest {
   const current = currentVersion(request);
-  if (request.status === 'draft') {
-    const replaced = buildVersion({
-      id: current.id,
-      requestId: request.id,
-      versionNo: current.versionNo,
-      content: draft,
-      createdBy: args.createdBy,
-      sentAt: null,
-    });
+  let outcome;
+  try {
+    outcome = reviseApproval({ id: request.id, status: request.status }, versionState(current), contentInput(draft), new Date(args.now));
+  } catch (e) {
+    throw ApiError.unprocessable(API_ERROR_CODES.invalidContent, e instanceof Error ? e.message : 'Ungültiger Inhalt.');
+  }
+  if (!outcome.ok) throw ApiError.conflict(apiCodeFromDomain(outcome.error.code), outcome.error.message);
+  const result = outcome.value;
+  if (result.kind === 'unchanged') return { ...request, title: draft.title };
+  if (result.kind === 'draft_updated') {
+    const replaced = buildVersion({ id: current.id, requestId: request.id, versionNo: current.versionNo, content: draft, createdBy: args.createdBy, sentAt: null });
     return { ...request, title: draft.title, versions: request.versions.map((v) => (v.id === current.id ? replaced : v)) };
   }
-  const next = buildVersion({
-    id: args.versionId,
-    requestId: request.id,
-    versionNo: current.versionNo + 1,
-    content: draft,
-    createdBy: args.createdBy,
-    sentAt: args.now,
-  });
+  const next = buildVersion({ id: args.versionId, requestId: request.id, versionNo: result.newVersion.versionNo, content: draft, createdBy: args.createdBy, sentAt: args.now });
   return {
     ...request,
     title: draft.title,
-    status: 'pending_customer',
-    versions: [...request.versions.map((v) => (v.id === current.id ? { ...v, supersededAt: args.now } : v)), next],
+    status: result.requestStatus,
+    versions: [...request.versions.map((v) => (v.id === result.supersede.versionId ? { ...v, supersededAt: result.supersede.supersededAt } : v)), next],
   };
 }
 
-export function withdrawRequest(request: DApprovalRequest, now: string): DApprovalRequest {
-  if (request.status !== 'draft' && request.status !== 'pending_customer') {
-    throw ApiError.conflict(ERROR_CODES.conflict, 'Entschiedene Anfragen können nicht zurückgezogen werden.');
-  }
+/** Zurückziehen (Domain `withdrawApproval`); wartende Positionen werden `withdrawn`. */
+export function withdrawRequest(request: DApprovalRequest, now: string, items: readonly DWorkItem[] = []): { request: DApprovalRequest; items: DWorkItem[] } {
+  const result = withdrawApproval({ id: request.id, status: request.status }, items);
+  if (!result.ok) throw ApiError.conflict(apiCodeFromDomain(result.error.code), result.error.message);
   const current = currentVersion(request);
   return {
-    ...request,
-    status: 'withdrawn',
-    versions: request.versions.map((v) => (v.id === current.id ? { ...v, supersededAt: now } : v)),
+    request: { ...request, status: 'withdrawn', versions: request.versions.map((v) => (v.id === current.id && !v.supersededAt ? { ...v, supersededAt: now } : v)) },
+    items: result.value.items,
   };
 }
 
@@ -214,33 +189,29 @@ export interface DecisionInput {
   channel: ClientChannel;
 }
 
-export function decide(
-  request: DApprovalRequest,
-  input: DecisionInput,
-  actor: DecisionActor,
-  workOrderCustomerId: string,
-  args: { decisionId: string; now: string },
-): DApprovalRequest {
-  if (actor.role !== 'customer') {
-    // Kein Mitarbeiter (auch nicht Admin oder Mechaniker) entscheidet für den Kunden.
-    throw ApiError.forbidden('Nur der Kunde selbst kann Freigaben erteilen oder ablehnen.');
-  }
-  if (!actor.accountActive || actor.customerId !== workOrderCustomerId || request.status === 'draft') {
-    throw ApiError.notFound();
-  }
-  if (request.status === 'withdrawn') {
-    throw ApiError.conflict(ERROR_CODES.conflict, 'Die Werkstatt hat diese Anfrage zurückgezogen.');
-  }
+/**
+ * Kundenentscheidung zur angezeigten Version (Domain `validateDecision`): Nur der Kunde des
+ * Auftrags mit aktivem Konto; Mitarbeiter nie (403), fremde Kunden 404; veraltete Version
+ * oder abweichender Hash 409 (`version_superseded` bzw. `hash_mismatch`).
+ */
+export function decide(request: DApprovalRequest, input: DecisionInput, actor: DecisionActor, workOrderCustomerId: string, args: { decisionId: string; now: string }): DApprovalRequest {
   const current = currentVersion(request);
-  if (input.versionId !== current.id || input.contentHash !== current.contentHash) {
-    throw ApiError.conflict(
-      ERROR_CODES.approvalVersionOutdated,
-      'Das Angebot wurde geändert. Bitte prüfen Sie die neue Version und entscheiden Sie erneut.',
-      { currentVersionId: current.id, currentVersionNo: current.versionNo },
-    );
-  }
-  if (current.decision || request.status !== 'pending_customer') {
-    throw ApiError.conflict(ERROR_CODES.approvalAlreadyDecided, 'Zu dieser Version liegt bereits eine Entscheidung vor.');
+  const domainActor = createActor({ userId: actor.userId, role: actor.role, status: actor.accountActive ? 'active' : 'disabled', customerId: actor.customerId });
+  const check = validateDecision({
+    request: { id: request.id, status: request.status, currentVersionId: current.id },
+    currentVersion: { id: current.id, contentHash: current.contentHash, sentAt: current.sentAt, supersededAt: current.supersededAt },
+    submittedVersionId: input.versionId,
+    submittedHash: input.contentHash,
+    actor: domainActor,
+    workOrderCustomerId,
+    alreadyDecided: current.decision !== null,
+  });
+  if (!check.ok) {
+    if (check.notFound) throw ApiError.notFound();
+    if (check.code === 'NOT_CUSTOMER') throw new ApiError(403, API_ERROR_CODES.notCustomer, 'Nur der Kunde selbst kann Freigaben erteilen oder ablehnen.');
+    // Entwürfe sind für Kunden unsichtbar (wie nicht vorhanden)
+    if (request.status === 'draft') throw ApiError.notFound();
+    throw ApiError.conflict(apiCodeFromDomain(check.code), check.message, { currentVersionId: current.id, currentVersionNo: current.versionNo });
   }
   const decision = {
     id: args.decisionId,
@@ -262,69 +233,75 @@ export function decide(
 }
 
 /**
- * Überträgt die Entscheidung auf die Positionen genau dieser Anfrage.
- * Abgelehnte Positionen werden nicht ausgeführt (not_done) und gelangen nie in die Historie.
+ * Entscheidung auf die Positionen genau dieser Anfrage übertragen (Domain `applyDecision`).
+ * Abgelehnte Positionen werden nicht ausgeführt und gelangen nie in die Servicehistorie.
  */
-export function applyDecisionToItems(
-  items: readonly DWorkItem[],
-  requestId: string,
-  decision: ApprovalDecisionValue,
-  versionId: string,
-): DWorkItem[] {
-  return items.map((item) => {
-    if (item.approvalRequestId !== requestId) return item;
-    if (decision === 'approved') return { ...item, authorization: 'approved', approvedVersionId: versionId };
-    return { ...item, authorization: 'rejected', approvedVersionId: null, executionStatus: 'not_done' };
-  });
+export function applyDecisionToItems(items: readonly DWorkItem[], requestId: string, decision: ApprovalDecisionValue, versionId: string): DWorkItem[] {
+  // Abgelehnte Positionen bleiben "geplant", sind aber gesperrt und zählen nicht (wie in der API).
+  return applyDecision(items, requestId, decision, versionId).items;
 }
 
 /**
- * Positionen einer Anfrage an deren aktuelle Version angleichen (nach Anlage oder Änderung).
- * Noch nicht begonnene Positionen der Anfrage werden ersetzt; alle warten auf Freigabe.
+ * Positionen einer Anfrage an deren aktuelle Version angleichen, wie die API
+ * (`syncItemsWithVersion`): Positionen entstehen beim Senden; Zeile i ↔ i-te Position der
+ * Anfrage. Bei neuer Version gehen nicht abgeschlossene Positionen zurück auf "wartet"
+ * (Domain `resetItemsForNewVersion`), überzählige werden zurückgezogen.
  */
-export function syncItemsWithVersion(
-  items: readonly DWorkItem[],
-  request: DApprovalRequest,
-  newItemId: () => string,
-): DWorkItem[] {
+export function syncItemsWithVersion(items: readonly DWorkItem[], request: DApprovalRequest, newItemId: () => string, options: { newVersion?: boolean } = {}): DWorkItem[] {
   const version = currentVersion(request);
-  const kept = items.filter((i) => i.approvalRequestId !== request.id || i.executionStatus === 'done');
-  const workOrderItems = kept.filter((i) => i.workOrderId === request.workOrderId);
-  let position = workOrderItems.reduce((max, i) => Math.max(max, i.position), 0);
-  const authorization = request.status === 'withdrawn' ? 'withdrawn' : 'pending_approval';
-  const created: DWorkItem[] = version.lines.map((line) => ({
-    id: newItemId(),
-    workOrderId: request.workOrderId,
-    position: ++position,
-    kind: 'flat_rate',
-    title: line.title,
-    description: line.description ?? null,
-    maintenanceTypeId: line.maintenanceTypeId ?? null,
-    intervalKm: null,
-    intervalMonths: null,
-    quantity: line.quantity,
-    unit: line.unit,
-    unitPriceCents: line.unitPriceCents,
-    vatRateBp: line.vatRateBp,
-    origin: request.kind === 'offer' ? 'offer' : 'additional',
-    authorization,
-    executionStatus: 'planned',
-    approvalRequestId: request.id,
-    approvedVersionId: null,
-    assignedTo: null,
-    doneAt: null,
-    doneBy: null,
-    doneOdometerKm: null,
-    resultNotes: null,
-    trackedMinutes: 0,
-    runningSince: null,
-    parts: [],
-  }));
-  return [...kept, ...created];
-}
-
-export function withdrawItems(items: readonly DWorkItem[], requestId: string): DWorkItem[] {
-  return items.map((i) =>
-    i.approvalRequestId === requestId && i.executionStatus !== 'done' ? { ...i, authorization: 'withdrawn' } : i,
-  );
+  let all = [...items];
+  if (options.newVersion) {
+    all = resetItemsForNewVersion(all, request.id).items.map((i) =>
+      i.approvalRequestId === request.id && i.authorization === 'pending_approval' && i.runningSince ? { ...i, runningSince: null } : i,
+    );
+  }
+  const own = all.filter((i) => i.approvalRequestId === request.id).sort((a, b) => a.position - b.position);
+  let position = all.filter((i) => i.workOrderId === request.workOrderId).reduce((max, i) => Math.max(max, i.position), 0);
+  const origin = request.kind === 'offer' ? 'offer' : 'additional';
+  const created: DWorkItem[] = [];
+  const updates = new Map<string, DWorkItem>();
+  version.lines.forEach((line, index) => {
+    const content = {
+      title: line.title,
+      description: line.description ?? null,
+      quantity: line.quantity,
+      unit: line.unit,
+      unitPriceCents: line.unitPriceCents,
+      vatRateBp: line.vatRateBp,
+      maintenanceTypeId: line.maintenanceTypeId ?? null,
+    };
+    const existing = own[index];
+    if (existing) {
+      if (existing.executionStatus === 'done' || existing.executionStatus === 'not_done') return;
+      updates.set(existing.id, { ...existing, ...content, authorization: existing.authorization === 'withdrawn' ? 'pending_approval' : existing.authorization });
+      return;
+    }
+    created.push({
+      id: newItemId(),
+      workOrderId: request.workOrderId,
+      position: ++position,
+      kind: 'other',
+      ...content,
+      intervalKm: null,
+      intervalMonths: null,
+      origin,
+      authorization: 'pending_approval',
+      executionStatus: 'planned',
+      approvalRequestId: request.id,
+      approvedVersionId: null,
+      assignedTo: null,
+      doneAt: null,
+      doneBy: null,
+      doneOdometerKm: null,
+      resultNotes: null,
+      trackedMinutes: 0,
+      runningSince: null,
+      parts: [],
+    });
+  });
+  for (const surplus of own.slice(version.lines.length)) {
+    if (surplus.executionStatus === 'done' || surplus.executionStatus === 'not_done') continue;
+    updates.set(surplus.id, { ...surplus, authorization: 'withdrawn', approvedVersionId: null });
+  }
+  return [...all.map((i) => updates.get(i.id) ?? i), ...created];
 }

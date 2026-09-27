@@ -4,7 +4,7 @@
  * Dateien sind erst über rechtegeprüfte Zuordnungen (Dokument, Foto, Chat) abrufbar.
  */
 import { eq } from 'drizzle-orm';
-import { FileRefSchema, type FileRef } from '@werkstatt/contracts';
+import { FileRefSchema, type FileRef, API_ERROR_CODES } from '@werkstatt/contracts';
 import type { DbOrTx } from '../db/index';
 import { files } from '../db/schema/index';
 import { sha256Hex } from '../lib/crypto';
@@ -42,15 +42,15 @@ export async function fileRoutes(app: App): Promise<void> {
     },
     async (request, reply) => {
     const actor = requireActor(request);
-    if (!request.isMultipart()) throw new HttpError(415, 'unsupported_media_type', 'Bitte als multipart/form-data hochladen.');
+    if (!request.isMultipart()) throw new HttpError(415, API_ERROR_CODES.unsupportedMediaType, 'Bitte als multipart/form-data hochladen.');
     const part = await request.file();
     if (!part) throw badRequest('Keine Datei übermittelt.');
     const data = await part.toBuffer();
-    if (part.file.truncated) throw new HttpError(413, 'payload_too_large', 'Die Datei ist zu groß.');
+    if (part.file.truncated) throw new HttpError(413, API_ERROR_CODES.payloadTooLarge, 'Die Datei ist zu groß.');
     if (data.length === 0) throw badRequest('Die Datei ist leer.');
     const mimeType = detectMimeType(data);
     if (!mimeType) {
-      throw new HttpError(415, 'unsupported_file_type', 'Nur JPEG, PNG, WebP, HEIC und PDF sind erlaubt.');
+      throw new HttpError(415, API_ERROR_CODES.unsupportedFileType, 'Nur JPEG, PNG, WebP, HEIC und PDF sind erlaubt.');
     }
     const { db, storage, now } = app.deps;
     const storageKey = newStorageKey(now());

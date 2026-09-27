@@ -4,6 +4,7 @@ import { API_URL, IS_DEMO, WEB_URL } from '../config';
 import type { WerkstattApi } from './api';
 import { DemoApi, type DemoStorage } from './demo/DemoApi';
 import { HttpApi } from './http';
+import { nativeDownload, supportsNativeDownload } from './nativeDownload';
 
 const DEMO_STATE_KEY = 'werkstatt-demo-zustand';
 
@@ -31,6 +32,8 @@ export function createApi(): WerkstattApi {
     baseUrl: API_URL,
     validateResponses: __DEV__,
     newId: () => Crypto.randomUUID(),
+    // Nativ: geschützte Dateien mit Anmelde-Header in den Cache laden (expo-file-system)
+    downloadFile: supportsNativeDownload ? nativeDownload : undefined,
   });
 }
 

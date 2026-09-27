@@ -5,7 +5,7 @@
  */
 import { and, asc, eq, inArray, ne } from 'drizzle-orm';
 import { z } from 'zod';
-import { ApprovalDecisionRequestSchema, ApprovalDraftInputSchema, ApprovalRequestSchema, type ApprovalDraftInput } from '@werkstatt/contracts';
+import { ApprovalDecisionRequestSchema, ApprovalDraftInputSchema, ApprovalRequestSchema, type ApprovalDraftInput, API_ERROR_CODES } from '@werkstatt/contracts';
 import {
   applyDecision,
   canViewApprovalRequest,
@@ -47,7 +47,7 @@ async function validateReferences(tx: DbOrTx, workOrderId: string, input: Approv
   const photoIds = [...new Set(input.photoIds)];
   if (photoIds.length > 0) {
     const rows = await tx.select({ id: photos.id }).from(photos).where(and(inArray(photos.id, photoIds), eq(photos.workOrderId, workOrderId)));
-    if (rows.length !== photoIds.length) throw unprocessable('invalid_photos', 'Mindestens ein Foto gehört nicht zu diesem Auftrag.');
+    if (rows.length !== photoIds.length) throw unprocessable(API_ERROR_CODES.invalidPhotos, 'Mindestens ein Foto gehört nicht zu diesem Auftrag.');
   }
   if (input.documentVersionId) {
     const [dv] = await tx
@@ -55,11 +55,11 @@ async function validateReferences(tx: DbOrTx, workOrderId: string, input: Approv
       .from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(documentVersions.id, input.documentVersionId));
-    if (!dv || dv.workOrderId !== workOrderId) throw unprocessable('invalid_document', 'Das Dokument gehört nicht zu diesem Auftrag.');
+    if (!dv || dv.workOrderId !== workOrderId) throw unprocessable(API_ERROR_CODES.invalidDocument, 'Das Dokument gehört nicht zu diesem Auftrag.');
   }
   if (input.findingId) {
     const [f] = await tx.select({ workOrderId: findings.workOrderId }).from(findings).where(eq(findings.id, input.findingId));
-    if (!f || f.workOrderId !== workOrderId) throw unprocessable('invalid_finding', 'Die Feststellung gehört nicht zu diesem Auftrag.');
+    if (!f || f.workOrderId !== workOrderId) throw unprocessable(API_ERROR_CODES.invalidFinding, 'Die Feststellung gehört nicht zu diesem Auftrag.');
   }
 }
 
@@ -115,7 +115,7 @@ function versionState(v: ApprovalVersionRow) {
  */
 function ensureOpenForApprovals(status: string): void {
   if (!['draft', 'open', 'in_progress', 'work_completed'].includes(status)) {
-    throw conflict('work_order_closed', 'Zu einem abgeschlossenen Auftrag können keine Freigaben angefragt werden.');
+    throw conflict(API_ERROR_CODES.workOrderClosed, 'Zu einem abgeschlossenen Auftrag können keine Freigaben angefragt werden.');
   }
 }
 
@@ -162,7 +162,7 @@ export async function approvalRoutes(app: App): Promise<void> {
         try {
           version = createInitialVersion(contentFrom(body), now);
         } catch (err) {
-          throw unprocessable('invalid_content', err instanceof Error ? err.message : 'Ungültiger Inhalt.');
+          throw unprocessable(API_ERROR_CODES.invalidContent, err instanceof Error ? err.message : 'Ungültiger Inhalt.');
         }
         const [created] = await tx
           .insert(approvalRequests)
@@ -212,7 +212,7 @@ export async function approvalRoutes(app: App): Promise<void> {
           .where(and(eq(workItems.approvalRequestId, row.id), ne(workItems.executionStatus, 'planned')))
           .limit(1);
         if (started.length > 0) {
-          throw conflict('approval_in_execution', 'Aus dieser Anfrage wurden bereits Arbeiten begonnen. Änderungen bitte als neue Freigabeanfrage senden.');
+          throw conflict(API_ERROR_CODES.approvalInExecution, 'Aus dieser Anfrage wurden bereits Arbeiten begonnen. Änderungen bitte als neue Freigabeanfrage senden.');
         }
       }
       const current = await currentVersionOf(tx, row);
@@ -220,7 +220,7 @@ export async function approvalRoutes(app: App): Promise<void> {
       try {
         outcome = reviseApproval({ id: row.id, status: row.status }, versionState(current), contentFrom(body), now);
       } catch (err) {
-        throw unprocessable('invalid_content', err instanceof Error ? err.message : 'Ungültiger Inhalt.');
+        throw unprocessable(API_ERROR_CODES.invalidContent, err instanceof Error ? err.message : 'Ungültiger Inhalt.');
       }
       if (!outcome.ok) throw new HttpError(409, outcome.error.code.toLowerCase(), outcome.error.message);
       const result = outcome.value;
@@ -341,7 +341,7 @@ export async function approvalRoutes(app: App): Promise<void> {
         if (!check.ok) {
           if (check.code === 'NOT_CUSTOMER') {
             if (check.notFound) throw notFound();
-            throw new HttpError(403, 'not_customer', check.message);
+            throw new HttpError(403, API_ERROR_CODES.notCustomer, check.message);
           }
           throw new HttpError(409, check.code.toLowerCase(), check.message);
         }
@@ -362,7 +362,7 @@ export async function approvalRoutes(app: App): Promise<void> {
           })
           .onConflictDoNothing()
           .returning({ id: approvalDecisions.id });
-        if (!inserted[0]) throw new HttpError(409, 'already_decided', 'Zu dieser Fassung liegt bereits eine Entscheidung vor.');
+        if (!inserted[0]) throw new HttpError(409, API_ERROR_CODES.alreadyDecided, 'Zu dieser Fassung liegt bereits eine Entscheidung vor.');
         await tx.update(approvalRequests).set({ status: requestStatusAfterDecision(body.decision) }).where(eq(approvalRequests.id, row.id));
         const items = await tx.select().from(workItems).where(eq(workItems.workOrderId, row.workOrderId));
         const { changes } = applyDecision(

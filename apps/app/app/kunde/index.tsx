@@ -8,7 +8,7 @@ import { StyleSheet, View } from 'react-native';
 import { useSession } from '../../src/auth/session';
 import { useApiQuery } from '../../src/data/hooks';
 import { keepPlates, formatDate, formatRelativeTime } from '../../src/lib/format';
-import { appointmentStatusLabels, appointmentTitle, appointmentWhen, dueStateLabels, dueSummary, estimateLabel, salutationName } from '../../src/screens/customer/helpers';
+import { appointmentStatusLabels, appointmentTitle, appointmentWhen, dueStateLabels, dueSummary, estimateLabel, isKmEstimate, salutationName } from '../../src/screens/customer/helpers';
 import { QueryView } from '../../src/screens/common';
 import { AppText, Button, Card, EmptyState, MoneyText, Page, Row, Section, StatusChip, StatusTriple } from '../../src/ui';
 
@@ -166,7 +166,7 @@ export default function CustomerHome() {
                     <Card key={`${vehicle.id}-${due.lastServiceEntryId}`} onPress={() => go(routes.customer.vehicle(vehicle.id))} accessibilityLabel={`${due.title}, ${vehicle.make} ${vehicle.model}`}>
                       <Row wrap>
                         <StatusChip status={dueStateLabels[due.state]} />
-                        {due.basis === 'km_estimated' || due.estimatedCurrentKm !== null ? <StatusChip status={estimateLabel} /> : null}
+                        {isKmEstimate(due) ? <StatusChip status={estimateLabel} /> : null}
                       </Row>
                       <AppText variant="heading">{due.title}</AppText>
                       <AppText tone="muted">

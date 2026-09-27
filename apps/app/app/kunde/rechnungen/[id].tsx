@@ -85,7 +85,6 @@ export default function InvoiceScreen() {
       <QueryView query={query} loading="detail">
         {(inv) => {
           const payable = inv.onlinePaymentAvailable && inv.openCents > 0 && inv.status === 'issued';
-          const pendingAttempt = inv.checkouts?.find((c) => c.status === 'pending' || c.status === 'created');
           return (
             <>
               <Row wrap>
@@ -94,14 +93,6 @@ export default function InvoiceScreen() {
               </Row>
               {start.error ? (
                 <Banner tone="danger" title="Zahlung konnte nicht gestartet werden" message={start.error.isNetwork ? 'Keine Verbindung. Bitte versuchen Sie es erneut. Es wurde nichts abgebucht.' : start.error.message} testID="zahlung-start-fehler" />
-              ) : null}
-              {pendingAttempt && inv.openCents > 0 ? (
-                <Banner
-                  tone="info"
-                  title="Zahlung wird geprüft"
-                  message="Es gibt einen offenen Zahlungsversuch. Die Rechnung gilt erst als bezahlt, wenn der Zahlungsanbieter die Zahlung bestätigt hat."
-                  action={<Button label="Status prüfen" icon="ArrowsClockwise" onPress={() => router.push(returnPath as Href)} />}
-                />
               ) : null}
 
               <Columns ratio={[3, 2]}>
@@ -144,14 +135,10 @@ export default function InvoiceScreen() {
                     </Section>
                   ) : null}
 
-                  {inv.checkouts && inv.checkouts.length > 0 ? (
-                    <Section title="Zahlungsversuche">
-                      <ListGroup>
-                        {inv.checkouts.map((c, i) => (
-                          <ListRow key={c.id} first={i === 0} icon="CreditCard" title={formatMoney(c.amountCents)} subtitle={`Gestartet ${formatDateTime(c.createdAt)}`} right={<StatusChip status={checkoutStatusLabels[c.status]} />} />
-                        ))}
-                      </ListGroup>
-                    </Section>
+                  {inv.openCents > 0 && inv.onlinePaymentAvailable ? (
+                    <AppText variant="small" tone="subtle">
+                      Haben Sie gerade online bezahlt? Die Rechnung gilt erst als bezahlt, wenn der Zahlungsanbieter die Zahlung bestätigt hat. Das kann einen Moment dauern.
+                    </AppText>
                   ) : null}
                 </>
                 <>
@@ -162,7 +149,7 @@ export default function InvoiceScreen() {
                       onPress={async () => {
                         try {
                           const res = await openDownload(await api.downloadDocument(inv.documentId!));
-                          if (res === 'unsupported') toast.show('Das Öffnen von Dokumenten auf dem Gerät folgt in einer späteren Version.', 'info');
+                          if (res === 'unsupported') toast.show('Auf diesem Gerät gibt es keine App zum Öffnen der Datei. Bitte im Browser öffnen.', 'info');
                         } catch {
                           toast.show('Das Dokument konnte nicht geladen werden.', 'danger');
                         }

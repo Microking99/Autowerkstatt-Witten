@@ -31,6 +31,7 @@ import {
   API_PREFIX,
   type Finding,
   type Photo,
+  API_ERROR_CODES,
 } from '@werkstatt/contracts';
 import {
   berlinDateOf,
@@ -172,7 +173,7 @@ async function assertAssignableStaff(db: DbOrTx, ids: string[]): Promise<void> {
     .select({ id: users.id })
     .from(users)
     .where(and(inArray(users.id, unique), inArray(users.role, ['admin', 'service', 'mechanic']), inArray(users.status, ['active', 'invited'])));
-  if (rows.length !== unique.length) throw unprocessable('invalid_assignee', 'Mindestens ein zugewiesener Mitarbeiter ist unbekannt oder deaktiviert.');
+  if (rows.length !== unique.length) throw unprocessable(API_ERROR_CODES.invalidAssignee, 'Mindestens ein zugewiesener Mitarbeiter ist unbekannt oder deaktiviert.');
 }
 
 function transitionError(result: WorkItemTransitionResult & { ok: false }): HttpError {
@@ -225,9 +226,9 @@ export async function workOrderRoutes(app: App): Promise<void> {
     const events: PendingEvents = [];
     const wo = await db.transaction(async (tx) => {
       const [customer] = await tx.select().from(customers).where(eq(customers.id, body.customerId));
-      if (!customer || customer.archivedAt) throw unprocessable('customer_invalid', 'Der Kunde wurde nicht gefunden oder ist archiviert.');
+      if (!customer || customer.archivedAt) throw unprocessable(API_ERROR_CODES.customerInvalid, 'Der Kunde wurde nicht gefunden oder ist archiviert.');
       if ((await currentOwnerCustomerId(tx, body.vehicleId)) !== body.customerId) {
-        throw unprocessable('vehicle_not_owned_by_customer', 'Das Fahrzeug gehört nicht (mehr) zu diesem Kunden. Bitte ein Fahrzeug des Kunden wählen.');
+        throw unprocessable(API_ERROR_CODES.vehicleNotOwnedByCustomer, 'Das Fahrzeug gehört nicht (mehr) zu diesem Kunden. Bitte ein Fahrzeug des Kunden wählen.');
       }
       await assertAssignableStaff(tx, [...body.assigneeIds, ...body.items.map((i) => i.assignedTo).filter((x): x is string => !!x)]);
       const [created] = await tx
@@ -299,7 +300,7 @@ export async function workOrderRoutes(app: App): Promise<void> {
       const body = request.body;
       const wo = await db.transaction(async (tx) => {
         const { wo: current } = await loadVisibleWorkOrder(tx, actor, request.params.id);
-        if (current.status === 'cancelled' || current.status === 'picked_up') throw conflict('work_order_closed', 'Der Auftrag ist abgeschlossen und kann nicht mehr geändert werden.');
+        if (current.status === 'cancelled' || current.status === 'picked_up') throw conflict(API_ERROR_CODES.workOrderClosed, 'Der Auftrag ist abgeschlossen und kann nicht mehr geändert werden.');
         const { assigneeIds, plannedStart, plannedEnd, ...rest } = body;
         const patch: Partial<typeof workOrders.$inferInsert> = { ...rest };
         if (plannedStart !== undefined) patch.plannedStart = plannedStart ? new Date(plannedStart) : null;
@@ -508,7 +509,7 @@ export async function workOrderRoutes(app: App): Promise<void> {
     const wo = await db.transaction(async (tx) => {
       const { wo: current } = await loadVisibleWorkOrder(tx, actor, request.params.id);
       if (current.status !== 'work_completed' && current.status !== 'completed') {
-        throw conflict('not_ready', 'Abholbereit erst, wenn die Arbeiten erledigt sind.');
+        throw conflict(API_ERROR_CODES.notReady, 'Abholbereit erst, wenn die Arbeiten erledigt sind.');
       }
       if (current.readyForPickupAt) return current;
       const [updated] = await tx.update(workOrders).set({ readyForPickupAt: now }).where(eq(workOrders.id, current.id)).returning();
@@ -594,7 +595,7 @@ export async function workOrderRoutes(app: App): Promise<void> {
     const body = request.body;
     const result = await db.transaction(async (tx) => {
       const { wo } = await loadVisibleWorkOrder(tx, actor, request.params.id);
-      if (wo.status === 'cancelled' || wo.status === 'picked_up') throw conflict('work_order_closed', 'Der Auftrag ist abgeschlossen.');
+      if (wo.status === 'cancelled' || wo.status === 'picked_up') throw conflict(API_ERROR_CODES.workOrderClosed, 'Der Auftrag ist abgeschlossen.');
       const [existing] = await tx.select().from(intakes).where(eq(intakes.workOrderId, wo.id)).for('update');
       const values = {
         workOrderId: wo.id,
@@ -644,7 +645,7 @@ export async function workOrderRoutes(app: App): Promise<void> {
         const items = await tx.select().from(workItems).where(eq(workItems.workOrderId, wo.id));
         const current = toIntakeDto(intake!, items).contentHash!;
         if (current !== request.body.contentHash.toLowerCase()) {
-          throw conflict('intake_changed', 'Die Annahme wurde inzwischen geändert. Bitte die aktuelle Fassung prüfen.');
+          throw conflict(API_ERROR_CODES.intakeChanged, 'Die Annahme wurde inzwischen geändert. Bitte die aktuelle Fassung prüfen.');
         }
         if (!(intake!.confirmedAt && intake!.contentHash === current)) {
           await tx
@@ -681,13 +682,13 @@ export async function workOrderRoutes(app: App): Promise<void> {
     const item = await db.transaction(async (tx) => {
       const { wo } = await loadVisibleWorkOrder(tx, actor, request.params.id);
       if (!['draft', 'open', 'in_progress', 'work_completed'].includes(wo.status)) {
-        throw conflict('work_order_closed', 'Zu einem abgeschlossenen Auftrag können keine Positionen hinzugefügt werden.');
+        throw conflict(API_ERROR_CODES.workOrderClosed, 'Zu einem abgeschlossenen Auftrag können keine Positionen hinzugefügt werden.');
       }
       const [intake] = await tx.select({ firstConfirmedAt: intakes.firstConfirmedAt }).from(intakes).where(eq(intakes.workOrderId, wo.id));
       if (intake?.firstConfirmedAt) {
         // R-ANN-3: Die bestätigte Annahme deckt keine späteren Zusatzarbeiten. Das gilt dauerhaft,
         // auch wenn eine spätere Änderung die Bestätigung ungültig gemacht hat.
-        throw conflict('approval_required', 'Die Annahme ist bestätigt. Weitere Arbeiten bitte als Freigabeanfrage an den Kunden senden.');
+        throw conflict(API_ERROR_CODES.approvalRequired, 'Die Annahme ist bestätigt. Weitere Arbeiten bitte als Freigabeanfrage an den Kunden senden.');
       }
       const body = request.body;
       if (body.assignedTo) await assertAssignableStaff(tx, [body.assignedTo]);
@@ -731,16 +732,16 @@ export async function workOrderRoutes(app: App): Promise<void> {
       ensureFound(current);
       await loadVisibleWorkOrder(tx, actor, current!.workOrderId);
       if (current!.approvalRequestId) {
-        throw conflict('approval_bound', 'Diese Position gehört zu einer Freigabeanfrage. Änderungen bitte als neue Fassung der Anfrage senden.');
+        throw conflict(API_ERROR_CODES.approvalBound, 'Diese Position gehört zu einer Freigabeanfrage. Änderungen bitte als neue Fassung der Anfrage senden.');
       }
       if (current!.executionStatus === 'done' || current!.executionStatus === 'not_done') {
-        throw conflict('item_finished', 'Abgeschlossene Positionen können nicht mehr geändert werden.');
+        throw conflict(API_ERROR_CODES.itemFinished, 'Abgeschlossene Positionen können nicht mehr geändert werden.');
       }
       if (current!.origin === 'intake' && touchesAgreedScope(request.body)) {
         const [intake] = await tx.select({ firstConfirmedAt: intakes.firstConfirmedAt }).from(intakes).where(eq(intakes.workOrderId, current!.workOrderId));
         if (intake?.firstConfirmedAt) {
           // R-ANN-3: Umfang und Preis bestätigter Leistungen ändern sich nur über eine Freigabe
-          throw conflict('approval_required', 'Die Annahme ist bestätigt. Änderungen an Umfang oder Preis bitte als Freigabeanfrage an den Kunden senden.');
+          throw conflict(API_ERROR_CODES.approvalRequired, 'Die Annahme ist bestätigt. Änderungen an Umfang oder Preis bitte als Freigabeanfrage an den Kunden senden.');
         }
       }
       if (request.body.assignedTo) await assertAssignableStaff(tx, [request.body.assignedTo]);
@@ -887,13 +888,13 @@ export async function workOrderRoutes(app: App): Promise<void> {
       if (body.id) {
         const [existing] = await tx.select().from(findings).where(eq(findings.id, body.id));
         if (existing) {
-          if (existing.workOrderId !== wo.id || existing.reportedBy !== actor.userId) throw conflict('id_in_use', 'Diese ID ist bereits vergeben.');
+          if (existing.workOrderId !== wo.id || existing.reportedBy !== actor.userId) throw conflict(API_ERROR_CODES.idInUse, 'Diese ID ist bereits vergeben.');
           return { row: existing, created: false };
         }
       }
       if (body.workItemId) {
         const [item] = await tx.select({ workOrderId: workItems.workOrderId }).from(workItems).where(eq(workItems.id, body.workItemId));
-        if (!item || item.workOrderId !== wo.id) throw unprocessable('invalid_work_item', 'Die Position gehört nicht zu diesem Auftrag.');
+        if (!item || item.workOrderId !== wo.id) throw unprocessable(API_ERROR_CODES.invalidWorkItem, 'Die Position gehört nicht zu diesem Auftrag.');
       }
       const [inserted] = await tx
         .insert(findings)
@@ -930,7 +931,7 @@ export async function workOrderRoutes(app: App): Promise<void> {
       const [current] = await tx.select().from(findings).where(eq(findings.id, request.params.id)).for('update');
       ensureFound(current);
       const { wo } = await loadVisibleWorkOrder(tx, actor, current!.workOrderId);
-      if (current!.status === 'converted' || current!.status === 'dismissed') throw conflict('finding_closed', 'Die Feststellung ist bereits erledigt.');
+      if (current!.status === 'converted' || current!.status === 'dismissed') throw conflict(API_ERROR_CODES.findingClosed, 'Die Feststellung ist bereits erledigt.');
       if (current!.status === to) return current!;
       const [updated] = await tx
         .update(findings)
@@ -987,15 +988,15 @@ export async function workOrderRoutes(app: App): Promise<void> {
       if (body.id) {
         const [existing] = await tx.select().from(photos).where(eq(photos.id, body.id));
         if (existing) {
-          if (existing.workOrderId !== wo.id || existing.fileId !== body.fileId) throw conflict('id_in_use', 'Diese ID ist bereits vergeben.');
+          if (existing.workOrderId !== wo.id || existing.fileId !== body.fileId) throw conflict(API_ERROR_CODES.idInUse, 'Diese ID ist bereits vergeben.');
           return { row: existing, created: false };
         }
       }
       const file = await loadAttachableFile(tx, actor, body.fileId);
-      if (!IMAGE_TYPES.has(file.mimeType)) throw unprocessable('not_an_image', 'Fotos müssen Bilddateien sein (JPEG, PNG, WebP, HEIC).');
+      if (!IMAGE_TYPES.has(file.mimeType)) throw unprocessable(API_ERROR_CODES.notAnImage, 'Fotos müssen Bilddateien sein (JPEG, PNG, WebP, HEIC).');
       if (body.findingId) {
         const [finding] = await tx.select({ workOrderId: findings.workOrderId }).from(findings).where(eq(findings.id, body.findingId));
-        if (!finding || finding.workOrderId !== wo.id) throw unprocessable('invalid_finding', 'Die Feststellung gehört nicht zu diesem Auftrag.');
+        if (!finding || finding.workOrderId !== wo.id) throw unprocessable(API_ERROR_CODES.invalidFinding, 'Die Feststellung gehört nicht zu diesem Auftrag.');
       }
       const [inserted] = await tx
         .insert(photos)

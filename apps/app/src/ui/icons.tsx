@@ -83,6 +83,33 @@ import { XIcon } from 'phosphor-react-native/src/icons/X';
 import { XCircleIcon } from 'phosphor-react-native/src/icons/XCircle';
 import type { ComponentType } from 'react';
 import { View } from 'react-native';
+import { ImageBrokenIcon } from 'phosphor-react-native/src/icons/ImageBroken';
+import { MicrophoneIcon } from 'phosphor-react-native/src/icons/Microphone';
+import { PrinterIcon } from 'phosphor-react-native/src/icons/Printer';
+import { KeyboardIcon } from 'phosphor-react-native/src/icons/Keyboard';
+import { FunnelIcon } from 'phosphor-react-native/src/icons/Funnel';
+import { UserPlusIcon } from 'phosphor-react-native/src/icons/UserPlus';
+import { KeyIcon } from 'phosphor-react-native/src/icons/Key';
+import { LockOpenIcon } from 'phosphor-react-native/src/icons/LockOpen';
+import { ArrowsLeftRightIcon } from 'phosphor-react-native/src/icons/ArrowsLeftRight';
+import { PackageIcon } from 'phosphor-react-native/src/icons/Package';
+import { NotePencilIcon } from 'phosphor-react-native/src/icons/NotePencil';
+import { CloudSlashIcon } from 'phosphor-react-native/src/icons/CloudSlash';
+import { CloudArrowUpIcon } from 'phosphor-react-native/src/icons/CloudArrowUp';
+import { CheckSquareIcon } from 'phosphor-react-native/src/icons/CheckSquare';
+import { SquareIcon } from 'phosphor-react-native/src/icons/Square';
+import { TireIcon } from 'phosphor-react-native/src/icons/Tire';
+import { SignatureIcon } from 'phosphor-react-native/src/icons/Signature';
+import { ArrowRightIcon } from 'phosphor-react-native/src/icons/ArrowRight';
+import { UploadSimpleIcon } from 'phosphor-react-native/src/icons/UploadSimple';
+import { ExportIcon } from 'phosphor-react-native/src/icons/Export';
+import { WarehouseIcon } from 'phosphor-react-native/src/icons/Warehouse';
+import { HandCoinsIcon } from 'phosphor-react-native/src/icons/HandCoins';
+import { MoneyIcon } from 'phosphor-react-native/src/icons/Money';
+import { CalendarDotsIcon } from 'phosphor-react-native/src/icons/CalendarDots';
+import { TagIcon } from 'phosphor-react-native/src/icons/Tag';
+import { ListBulletsIcon } from 'phosphor-react-native/src/icons/ListBullets';
+import { TruckIcon } from 'phosphor-react-native/src/icons/Truck';
 
 const registry = {
   ArrowCounterClockwise: ArrowCounterClockwiseIcon,
@@ -162,6 +189,33 @@ const registry = {
   Wrench: WrenchIcon,
   X: XIcon,
   XCircle: XCircleIcon,
+  ImageBroken: ImageBrokenIcon,
+  Microphone: MicrophoneIcon,
+  Printer: PrinterIcon,
+  Keyboard: KeyboardIcon,
+  Funnel: FunnelIcon,
+  UserPlus: UserPlusIcon,
+  Key: KeyIcon,
+  LockOpen: LockOpenIcon,
+  ArrowsLeftRight: ArrowsLeftRightIcon,
+  Package: PackageIcon,
+  NotePencil: NotePencilIcon,
+  CloudSlash: CloudSlashIcon,
+  CloudArrowUp: CloudArrowUpIcon,
+  CheckSquare: CheckSquareIcon,
+  Square: SquareIcon,
+  Tire: TireIcon,
+  Signature: SignatureIcon,
+  ArrowRight: ArrowRightIcon,
+  UploadSimple: UploadSimpleIcon,
+  Export: ExportIcon,
+  Warehouse: WarehouseIcon,
+  HandCoins: HandCoinsIcon,
+  Money: MoneyIcon,
+  CalendarDots: CalendarDotsIcon,
+  Tag: TagIcon,
+  ListBullets: ListBulletsIcon,
+  Truck: TruckIcon,
 } satisfies Record<string, ComponentType<IconProps>>;
 
 export type IconName = keyof typeof registry;

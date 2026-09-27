@@ -70,7 +70,7 @@ describe('Freigaben: Bindung an Version und Inhalts-Hash (Regel 4)', () => {
     expectApiError(
       () => decide(req, { versionId: v.id, contentHash: 'f'.repeat(64), decision: 'approved', channel: 'web' }, customer, CUSTOMER, { decisionId: nextId(), now: NOW }),
       409,
-      ERROR_CODES.approvalVersionOutdated,
+      ERROR_CODES.hashMismatch,
     );
   });
 
@@ -89,7 +89,7 @@ describe('Freigaben: Bindung an Version und Inhalts-Hash (Regel 4)', () => {
     expectApiError(
       () => decide(changed, { versionId: v1.id, contentHash: v1.contentHash, decision: 'approved', channel: 'web' }, customer, CUSTOMER, { decisionId: nextId(), now: NOW }),
       409,
-      ERROR_CODES.approvalVersionOutdated,
+      ERROR_CODES.versionSuperseded,
     );
   });
 
@@ -100,7 +100,7 @@ describe('Freigaben: Bindung an Version und Inhalts-Hash (Regel 4)', () => {
     expectApiError(
       () => decide(once, { versionId: v.id, contentHash: v.contentHash, decision: 'approved', channel: 'web' }, customer, CUSTOMER, { decisionId: nextId(), now: NOW }),
       409,
-      ERROR_CODES.approvalAlreadyDecided,
+      ERROR_CODES.alreadyDecided,
     );
   });
 
@@ -111,6 +111,7 @@ describe('Freigaben: Bindung an Version und Inhalts-Hash (Regel 4)', () => {
       expectApiError(
         () => decide(req, { versionId: v.id, contentHash: v.contentHash, decision: 'approved', channel: 'web' }, { ...customer, role, customerId: null }, CUSTOMER, { decisionId: nextId(), now: NOW }),
         403,
+        ERROR_CODES.notCustomer,
       );
     }
   });
@@ -128,8 +129,16 @@ describe('Freigaben: Bindung an Version und Inhalts-Hash (Regel 4)', () => {
     const d = createDraft({ id: 'req-2', versionId: nextId(), workOrderId: 'wo-1', draft, createdBy: 'u-service', now: NOW });
     const v = currentVersion(d);
     expectApiError(() => decide(d, { versionId: v.id, contentHash: v.contentHash, decision: 'approved', channel: 'web' }, customer, CUSTOMER, { decisionId: nextId(), now: NOW }), 404);
-    const withdrawn = withdrawRequest(sendRequest(d, NOW), NOW);
+    const { request: withdrawn } = withdrawRequest(sendRequest(d, NOW), NOW);
     expectApiError(() => decide(withdrawn, { versionId: v.id, contentHash: v.contentHash, decision: 'approved', channel: 'web' }, customer, CUSTOMER, { decisionId: nextId(), now: NOW }), 409);
+  });
+
+  it('Zurückziehen sperrt wartende Positionen der Anfrage (withdrawn), andere bleiben unberührt', () => {
+    const req = sentRequest();
+    const items = syncItemsWithVersion([], req, nextId);
+    const { request, items: after } = withdrawRequest(req, NOW, items);
+    expect(request.status).toBe('withdrawn');
+    expect(after.every((i) => i.authorization === 'withdrawn')).toBe(true);
   });
 });
 
@@ -147,7 +156,8 @@ describe('Freigaben: Positionen (Regel 5)', () => {
       base({ title: 'Wischer', authorization: 'approved', approvalRequestId: 'req-2', approvedVersionId: 'v-9' }),
     ];
     const after = applyDecisionToItems(items, 'req-1', 'rejected', 'v-1');
-    expect(after.find((i) => i.title === 'Bremsen')).toMatchObject({ authorization: 'rejected', executionStatus: 'not_done' });
+    // wie die API: abgelehnt, bleibt "geplant", ist aber nicht ausführbar
+    expect(after.find((i) => i.title === 'Bremsen')).toMatchObject({ authorization: 'rejected', executionStatus: 'planned' });
     expect(after.find((i) => i.title === 'Inspektion')?.authorization).toBe('agreed');
     expect(after.find((i) => i.title === 'Wischer')).toMatchObject({ authorization: 'approved', approvedVersionId: 'v-9' });
   });
@@ -163,8 +173,10 @@ describe('Freigaben: Positionen (Regel 5)', () => {
     expect(items).toHaveLength(2);
     const approvedItems = applyDecisionToItems(items, req.id, 'approved', currentVersion(req).id);
     const revised = reviseRequest(req, { ...draft, lines: [draft.lines[0]!] }, { versionId: nextId(), createdBy: 'u', now: NOW });
-    const synced = syncItemsWithVersion(approvedItems, revised, nextId);
-    expect(synced).toHaveLength(1);
+    const synced = syncItemsWithVersion(approvedItems, revised, nextId, { newVersion: true });
+    // wie die API: Zeile 1 wartet wieder auf Entscheidung, die entfallene Zeile ist zurückgezogen
+    expect(synced).toHaveLength(2);
     expect(synced[0]?.authorization).toBe('pending_approval');
+    expect(synced[1]?.authorization).toBe('withdrawn');
   });
 });

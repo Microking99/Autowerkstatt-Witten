@@ -7,6 +7,7 @@
  * Routen mit `config: { idempotency: false }` (Antwort enthält ein Geheimnis) werden nicht
  * gespeichert.
  */
+import { API_ERROR_CODES } from '@werkstatt/contracts';
 import { and, eq, lt } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { idempotencyKeys } from '../db/schema/index';
@@ -41,7 +42,7 @@ export function registerIdempotency(app: FastifyInstance): void {
     if (raw === undefined || !request.actor) return;
     const key = Array.isArray(raw) ? raw[0] : raw;
     if (!key || !KEY_PATTERN.test(key)) {
-      return reply.code(400).send(errorBody('invalid_idempotency_key', 'Der Idempotency-Key ist ungültig (8 bis 128 Zeichen: Buchstaben, Ziffern, . _ : -).'));
+      return reply.code(400).send(errorBody(API_ERROR_CODES.invalidIdempotencyKey, 'Der Idempotency-Key ist ungültig (8 bis 128 Zeichen: Buchstaben, Ziffern, . _ : -).'));
     }
     const { db } = app.deps;
     const route = routeKey(request);
@@ -60,13 +61,13 @@ export function registerIdempotency(app: FastifyInstance): void {
       .from(idempotencyKeys)
       .where(and(eq(idempotencyKeys.userId, request.actor.userId), eq(idempotencyKeys.route, route), eq(idempotencyKeys.key, key)));
     if (!existing) {
-      return reply.code(409).send(errorBody('idempotency_conflict', 'Die Anfrage wird gerade verarbeitet. Bitte erneut versuchen.'));
+      return reply.code(409).send(errorBody(API_ERROR_CODES.idempotencyConflict, 'Die Anfrage wird gerade verarbeitet. Bitte erneut versuchen.'));
     }
     if (existing.requestHash !== hash) {
-      return reply.code(422).send(errorBody('idempotency_key_reused', 'Dieser Idempotency-Key wurde bereits für eine andere Anfrage verwendet.'));
+      return reply.code(422).send(errorBody(API_ERROR_CODES.idempotencyKeyReused, 'Dieser Idempotency-Key wurde bereits für eine andere Anfrage verwendet.'));
     }
     if (existing.statusCode === null) {
-      return reply.code(409).send(errorBody('idempotency_in_progress', 'Die Anfrage wird gerade verarbeitet. Bitte erneut versuchen.'));
+      return reply.code(409).send(errorBody(API_ERROR_CODES.idempotencyInProgress, 'Die Anfrage wird gerade verarbeitet. Bitte erneut versuchen.'));
     }
     reply.header(IDEMPOTENCY_REPLAY_HEADER, 'true');
     reply.code(existing.statusCode);

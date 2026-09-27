@@ -1,7 +1,6 @@
 /**
  * Werkstatt, Übersicht: Kacheln aus /dashboard (rollenbezogen), Termine heute, zuletzt
- * geänderte Aufträge. Kachel → gefilterte Liste (Filter in der URL). Weitere Werkstatt-
- * ansichten folgen mit Paket APP-2.
+ * geänderte Aufträge. Kachel → gefilterte Liste (Filter in der URL).
  */
 import { appointmentKindLabels, appointmentStatusLabels, routes, type DashboardTile } from '@werkstatt/contracts';
 import { router, type Href } from 'expo-router';

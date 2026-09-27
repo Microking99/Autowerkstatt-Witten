@@ -7,14 +7,16 @@
  */
 import { routes } from '@werkstatt/contracts';
 import { Stack, router, usePathname, type Href } from 'expo-router';
-import { useEffect, useState, type ReactNode } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, View, type PressableStateCallbackType } from 'react-native';
+import { useState, type ReactNode } from 'react';
+import { Pressable, ScrollView, StyleSheet, View, type PressableStateCallbackType } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSession } from '../auth/session';
 import { useApiQuery } from '../data/hooks';
 import { useIsOffline } from '../data/network';
+import { OfflineQueueProvider, useOfflineQueue } from '../offline/OfflineQueueProvider';
+import { QuickSearch } from '../screens/workshop/QuickSearch';
 import { useBreakpoint, useTheme } from '../theme';
-import { AppText, Icon, iconSize, ListGroup, ListRow, OfflineBanner, Sheet, type IconName } from '../ui';
+import { AppText, Icon, iconSize, ListGroup, ListRow, OfflineBanner, Sheet, useHotkeys, type IconName } from '../ui';
 
 type PressState = PressableStateCallbackType & { hovered?: boolean; focused?: boolean };
 
@@ -25,6 +27,8 @@ export interface NavItem {
   href: string;
   match: (path: string) => boolean;
   badge?: number;
+  /** Ansage zur Zahl, Standard "ungelesen" */
+  badgeLabel?: string;
 }
 
 const go = (href: string) => router.navigate(href as Href);
@@ -73,7 +77,7 @@ function BottomTabs({ items, onMore, moreActive, tall }: { items: NavItem[]; onM
             accessibilityRole="tab"
             accessibilityState={{ selected: active }}
             aria-current={active ? 'page' : undefined}
-            accessibilityLabel={item.badge ? `${item.label}, ${item.badge} ungelesen` : item.label}
+            accessibilityLabel={item.badge ? `${item.label}, ${item.badge} ${item.badgeLabel ?? "ungelesen"}` : item.label}
             testID={`reiter-${item.key}`}
             onPress={() => (item.key === 'mehr' ? onMore?.() : go(item.href))}
             android_ripple={{ color: t.colors.overlay, borderless: true }}
@@ -108,7 +112,7 @@ function TopBar({ items, onMore, moreActive, right }: { items: NavItem[]; onMore
               key={item.key}
               accessibilityRole="link"
               aria-current={active ? 'page' : undefined}
-              accessibilityLabel={item.badge ? `${item.label}, ${item.badge} ungelesen` : item.label}
+              accessibilityLabel={item.badge ? `${item.label}, ${item.badge} ${item.badgeLabel ?? "ungelesen"}` : item.label}
               testID={`nav-${item.key}`}
               onPress={() => go(item.href)}
               style={(s: PressState) => [
@@ -165,7 +169,20 @@ function AccountLink({ href }: { href: string }) {
   );
 }
 
-function MoreSheet({ visible, onClose, items, title = 'Mehr' }: { visible: boolean; onClose: () => void; items: NavItem[]; title?: string }) {
+function MoreSheet({
+  visible,
+  onClose,
+  items,
+  title = 'Mehr',
+  onSelect,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  items: NavItem[];
+  title?: string;
+  /** true: Auswahl selbst behandelt (z. B. Suche öffnen) */
+  onSelect?: (item: NavItem) => boolean;
+}) {
   const path = usePathname();
   return (
     <Sheet visible={visible} onClose={onClose} title={title} width={440} testID="mehr-menue">
@@ -180,6 +197,7 @@ function MoreSheet({ visible, onClose, items, title = 'Mehr' }: { visible: boole
             testID={`mehr-${item.key}`}
             onPress={() => {
               onClose();
+              if (onSelect?.(item)) return;
               go(item.href);
             }}
           />
@@ -240,7 +258,7 @@ export function CustomerShell() {
 // Werkstatt
 // ---------------------------------------------------------------------------
 
-function workshopItems(isAdmin: boolean): { primary: NavItem[]; rest: NavItem[] } {
+function workshopItems(isAdmin: boolean): { primary: NavItem[]; rest: NavItem[]; extras: NavItem[] } {
   const W = routes.workshop;
   const overview: NavItem = { key: 'uebersicht', label: 'Übersicht', icon: 'SquaresFour', href: W.home(), match: (p) => p === '/werkstatt' || p === '/werkstatt/' };
   const calendar: NavItem = { key: 'kalender', label: 'Kalender', icon: 'CalendarBlank', href: W.calendar(), match: (p) => p.startsWith('/werkstatt/kalender') || p.startsWith('/werkstatt/termine') };
@@ -255,10 +273,42 @@ function workshopItems(isAdmin: boolean): { primary: NavItem[]; rest: NavItem[] 
   const audit: NavItem = { key: 'protokoll', label: 'Protokoll', icon: 'ClockCounterClockwise', href: W.audit(), match: (p) => p.startsWith('/werkstatt/protokoll') };
   const account: NavItem = { key: 'konto', label: 'Konto', icon: 'UserCircle', href: W.account(), match: (p) => p.startsWith('/werkstatt/konto') };
   const adminOnly = isAdmin ? [users, settings, audit] : [];
+  const extras: NavItem[] = [
+    { key: 'lager', label: 'Lager (offen)', icon: 'Warehouse', href: '/werkstatt/lager', match: (p) => p.startsWith('/werkstatt/lager') },
+    { key: 'reifen', label: 'Reifen (offen)', icon: 'Tire', href: '/werkstatt/reifen', match: (p) => p.startsWith('/werkstatt/reifen') },
+    { key: 'ersatzwagen', label: 'Ersatzwagen (offen)', icon: 'Car', href: '/werkstatt/ersatzwagen', match: (p) => p.startsWith('/werkstatt/ersatzwagen') },
+  ];
   return {
     primary: [overview, calendar, orders, customers, vehicles, messages, invoices, maintenance, ...adminOnly],
-    rest: [customers, vehicles, invoices, maintenance, ...adminOnly, account],
+    rest: [customers, vehicles, invoices, maintenance, ...adminOnly, account, ...extras],
+    extras,
   };
+}
+
+function SidebarItem({ item, hint }: { item: NavItem; hint?: string }) {
+  const t = useTheme();
+  const path = usePathname();
+  const active = item.match(path);
+  return (
+    <Pressable
+      accessibilityRole="link"
+      aria-current={active ? 'page' : undefined}
+      accessibilityLabel={hint ? `${item.label} (${hint})` : item.label}
+      testID={`nav-${item.key}`}
+      onPress={() => go(item.href)}
+      style={(s: PressState) => [
+        styles.sideItem,
+        { borderRadius: t.radius.control },
+        active ? { backgroundColor: t.colors.accentSoft } : s.hovered ? { backgroundColor: t.colors.surfaceSunken } : null,
+      ]}
+    >
+      <Icon name={item.icon} size={iconSize.md} color={active ? t.colors.accent : t.colors.textMuted} />
+      <AppText tone={active ? 'accent' : 'default'} style={{ fontWeight: active ? '600' : '500', flex: 1 }} numberOfLines={1}>
+        {item.label}
+      </AppText>
+      {item.badge ? <Badge count={item.badge} inline /> : null}
+    </Pressable>
+  );
 }
 
 export function WorkshopShell() {
@@ -268,54 +318,59 @@ export function WorkshopShell() {
   const path = usePathname();
   const offline = useIsOffline();
   const [more, setMore] = useState(false);
-  const { primary, rest } = workshopItems(user?.role === 'admin');
+  const [search, setSearch] = useState(false);
+  const conversations = useApiQuery(user ? `shell:werkstatt:gespraeche:${user.id}` : null, (api) => api.listConversations());
+  const unread = conversations.data?.reduce((s, c) => s + c.unreadCount, 0) ?? 0;
+  const { primary: basePrimary, rest, extras } = workshopItems(user?.role === 'admin');
+  const primary = basePrimary.map((i) => (i.key === 'nachrichten' ? { ...i, badge: unread } : i));
+  const [extrasOpen, setExtrasOpen] = useState(() => extras.some((i) => i.match(path)));
   const canMechanic = user?.permissions.includes('workItems.execute');
 
-  // PC-Tastatur: Alt+1 bis Alt+9 öffnen die Hauptbereiche (docs/ansichten-und-routen.md)
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    const onKey = (e: KeyboardEvent) => {
-      if (!e.altKey || e.ctrlKey || e.metaKey) return;
-      const n = Number.parseInt(e.key, 10);
-      const target = Number.isInteger(n) && n >= 1 ? primary[n - 1] : undefined;
-      if (target) {
-        e.preventDefault();
-        go(target.href);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [primary]);
+  // PC-Tastatur (docs/ansichten-und-routen.md): Strg+K Schnellsuche, Alt+1 bis Alt+8 Hauptbereiche
+  const bindings: Record<string, () => void> = { 'mod+k': () => setSearch(true) };
+  primary.slice(0, 8).forEach((item, index) => {
+    bindings[`alt+${index + 1}`] = () => go(item.href);
+  });
+  useHotkeys(bindings);
 
   if (device === 'desktop') {
     return (
       <View style={[styles.fill, styles.rowFill, { backgroundColor: t.colors.bg }]}>
         <View style={[styles.sidebar, { backgroundColor: t.colors.surface, borderRightColor: t.colors.border }]}>
           <Brand />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Schnellsuche öffnen (Strg+K)"
+            testID="schnellsuche-oeffnen"
+            onPress={() => setSearch(true)}
+            style={(s: PressState) => [styles.searchButton, { borderColor: s.hovered ? t.colors.accent : t.colors.borderStrong, borderRadius: t.radius.control }]}
+          >
+            <Icon name="MagnifyingGlass" size={iconSize.md} color={t.colors.textMuted} />
+            <AppText tone="muted" style={styles.fill} numberOfLines={1}>
+              Suchen
+            </AppText>
+            <AppText variant="caption" tone="subtle">
+              Strg+K
+            </AppText>
+          </Pressable>
           <ScrollView role="navigation" aria-label="Hauptnavigation" contentContainerStyle={styles.sideList}>
-            {primary.map((item, index) => {
-              const active = item.match(path);
-              return (
-                <Pressable
-                  key={item.key}
-                  accessibilityRole="link"
-                  aria-current={active ? 'page' : undefined}
-                  accessibilityLabel={`${item.label} (Alt+${index + 1})`}
-                  testID={`nav-${item.key}`}
-                  onPress={() => go(item.href)}
-                  style={(s: PressState) => [
-                    styles.sideItem,
-                    { borderRadius: t.radius.control },
-                    active ? { backgroundColor: t.colors.accentSoft } : s.hovered ? { backgroundColor: t.colors.surfaceSunken } : null,
-                  ]}
-                >
-                  <Icon name={item.icon} size={iconSize.md} color={active ? t.colors.accent : t.colors.textMuted} />
-                  <AppText tone={active ? 'accent' : 'default'} style={{ fontWeight: active ? '600' : '500' }} numberOfLines={1}>
-                    {item.label}
-                  </AppText>
-                </Pressable>
-              );
-            })}
+            {primary.map((item, index) => (
+              <SidebarItem key={item.key} item={item} hint={index < 8 ? `Alt+${index + 1}` : undefined} />
+            ))}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: extrasOpen }}
+              accessibilityLabel="Ergänzungen (offen)"
+              testID="nav-ergaenzungen"
+              onPress={() => setExtrasOpen((v) => !v)}
+              style={(s: PressState) => [styles.sideItem, styles.sideGroup, { borderRadius: t.radius.control }, s.hovered ? { backgroundColor: t.colors.surfaceSunken } : null]}
+            >
+              <Icon name={extrasOpen ? 'CaretDown' : 'CaretRight'} size={iconSize.sm} color={t.colors.textSubtle} />
+              <AppText variant="small" tone="subtle" style={styles.fill} numberOfLines={1}>
+                Ergänzungen (offen)
+              </AppText>
+            </Pressable>
+            {extrasOpen ? extras.map((item) => <SidebarItem key={item.key} item={item} />) : null}
           </ScrollView>
           <View style={[styles.sideFooter, { borderTopColor: t.colors.border }]}>
             {canMechanic ? (
@@ -345,12 +400,15 @@ export function WorkshopShell() {
           <OfflineBanner visible={offline} />
           <AreaStack />
         </View>
+        <QuickSearch visible={search} onClose={() => setSearch(false)} />
       </View>
     );
   }
 
   const tabs = [primary[0]!, primary[1]!, primary[2]!, primary[5]!];
   const moreActive = rest.some((i) => i.match(path));
+  const searchItem: NavItem = { key: 'suche', label: 'Suchen', icon: 'MagnifyingGlass', href: '', match: () => false };
+  const moreItems = [searchItem, ...rest, ...(canMechanic ? [{ key: 'mechaniker', label: 'Mechanikeransicht', icon: 'Wrench' as IconName, href: routes.mechanic.home(), match: () => false }] : [])];
   return (
     <View style={[styles.fill, { backgroundColor: t.colors.bg }]}>
       <OfflineBanner visible={offline} />
@@ -358,7 +416,17 @@ export function WorkshopShell() {
         <AreaStack />
       </View>
       <BottomTabs items={tabs} onMore={() => setMore(true)} moreActive={moreActive} />
-      <MoreSheet visible={more} onClose={() => setMore(false)} items={canMechanic ? [...rest, { key: 'mechaniker', label: 'Mechanikeransicht', icon: 'Wrench', href: routes.mechanic.home(), match: () => false }] : rest} />
+      <MoreSheet
+        visible={more}
+        onClose={() => setMore(false)}
+        items={moreItems}
+        onSelect={(item) => {
+          if (item.key !== 'suche') return false;
+          setSearch(true);
+          return true;
+        }}
+      />
+      <QuickSearch visible={search} onClose={() => setSearch(false)} />
     </View>
   );
 }
@@ -368,12 +436,21 @@ export function WorkshopShell() {
 // ---------------------------------------------------------------------------
 
 export function MechanicShell() {
+  return (
+    <OfflineQueueProvider>
+      <MechanicFrame />
+    </OfflineQueueProvider>
+  );
+}
+
+function MechanicFrame() {
   const t = useTheme();
   const offline = useIsOffline();
+  const { summary } = useOfflineQueue();
   const M = routes.mechanic;
   const items: NavItem[] = [
     { key: 'heute', label: 'Heute', icon: 'Wrench', href: M.home(), match: (p) => p === '/mechaniker' || p.startsWith('/mechaniker/auftraege') },
-    { key: 'sync', label: 'Synchronisierung', icon: 'ArrowsClockwise', href: M.sync(), match: (p) => p.startsWith('/mechaniker/sync') },
+    { key: 'sync', label: 'Synchronisierung', icon: 'ArrowsClockwise', href: M.sync(), match: (p) => p.startsWith('/mechaniker/sync'), badge: summary.total, badgeLabel: 'nicht synchronisiert' },
     { key: 'konto', label: 'Konto', icon: 'UserCircle', href: M.account(), match: (p) => p.startsWith('/mechaniker/konto') },
   ];
   return (
@@ -403,6 +480,8 @@ const styles = StyleSheet.create({
   account: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, paddingHorizontal: 12, minHeight: 44 },
   sidebar: { width: 248, borderRightWidth: 1, paddingHorizontal: 12, paddingTop: 16, paddingBottom: 12, gap: 16 },
   sideList: { gap: 2 },
-  sideItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, minHeight: 44 },
+  sideItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, minHeight: 42 },
   sideFooter: { borderTopWidth: 1, paddingTop: 12, gap: 2 },
+  sideGroup: { marginTop: 8, minHeight: 36, gap: 8 },
+  searchButton: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, paddingHorizontal: 12, minHeight: 44 },
 });

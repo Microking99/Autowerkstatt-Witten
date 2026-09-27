@@ -12,6 +12,7 @@ import {
   LoginResponseSchema,
   ResetPasswordRequestSchema,
   SessionUserSchema,
+  API_ERROR_CODES,
 } from '@werkstatt/contracts';
 import { invitations, passwordResets, sessions, users } from '../db/schema/index';
 import { audit, auditContextFrom } from '../lib/audit';
@@ -56,14 +57,14 @@ export async function authRoutes(app: App): Promise<void> {
       if (!user || !user.passwordHash || user.status === 'invited') {
         await verifyAgainstDummy(request.body.password);
         await audit(db, ctx, { action: 'auth.login_failed', entityType: 'auth', entityId: user?.id ?? null, data: { reason: user ? 'not_activated' : 'unknown_email' } });
-        throw new HttpError(401, 'invalid_credentials', INVALID_CREDENTIALS);
+        throw new HttpError(401, API_ERROR_CODES.invalidCredentials, INVALID_CREDENTIALS);
       }
       if (user.lockedUntil && user.lockedUntil > now) {
         await verifyAgainstDummy(request.body.password);
         await audit(db, { ...ctx, actorUserId: null }, { action: 'auth.login_failed', entityType: 'user', entityId: user.id, data: { reason: 'locked' } });
         // Gleiche Antwort wie bei falschen Daten: Die Sperre darf nicht verraten, ob ein Konto
         // zu dieser E-Mail-Adresse existiert (Review R09c). Die Sperre selbst bleibt wirksam.
-        throw new HttpError(401, 'invalid_credentials', INVALID_CREDENTIALS);
+        throw new HttpError(401, API_ERROR_CODES.invalidCredentials, INVALID_CREDENTIALS);
       }
       const valid = await verifyPassword(user.passwordHash, request.body.password);
       if (!valid) {
@@ -79,11 +80,11 @@ export async function authRoutes(app: App): Promise<void> {
           await db.update(users).set({ lockedUntil, failedLoginCount: 0 }).where(eq(users.id, user.id));
           await audit(db, ctx, { action: 'auth.account_locked', entityType: 'user', entityId: user.id, data: { lockedUntil: lockedUntil.toISOString() } });
         }
-        throw new HttpError(401, 'invalid_credentials', INVALID_CREDENTIALS);
+        throw new HttpError(401, API_ERROR_CODES.invalidCredentials, INVALID_CREDENTIALS);
       }
       if (user.status === 'disabled') {
         await audit(db, ctx, { action: 'auth.login_failed', entityType: 'user', entityId: user.id, data: { reason: 'disabled' } });
-        throw new HttpError(403, 'account_disabled', 'Der Zugang ist gesperrt. Bitte wenden Sie sich an die Werkstatt.');
+        throw new HttpError(403, API_ERROR_CODES.accountDisabled, 'Der Zugang ist gesperrt. Bitte wenden Sie sich an die Werkstatt.');
       }
 
       return db.transaction(async (tx) => {
@@ -136,7 +137,7 @@ export async function authRoutes(app: App): Promise<void> {
           .returning();
         const [user] = inv ? await tx.select().from(users).where(eq(users.id, inv.userId)) : [];
         if (!inv || !user || user.status !== 'invited') {
-          throw badRequest('Die Einladung ist ungültig, abgelaufen oder wurde bereits verwendet.', undefined, 'invitation_invalid');
+          throw badRequest('Die Einladung ist ungültig, abgelaufen oder wurde bereits verwendet.', undefined, API_ERROR_CODES.invitationInvalid);
         }
         const [activated] = await tx
           .update(users)
@@ -198,7 +199,7 @@ export async function authRoutes(app: App): Promise<void> {
           .returning();
         const [user] = reset ? await tx.select().from(users).where(eq(users.id, reset.userId)) : [];
         if (!reset || !user || user.status !== 'active') {
-          throw badRequest('Der Link ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.', undefined, 'reset_invalid');
+          throw badRequest('Der Link ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.', undefined, API_ERROR_CODES.resetInvalid);
         }
         await tx
           .update(users)
@@ -223,7 +224,7 @@ export async function authRoutes(app: App): Promise<void> {
     const now = clock();
     const [user] = await db.select().from(users).where(eq(users.id, actor.userId));
     if (!user?.passwordHash || !(await verifyPassword(user.passwordHash, request.body.currentPassword))) {
-      throw badRequest('Das aktuelle Passwort ist falsch.', undefined, 'invalid_current_password');
+      throw badRequest('Das aktuelle Passwort ist falsch.', undefined, API_ERROR_CODES.invalidCurrentPassword);
     }
     const passwordHash = await hashPassword(request.body.newPassword);
     await db.transaction(async (tx) => {

@@ -10,6 +10,7 @@ import {
   CustomerSummarySchema,
   InviteCustomerRequestSchema,
   PageSchema,
+  API_ERROR_CODES,
 } from '@werkstatt/contracts';
 import { canViewCustomer, hasPermission, licensePlateSearchKey } from '@werkstatt/domain';
 import { customerAccounts, customers, invoices, payments, users, vehicleOwnerships, vehicles } from '../db/schema/index';
@@ -169,17 +170,17 @@ export async function customerRoutes(app: App): Promise<void> {
         let userId: string;
         if (link) {
           if (link.status !== 'invited') {
-            throw conflict('account_exists', 'Der Kunde hat bereits einen Zugang. Gesperrte Zugänge bitte über "Zugang sperren" verwalten.');
+            throw conflict(API_ERROR_CODES.accountExists, 'Der Kunde hat bereits einen Zugang. Gesperrte Zugänge bitte über "Zugang sperren" verwalten.');
           }
           userId = link.userId;
           if (link.email.toLowerCase() !== request.body.email.toLowerCase()) {
             const [taken] = await tx.select({ id: users.id }).from(users).where(eq(users.email, request.body.email));
-            if (taken && taken.id !== userId) throw conflict('email_taken', 'Für diese E-Mail-Adresse gibt es bereits ein Konto.');
+            if (taken && taken.id !== userId) throw conflict(API_ERROR_CODES.emailTaken, 'Für diese E-Mail-Adresse gibt es bereits ein Konto.');
             await tx.update(users).set({ email: request.body.email }).where(eq(users.id, userId));
           }
         } else {
           const [taken] = await tx.select({ id: users.id }).from(users).where(eq(users.email, request.body.email));
-          if (taken) throw conflict('email_taken', 'Für diese E-Mail-Adresse gibt es bereits ein Konto.');
+          if (taken) throw conflict(API_ERROR_CODES.emailTaken, 'Für diese E-Mail-Adresse gibt es bereits ein Konto.');
           const [user] = await tx
             .insert(users)
             .values({ email: request.body.email, displayName: [customer!.firstName, customer!.lastName].filter(Boolean).join(' ') || customer!.companyName || 'Kunde', role: 'customer', status: 'invited' })
@@ -211,7 +212,7 @@ export async function customerRoutes(app: App): Promise<void> {
       const [row] = await tx.select().from(customers).where(eq(customers.id, request.params.id));
       ensureFound(row);
       const [link] = await tx.select().from(customerAccounts).where(eq(customerAccounts.customerId, row!.id));
-      if (!link) throw conflict('no_account', 'Der Kunde hat keinen App-Zugang.');
+      if (!link) throw conflict(API_ERROR_CODES.noAccount, 'Der Kunde hat keinen App-Zugang.');
       await tx.update(users).set({ status: 'disabled' }).where(eq(users.id, link.userId));
       await revokeAllSessions(tx, link.userId, now);
       await audit(tx, auditContextFrom(request), { action: 'customer_account.disabled', entityType: 'customer', entityId: row!.id, data: { userId: link.userId } });
@@ -229,9 +230,9 @@ export async function customerRoutes(app: App): Promise<void> {
       const [customer] = await tx.select().from(customers).where(eq(customers.id, request.params.id));
       ensureFound(customer);
       const [link] = await tx.select().from(customerAccounts).where(eq(customerAccounts.customerId, customer!.id));
-      if (!link) throw conflict('no_account', 'Der Kunde hat keinen App-Zugang.');
+      if (!link) throw conflict(API_ERROR_CODES.noAccount, 'Der Kunde hat keinen App-Zugang.');
       const [user] = await tx.select().from(users).where(eq(users.id, link.userId)).for('update');
-      if (user!.status !== 'disabled') throw conflict('not_disabled', 'Der Zugang ist nicht gesperrt.');
+      if (user!.status !== 'disabled') throw conflict(API_ERROR_CODES.notDisabled, 'Der Zugang ist nicht gesperrt.');
       // Ein nie aktiviertes Konto (ohne Passwort) bleibt eingeladen; sonst wieder aktiv
       const status = user!.passwordHash ? 'active' : 'invited';
       await tx.update(users).set({ status, failedLoginCount: 0, lockedUntil: null }).where(eq(users.id, link.userId));

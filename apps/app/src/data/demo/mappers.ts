@@ -284,12 +284,6 @@ export class Mapper {
     };
   }
 
-  private invoiceSummaries(workOrderId: string) {
-    const today = todayLocal(this.now);
-    return this.s.invoices
-      .filter((i) => i.workOrderId === workOrderId && i.status !== 'draft')
-      .map((i) => summarizeInvoice(i, this.s.payments, this.s.refunds, today));
-  }
 
   /**
    * Ungelesen: Kunden zählen Nachrichten der Werkstatt seit ihrem letzten Lesen. Für die
@@ -318,7 +312,7 @@ export class Mapper {
       vehicleId: w.vehicleId,
       vehicleLabel: v ? `${v.make} ${v.model}` : 'Fahrzeug',
       licensePlate: v?.licensePlate ?? '',
-      status: statusTriple(w, approvals, this.invoiceSummaries(w.id)),
+      status: statusTriple(w, approvals, this.s.invoices, this.s.payments, this.s.refunds, todayLocal(this.now)),
       plannedStart: w.plannedStart,
       plannedEnd: w.plannedEnd,
       assignees: w.assigneeIds.map((id) => this.userRef(id)).filter((x): x is NonNullable<typeof x> => x !== null),
@@ -469,11 +463,11 @@ export class Mapper {
       workOrderId: m.workOrderId,
       author: { userId: m.authorUserId, displayName: author?.displayName ?? 'Unbekannt', role: author?.role ?? 'service' },
       body: m.body,
-      attachments: m.fileIds.map((fileId) => ({
-        fileId,
-        contentUrl: `${API_PREFIX}/files/${fileId}/content`,
-        mimeType: this.file(fileId)?.mimeType ?? 'image/jpeg',
-      })),
+      // Chat-Anhänge sind Fotos (wie in der API): Inhalt über die rechtegeprüfte Foto-Route
+      attachments: m.photoIds
+        .map((photoId) => this.s.photos.find((p) => p.id === photoId))
+        .filter((p): p is DPhoto => p !== undefined)
+        .map((p) => ({ fileId: p.fileId, contentUrl: `${API_PREFIX}/photos/${p.id}/content`, mimeType: this.file(p.fileId)?.mimeType ?? 'image/jpeg' })),
       clientMessageId: m.clientMessageId,
       createdAt: m.createdAt,
     };
@@ -535,11 +529,11 @@ export class Mapper {
       dueDate: i.dueDate,
       documentId: i.documentId,
       payments: this.s.payments.filter((p) => p.invoiceId === i.id).map((p) => this.payment(p)),
-      // Zahlungsversuche: Mitarbeiter vollständig; Kunden sehen ihre eigenen Versuche nur mit
-      // Status und Betrag (Vorschlag an den Vertrag, siehe Übergabe APP-1).
-      checkouts,
+      // Zahlungsversuche und Erstattungsvorgänge nur für Mitarbeiter (wie die API,
+      // redactInvoiceForActor); Kunden sehen Zahlungsstatus und offenen Betrag.
       ...(isStaff(viewer)
         ? {
+            checkouts,
             refunds: this.s.refunds
               .filter((r) => this.s.payments.some((p) => p.id === r.paymentId && p.invoiceId === i.id))
               .map((r) => ({ id: r.id, paymentId: r.paymentId, amountCents: r.amountCents, status: r.status, requestedAt: r.requestedAt, completedAt: r.completedAt, failureReason: r.failureReason })),

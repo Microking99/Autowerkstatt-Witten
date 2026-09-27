@@ -12,11 +12,11 @@ import { router, useLocalSearchParams, type Href } from 'expo-router';
 import { useState } from 'react';
 import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { useApi } from '../../../../../src/data/ApiProvider';
-import { ApiError, ERROR_CODES } from '../../../../../src/data/errors';
+import { ApiError, ERROR_CODES, isApprovalOutdatedCode } from '../../../../../src/data/errors';
 import { useApiMutation, useApiQuery } from '../../../../../src/data/hooks';
 import { useIsOffline } from '../../../../../src/data/network';
 import { keepPlates, formatDate, formatDateTime, formatMoney } from '../../../../../src/lib/format';
-import { lineNet } from '../../../../../src/screens/customer/money';
+import { ApprovalLinesTable } from '../../../../../src/screens/approvals/ApprovalContent';
 import { QueryView, openDownload } from '../../../../../src/screens/common';
 import { useTheme } from '../../../../../src/theme';
 import {
@@ -39,45 +39,6 @@ import {
 
 const channel: ClientChannel = Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : 'web';
 const shortHash = (h: string) => `${h.slice(0, 8)}…${h.slice(-4)}`;
-
-function Lines({ version }: { version: ApprovalVersion }) {
-  const t = useTheme();
-  const vat = version.totalGrossCents - version.totalNetCents;
-  return (
-    <View style={[styles.table, { borderColor: t.colors.border, borderRadius: t.radius.panel, backgroundColor: t.colors.surface }]} testID="freigabe-positionen">
-      {version.lines.map((l, i) => (
-        <View key={`${l.title}-${i}`} style={[styles.line, { borderTopColor: t.colors.border, borderTopWidth: i === 0 ? 0 : 1 }]}>
-          <View style={styles.flex}>
-            <AppText variant="bodyStrong">{l.title}</AppText>
-            {l.description ? (
-              <AppText variant="small" tone="muted">
-                {l.description}
-              </AppText>
-            ) : null}
-            <AppText variant="small" tone="subtle" numeric>
-              {String(l.quantity).replace('.', ',')} {l.unit} × {formatMoney(l.unitPriceCents)} netto
-            </AppText>
-          </View>
-          <MoneyText cents={lineNet(l)} />
-        </View>
-      ))}
-      <View style={[styles.totals, { borderTopColor: t.colors.borderStrong }]}>
-        <Row style={styles.between}>
-          <AppText tone="muted">Summe netto</AppText>
-          <MoneyText cents={version.totalNetCents} tone="muted" />
-        </Row>
-        <Row style={styles.between}>
-          <AppText tone="muted">Umsatzsteuer</AppText>
-          <MoneyText cents={vat} tone="muted" />
-        </Row>
-        <Row style={styles.between}>
-          <AppText variant="heading">Gesamt</AppText>
-          <MoneyText cents={version.totalGrossCents} variant="heading" testID="freigabe-gesamt" />
-        </Row>
-      </View>
-    </View>
-  );
-}
 
 function OlderVersions({ request }: { request: ApprovalRequest }) {
   const t = useTheme();
@@ -248,7 +209,7 @@ export default function ApprovalDecisionScreen() {
               ) : null}
 
               <Section title="Positionen und Kosten">
-                <Lines version={v} />
+                <ApprovalLinesTable lines={v.lines} />
               </Section>
 
               {v.scheduleChange || v.newReadyAt ? (
@@ -272,7 +233,7 @@ export default function ApprovalDecisionScreen() {
                       const doc = docs.find((d) => d.kind === 'offer') ?? docs[0];
                       if (!doc) return;
                       const res = await openDownload(await api.downloadDocument(doc.id));
-                      if (res === 'unsupported') toast.show('Das Öffnen von Dokumenten auf dem Gerät folgt in einer späteren Version.', 'info');
+                      if (res === 'unsupported') toast.show('Auf diesem Gerät gibt es keine App zum Öffnen der Datei. Bitte im Browser öffnen.', 'info');
                     } catch {
                       toast.show('Das Dokument konnte nicht geladen werden.', 'danger');
                     }
@@ -345,8 +306,8 @@ export default function ApprovalDecisionScreen() {
     } catch (e) {
       setDialog(null);
       const err = e as ApiError;
-      if (err.code === ERROR_CODES.approvalVersionOutdated) setOutdated(true);
-      else if (err.code === ERROR_CODES.approvalAlreadyDecided) {
+      if (isApprovalOutdatedCode(err.code)) setOutdated(true);
+      else if (err.code === ERROR_CODES.alreadyDecided) {
         toast.show('Zu dieser Version liegt bereits eine Entscheidung vor.', 'info');
         void query.refetch();
       }

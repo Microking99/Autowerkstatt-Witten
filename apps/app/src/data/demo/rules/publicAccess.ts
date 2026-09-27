@@ -2,33 +2,23 @@
  * Öffentliche Zugänge ohne Anmeldung (docs/rollen-und-rechte.md, Abschnitt 4; R-QR-1 bis R-QR-4).
  *
  * - QR-Code: kein Generalschlüssel. Ohne Berechtigung nur Hinweis + Anmeldung; Kurzansicht
- *   nur, wenn der aktuelle Halter sie eingeschaltet hat (ohne Namen, Kennzeichen, FIN, Preise).
+ *   nur, wenn der aktuelle Halter sie eingeschaltet hat (Domain `publicViewFromQr`).
  * - Fahrzeugfreigabe für Kaufinteressenten: nur ausgewählte Einträge, befristet, widerrufbar,
- *   Zugriffe werden gezählt; Token nur als Hash gespeichert.
- *
- * Platzhalter für @werkstatt/domain; reine Funktionen.
+ *   Zugriffe werden gezählt; Token nur als Hash gespeichert (Domain `hashToken`,
+ *   `publicViewFromShare`).
+ * Fehlercodes wie in der API: unbekannt 404, abgelaufen/widerrufen 410.
  */
-import type { PublicVehicleView, QrResolution } from '@werkstatt/contracts';
-import { ApiError, ERROR_CODES } from '../../errors';
-import type { DOwnership, DServiceEntry, DVehicle, DVehicleShare } from '../model';
+import { API_ERROR_CODES, type PublicVehicleView, type QrResolution } from '@werkstatt/contracts';
+import { hashToken, isShareActive, publicViewFromQr, publicViewFromShare } from '@werkstatt/domain';
+import { ApiError } from '../../errors';
+import type { DMaintenanceType, DOwnership, DServiceEntry, DVehicle, DVehicleShare } from '../model';
 import { currentOwnerId } from './access';
-import { sha256Hex } from './hash';
 import { visibleEntries } from './serviceHistory';
 
 const MAX_SHARE_DAYS = 90;
 
-function publicEntries(entries: readonly DServiceEntry[]) {
-  return entries.map((e) => ({
-    performedOn: e.performedOn,
-    odometerKm: e.odometerKm,
-    title: e.title,
-    details: e.details,
-    workshopName: e.workshopName,
-    nextDueDate: e.nextDueDate,
-    nextDueKm: e.nextDueKm,
-    maintenanceTypeName: e.title,
-    revisionNo: e.revisionNo,
-  }));
+function entrySources(entries: readonly DServiceEntry[], types: readonly DMaintenanceType[]) {
+  return entries.map((e) => ({ ...e, maintenanceTypeName: e.maintenanceTypeId ? (types.find((t) => t.id === e.maintenanceTypeId)?.name ?? null) : null }));
 }
 
 export type QrViewer =
@@ -41,11 +31,12 @@ export function resolveQr(args: {
   vehicles: readonly DVehicle[];
   ownerships: readonly DOwnership[];
   entries: readonly DServiceEntry[];
+  maintenanceTypes?: readonly DMaintenanceType[];
   viewer: QrViewer;
   workshopName: string;
 }): QrResolution {
   const vehicle = args.vehicles.find((v) => v.qrToken === args.token && v.archivedAt === null);
-  if (!vehicle) throw new ApiError(404, ERROR_CODES.tokenInvalid, 'Code nicht gefunden.');
+  if (!vehicle) throw ApiError.notFound('Code nicht gefunden.');
 
   const viewer = args.viewer;
   if (viewer.kind === 'customer' && currentOwnerId(args.ownerships, vehicle.id) === viewer.customerId) {
@@ -54,26 +45,13 @@ export function resolveQr(args: {
   if (viewer.kind === 'staff' && viewer.canReadVehicles) {
     return { mode: 'authorized', vehicleId: vehicle.id, targetPath: `/werkstatt/fahrzeuge/${vehicle.id}` };
   }
-  if (vehicle.qrPublicViewEnabled) {
-    return {
-      mode: 'public',
-      view: {
-        make: vehicle.make,
-        model: vehicle.model,
-        variant: vehicle.variant,
-        vin: null,
-        entries: publicEntries(visibleEntries(args.entries, vehicle.id)),
-        source: 'qr_public_view',
-        expiresAt: null,
-        workshopName: args.workshopName,
-      },
-    };
-  }
+  const view = publicViewFromQr(vehicle, entrySources(args.entries, args.maintenanceTypes ?? []), { workshopName: args.workshopName });
+  if (view) return { mode: 'public', view };
   return { mode: 'login_required', workshopName: args.workshopName };
 }
 
 export function hashShareToken(token: string): string {
-  return sha256Hex(`share:${token}`);
+  return hashToken(token);
 }
 
 export function createShare(args: {
@@ -91,12 +69,12 @@ export function createShare(args: {
   if (currentOwnerId(args.ownerships, args.vehicle.id) !== args.customerId) throw ApiError.notFound();
   const valid = new Set(visibleEntries(args.entries, args.vehicle.id).map((e) => e.id));
   if (args.input.serviceEntryIds.length === 0) throw ApiError.validation('Bitte mindestens einen Eintrag auswählen.');
-  if (args.input.serviceEntryIds.some((id) => !valid.has(id))) throw ApiError.validation('Ungültige Auswahl.');
+  if (args.input.serviceEntryIds.some((id) => !valid.has(id))) throw ApiError.unprocessable(API_ERROR_CODES.invalidEntries, 'Ungültige Auswahl.');
   const expires = Date.parse(args.input.expiresAt);
   const now = Date.parse(args.now);
-  if (!(expires > now)) throw ApiError.validation('Das Ablaufdatum muss in der Zukunft liegen.');
+  if (!(expires > now)) throw ApiError.unprocessable(API_ERROR_CODES.expiresInPast, 'Das Ablaufdatum muss in der Zukunft liegen.');
   if (expires - now > MAX_SHARE_DAYS * 86_400_000) {
-    throw ApiError.validation(`Eine Freigabe kann höchstens ${MAX_SHARE_DAYS} Tage gelten.`);
+    throw ApiError.unprocessable(API_ERROR_CODES.expiresTooLate, `Eine Freigabe kann höchstens ${MAX_SHARE_DAYS} Tage gelten.`);
   }
   return {
     shareUrl: `${args.baseUrl}/f/${args.token}`,
@@ -131,47 +109,23 @@ export function openShare(args: {
   vehicles: readonly DVehicle[];
   ownerships: readonly DOwnership[];
   entries: readonly DServiceEntry[];
+  maintenanceTypes?: readonly DMaintenanceType[];
   now: string;
   workshopName: string;
 }): { share: DVehicleShare; view: PublicVehicleView } {
   const hash = hashShareToken(args.token);
   const share = args.shares.find((s) => s.tokenHash === hash);
-  if (!share) throw new ApiError(404, ERROR_CODES.tokenInvalid, 'Dieser Link ist ungültig.');
-  if (share.revokedAt) throw new ApiError(410, ERROR_CODES.shareRevoked, 'Diese Freigabe wurde vom Halter widerrufen.');
-  if (Date.parse(share.expiresAt) <= Date.parse(args.now)) {
-    throw new ApiError(410, ERROR_CODES.shareExpired, 'Diese Freigabe ist abgelaufen.');
-  }
+  if (!share) throw ApiError.notFound('Dieser Link ist ungültig.');
+  if (share.revokedAt) throw new ApiError(410, API_ERROR_CODES.shareRevoked, 'Diese Freigabe wurde vom Halter widerrufen.');
+  const now = new Date(args.now);
+  if (!isShareActive(share, now)) throw new ApiError(410, API_ERROR_CODES.shareExpired, 'Diese Freigabe ist abgelaufen.');
   // Nach einem Halterwechsel gilt die Freigabe des Vorbesitzers nicht mehr.
   if (currentOwnerId(args.ownerships, share.vehicleId) !== share.customerId) {
-    throw new ApiError(410, ERROR_CODES.shareRevoked, 'Diese Freigabe ist nicht mehr gültig.');
+    throw new ApiError(410, API_ERROR_CODES.shareRevoked, 'Diese Freigabe ist nicht mehr gültig.');
   }
   const vehicle = args.vehicles.find((v) => v.id === share.vehicleId);
-  if (!vehicle) throw new ApiError(404, ERROR_CODES.tokenInvalid, 'Dieser Link ist ungültig.');
-  const selected = new Set(share.serviceEntryIds);
-  // Korrigierte Einträge: der aktuelle gültige Stand einer ausgewählten Revisionskette zählt.
-  const entries = visibleEntries(args.entries, vehicle.id).filter(
-    (e) => selected.has(e.id) || (e.revisionOfId !== null && rootSelected(e, args.entries, selected)),
-  );
-  return {
-    share: { ...share, accessCount: share.accessCount + 1, lastAccessedAt: args.now },
-    view: {
-      make: vehicle.make,
-      model: vehicle.model,
-      variant: vehicle.variant,
-      vin: share.includeVin ? vehicle.vin : null,
-      entries: publicEntries(entries),
-      source: 'share',
-      expiresAt: share.expiresAt,
-      workshopName: args.workshopName,
-    },
-  };
-}
-
-function rootSelected(entry: DServiceEntry, all: readonly DServiceEntry[], selected: Set<string>): boolean {
-  let current: DServiceEntry | undefined = entry;
-  while (current?.revisionOfId) {
-    if (selected.has(current.revisionOfId)) return true;
-    current = all.find((e) => e.id === current?.revisionOfId);
-  }
-  return false;
+  if (!vehicle) throw ApiError.notFound('Dieser Link ist ungültig.');
+  const view = publicViewFromShare(vehicle, entrySources(args.entries, args.maintenanceTypes ?? []), share, { now, workshopName: args.workshopName });
+  if (!view) throw new ApiError(410, API_ERROR_CODES.shareExpired, 'Diese Freigabe ist nicht mehr gültig.');
+  return { share: { ...share, accessCount: share.accessCount + 1, lastAccessedAt: args.now }, view };
 }

@@ -18,6 +18,7 @@ import {
   type Appointment,
   type AppointmentStatus,
   type SchedulingConflict,
+  API_ERROR_CODES,
 } from '@werkstatt/contracts';
 import {
   acceptProposal,
@@ -185,7 +186,7 @@ export async function findConflicts(
 }
 
 function conflictError(conflicts: SchedulingConflict[]): HttpError {
-  return new HttpError(409, 'scheduling_conflicts', 'Es gibt Planungskonflikte. Speichern ist nur mit Begründung möglich.', conflicts);
+  return new HttpError(409, API_ERROR_CODES.schedulingConflicts, 'Es gibt Planungskonflikte. Speichern ist nur mit Begründung möglich.', conflicts);
 }
 
 function ensureTransition(appointment: AppointmentRow, to: AppointmentStatus, actor: Actor): void {
@@ -228,11 +229,11 @@ export async function appointmentRoutes(app: App): Promise<void> {
     const body = request.body;
     const row = await db.transaction(async (tx) => {
       if ((await currentOwnerCustomerId(tx, body.vehicleId)) !== body.customerId) {
-        throw unprocessable('vehicle_not_owned_by_customer', 'Das Fahrzeug gehört nicht (mehr) zu diesem Kunden.');
+        throw unprocessable(API_ERROR_CODES.vehicleNotOwnedByCustomer, 'Das Fahrzeug gehört nicht (mehr) zu diesem Kunden.');
       }
       if (body.workOrderId) {
         const [wo] = await tx.select({ customerId: workOrders.customerId }).from(workOrders).where(eq(workOrders.id, body.workOrderId));
-        if (!wo || wo.customerId !== body.customerId) throw unprocessable('work_order_mismatch', 'Der Auftrag gehört nicht zu diesem Kunden.');
+        if (!wo || wo.customerId !== body.customerId) throw unprocessable(API_ERROR_CODES.workOrderMismatch, 'Der Auftrag gehört nicht zu diesem Kunden.');
       }
       const conflicts = await findConflicts(tx, { ...body, assigneeIds: body.assigneeIds });
       const reason = body.overrideConflictsReason?.trim() || null;

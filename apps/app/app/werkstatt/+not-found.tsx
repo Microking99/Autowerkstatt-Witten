@@ -1,7 +1,7 @@
 import { routes } from '@werkstatt/contracts';
-import { PlannedView } from '../../src/screens/PlannedView';
+import { AreaNotFound } from '../../src/screens/AreaNotFound';
 
-/** Noch nicht umgesetzte Werkstattansichten (Paket APP-2), innerhalb der Navigation. */
-export default function WorkshopPlanned() {
-  return <PlannedView home={routes.workshop.home()} homeLabel="Zur Übersicht" />;
+/** Unbekannte Adresse im Werkstattbereich (Navigation bleibt sichtbar). */
+export default function WorkshopNotFound() {
+  return <AreaNotFound home={routes.workshop.home()} homeLabel="Zur Übersicht" />;
 }

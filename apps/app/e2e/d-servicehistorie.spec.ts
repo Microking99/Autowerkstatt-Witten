@@ -10,14 +10,22 @@ test.describe('Klickweg D: Servicehistorie', () => {
     await nav(page, 'fahrzeuge');
     await byTestId(page, 'fahrzeug-EN-MK 2147').click();
     await expect(byTestId(page, 'faelligkeiten')).toBeVisible();
-    await expect(page.getByText('km geschätzt').filter({ visible: true }).first()).toBeVisible();
-    await expect(page.getByText(/Kilometerstand geschätzt: etwa/).filter({ visible: true }).first()).toBeVisible();
+    // Golf: km-Stand nach den Einträgen abgelesen, also keine Schätzung (Erklärung aus @werkstatt/domain)
+    await expect(page.getByText(/zuletzt erfasst 63.947 km/).filter({ visible: true }).first()).toBeVisible();
+    await expect(page.getByText('km geschätzt').filter({ visible: true })).toHaveCount(0);
     await byTestId(page, 'zur-servicehistorie').click();
     await expect(byTestId(page, 'kunde-servicehistorie')).toBeVisible();
     await visibleText(page, 'Hauptuntersuchung (HU/AU)').click();
     await expect(byTestId(page, 'kunde-serviceeintrag')).toBeVisible();
     await expect(visibleText(page, 'Ohne Mängel, Plakette erteilt.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Zugehörigen Auftrag öffnen' }).filter({ visible: true })).toBeVisible();
+  });
+
+  test('Corsa: km-Fälligkeit ohne Ablesung nach dem Eintrag ist als Schätzung gekennzeichnet', async ({ page }) => {
+    await loginAs(page, 'previousOwner', `/kunde/fahrzeuge/${IDS.vehicles.corsa}`);
+    await expect(byTestId(page, 'faelligkeiten')).toBeVisible();
+    await expect(page.getByText('km geschätzt').filter({ visible: true }).first()).toBeVisible();
+    await expect(page.getByText(/geschätzt anhand von \d+ Kilometerständen/).filter({ visible: true }).first()).toBeVisible();
   });
 
   test('Octavia: Einträge des Vorbesitzers ohne Auftragsbezug, Korrektur nachvollziehbar', async ({ page }) => {
