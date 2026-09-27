@@ -169,7 +169,7 @@ export async function userRoutes(app: App): Promise<void> {
     ensure(hasPermission(actor, 'users.manage'));
     const { db, now: clock } = app.deps;
     const now = clock();
-    return db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       const target = await loadStaff(tx, request.params.id);
       const check = canDisableUser({
         targetUser: { id: target.id, role: target.role, status: target.status, overrides: await loadOverrides(tx, target.id) },
@@ -181,6 +181,9 @@ export async function userRoutes(app: App): Promise<void> {
       await audit(tx, auditContextFrom(request), { action: 'user.disabled', entityType: 'user', entityId: target.id });
       return toStaffUser(tx, updated!);
     });
+    // Echtzeitverbindungen sofort trennen (nicht erst bei der nächsten Sitzungsprüfung)
+    app.deps.realtime.disconnectUser(result.id);
+    return result;
   });
 
   app.post('/users/:id/enable', { schema: { params: IdParamsSchema, response: { 200: StaffUserSchema } } }, async (request) => {

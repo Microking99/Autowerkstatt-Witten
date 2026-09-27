@@ -552,3 +552,70 @@ describe('R13 Idempotency-Key über Benutzergrenzen', () => {
     expect(second.headers['idempotent-replay']).toBeUndefined();
   });
 });
+
+describe('R14 Echtzeit (WebSocket)', () => {
+  type Ws = Awaited<ReturnType<Harness['app']['injectWS']>>;
+  const next = (ws: Ws, ms = 1500): Promise<Record<string, unknown> | null> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), ms);
+      ws.once('message', (data) => {
+        clearTimeout(timer);
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
+    });
+  const closed = (ws: Ws, ms = 1500): Promise<number | null> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), ms);
+      ws.once('close', (code: number) => {
+        clearTimeout(timer);
+        resolve(code);
+      });
+    });
+  async function subscribe(token: string, workOrderId: string) {
+    const ws = await h.app.injectWS('/api/v1/realtime');
+    ws.send(JSON.stringify({ type: 'auth', token }));
+    await next(ws);
+    ws.send(JSON.stringify({ type: 'subscribe', workOrderId }));
+    return { ws, reply: await next(ws) };
+  }
+
+  it('Kunde kann Entwurf nicht abonnieren; Token in der URL wird nicht akzeptiert', async () => {
+    const { customer, vehicleId } = await customerWithVehicle(h, 'WsEntwurf');
+    const draft = await createWorkOrder(h, w.service.token, { customerId: customer.customerId!, vehicleId }, { draft: 'true' });
+    const { ws, reply } = await subscribe(customer.token, draft.id);
+    expect(reply).toMatchObject({ type: 'error', code: 'not_found' });
+    ws.terminate();
+    const viaUrl = await h.app.injectWS(`/api/v1/realtime?token=${customer.token}`);
+    viaUrl.send(JSON.stringify({ type: 'subscribe', workOrderId: draft.id }));
+    expect(await closed(viaUrl)).toBe(4401);
+  });
+
+  it('Deaktivierung beendet offene Echtzeitverbindungen sofort', async () => {
+    const { customer, vehicleId } = await customerWithVehicle(h, 'WsDeaktiviert');
+    const mech = await createStaff(h, 'mechanic');
+    const wo = await createWorkOrder(h, w.service.token, { customerId: customer.customerId!, vehicleId, assigneeIds: [mech.id] });
+    const m = await subscribe(mech.token, wo.id);
+    expect(m.reply).toMatchObject({ type: 'subscribed' });
+    const c = await subscribe(customer.token, wo.id);
+    expect(c.reply).toMatchObject({ type: 'subscribed' });
+    const mechClosed = closed(m.ws);
+    const custClosed = closed(c.ws);
+    expectOk(await call(h, 'POST', `/users/${mech.id}/disable`, { token: w.admin.token }), StaffUserSchema);
+    expectOk(await call(h, 'POST', `/customers/${customer.customerId}/account/disable`, { token: w.service.token }), CustomerDetailSchema);
+    expect(await mechClosed).toBe(4401);
+    expect(await custClosed).toBe(4401);
+  });
+
+  it.fails('entzogene Zuweisung beendet das Abo des Mechanikers (BEFUND, offen)', async () => {
+    const { customer, vehicleId } = await customerWithVehicle(h, 'WsZuweisung');
+    const mech = await createStaff(h, 'mechanic');
+    const wo = await createWorkOrder(h, w.service.token, { customerId: customer.customerId!, vehicleId, assigneeIds: [mech.id] });
+    const m = await subscribe(mech.token, wo.id);
+    expect(m.reply).toMatchObject({ type: 'subscribed' });
+    expectOk(await call(h, 'PUT', `/work-orders/${wo.id}/assignees`, { token: w.service.token, body: { assigneeIds: [] } }), WorkOrderDetailSchema);
+    const event = next(m.ws);
+    await call(h, 'PATCH', `/work-orders/${wo.id}`, { token: w.service.token, body: { title: 'geändert' } });
+    expect(await event).toBeNull();
+    m.ws.terminate();
+  });
+});

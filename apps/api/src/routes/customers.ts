@@ -215,8 +215,9 @@ export async function customerRoutes(app: App): Promise<void> {
       await tx.update(users).set({ status: 'disabled' }).where(eq(users.id, link.userId));
       await revokeAllSessions(tx, link.userId, now);
       await audit(tx, auditContextFrom(request), { action: 'customer_account.disabled', entityType: 'customer', entityId: row!.id, data: { userId: link.userId } });
-      return row!;
+      return { row: row!, userId: link.userId };
     });
-    return toCustomerDetail(db, customer, actor);
+    app.deps.realtime.disconnectUser(customer.userId);
+    return toCustomerDetail(db, customer.row, actor);
   });
 }

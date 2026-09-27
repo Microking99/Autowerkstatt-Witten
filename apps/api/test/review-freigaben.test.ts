@@ -169,6 +169,21 @@ describe('F05 Annahme-Bestätigung (R-ANN-3)', () => {
   });
 });
 
+describe('F05b Annahme-Hash und Bruttopreis', () => {
+  it.fails('Änderung des USt-Satzes einer bestätigten Annahmeposition macht die Bestätigung ungültig (BEFUND, offen)', async () => {
+    const { customer, vehicleId } = await customerWithVehicle(h, 'AnnahmeUst');
+    const wo = await createWorkOrder(h, w.service.token, { customerId: customer.customerId!, vehicleId, items: [item('Inspektion', { unitPriceCents: 10000, vatRateBp: 1900 })] });
+    const intake = expectOk(
+      await call(h, 'PUT', `/work-orders/${wo.id}/intake`, { token: w.service.token, body: { odometerKm: 1000, customerComplaint: 'Inspektion', agreedServices: 'Inspektion' } }),
+      IntakeSchema,
+    );
+    expectOk(await call(h, 'POST', `/work-orders/${wo.id}/intake/confirm`, { token: customer.token, body: { method: 'app', contentHash: intake.contentHash } }), IntakeSchema);
+    expectOk(await call(h, 'PATCH', `/work-items/${wo.items[0]!.id}`, { token: w.service.token, body: { vatRateBp: 5000 } }), WorkItemSchema);
+    const after = expectOk(await call(h, 'GET', `/work-orders/${wo.id}/intake`, { token: customer.token }), IntakeSchema);
+    expect(after.confirmedAt).toBeNull();
+  });
+});
+
 describe('F06 Zuordnung Fassungszeilen ↔ Positionen bei erledigten Positionen', () => {
   it.fails('neue Fassung ohne die bereits erledigte Zeile: freigegebene Zeile wird ausführbar (BEFUND, offen)', async () => {
     const { customer, wo, approval } = await orderWithApproval([line('A-Scheiben', 10000), line('B-Beläge', 5000)]);
