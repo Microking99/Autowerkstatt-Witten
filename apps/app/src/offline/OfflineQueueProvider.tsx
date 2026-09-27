@@ -24,7 +24,7 @@ interface QueueContextValue {
   online: boolean;
   submit: (items: NewQueueEntry[]) => Promise<SubmitResult>;
   flush: () => Promise<void>;
-  retry: (id: string) => Promise<void>;
+  retry: (id: string, options?: { withoutDeviceTime?: boolean }) => Promise<void>;
   discard: (id: string) => Promise<string[]>;
 }
 
@@ -89,9 +89,9 @@ export function OfflineQueueProvider({ children }: { children: ReactNode }) {
         await queue.flush();
         invalidateAll();
       },
-      retry: async (id) => {
+      retry: async (id, options) => {
         if (!queue) return;
-        await queue.retry(id);
+        await queue.retry(id, options);
         invalidateAll();
       },
       discard: async (id) => (queue ? queue.discard(id) : []),

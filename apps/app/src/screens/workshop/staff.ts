@@ -1,8 +1,7 @@
 /**
- * Mitarbeiter für Zuweisungen. Die Liste aller Mitarbeiter (GET /users) verlangt
- * `users.manage`; ohne dieses Recht (Service) werden die bekannten Mitarbeiter aus den
- * Aufträgen abgeleitet. Vertragslücke: Ein schlanker Endpunkt "zuweisbare Mitarbeiter" für
- * den Service fehlt in der API (siehe Übergabe APP-2, offene Punkte).
+ * Mitarbeiter für Zuweisungen (Aufträge, Positionen, Termine) aus `GET /staff/assignable`:
+ * aktive und eingeladene Werkstattmitarbeiter, sortiert nach Namen, ohne E-Mail und Rechte.
+ * Recht: workOrders.write oder appointments.write (prüft die API).
  */
 import type { Role } from '@werkstatt/contracts';
 import { useApiQuery } from '../../data/hooks';
@@ -13,18 +12,15 @@ export interface StaffOption {
   role: Role | null;
 }
 
-export function useStaffDirectory(enabled = true): { staff: StaffOption[]; complete: boolean } {
+/**
+ * `complete`: Liste vollständig geladen. Schlägt das Laden fehl (keine Verbindung, fehlendes
+ * Recht), ist die Liste leer und `complete` false; bereits zugewiesene Mitarbeiter ergänzen die
+ * Ansichten aus dem Auftrag bzw. Termin.
+ */
+export function useStaffDirectory(enabled = true): { staff: StaffOption[]; complete: boolean; status: 'loading' | 'error' | 'success' } {
   const query = useApiQuery(enabled ? 'werkstatt:mitarbeiter' : null, async (api) => {
-    try {
-      const users = await api.listUsers();
-      return { complete: true, staff: users.filter((u) => u.status === 'active').map((u) => ({ id: u.id, displayName: u.displayName, role: u.role })) };
-    } catch {
-      const orders = await api.listWorkOrders({});
-      const map = new Map<string, StaffOption>();
-      for (const o of orders.items) for (const a of o.assignees) map.set(a.userId, { id: a.userId, displayName: a.displayName, role: null });
-      return { complete: false, staff: [...map.values()] };
-    }
+    const list = await api.listAssignableStaff();
+    return list.map((s): StaffOption => ({ id: s.userId, displayName: s.displayName, role: s.role }));
   });
-  const staff = [...(query.data?.staff ?? [])].sort((a, b) => a.displayName.localeCompare(b.displayName, 'de'));
-  return { staff, complete: query.data?.complete ?? false };
+  return { staff: query.data ?? [], complete: query.status === 'success', status: query.status };
 }

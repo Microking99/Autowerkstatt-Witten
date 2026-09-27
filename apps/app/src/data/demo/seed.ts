@@ -349,7 +349,23 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
   // Positionen: Octavia Inspektion (laufend, Zusatzarbeit Bremsen wartet auf Freigabe)
   const workItems: DWorkItem[] = [
     item({ workOrderId: W.octaviaInspection, position: 1, title: 'Inspektion nach Herstellervorgabe', unitPriceCents: 18_900, maintenanceTypeId: M.inspection, intervalKm: 30_000, intervalMonths: 24, ...done(U.emre, at(-1, 10, 40), 91_480, 'Inspektion ohne weitere Auffälligkeiten, Bremsen siehe Feststellung.'), trackedMinutes: 95 }),
-    item({ workOrderId: W.octaviaInspection, position: 2, title: 'Ölwechsel inkl. Ölfilter', kind: 'flat_rate', unitPriceCents: 8_950, maintenanceTypeId: M.oil, intervalKm: 15_000, intervalMonths: 12, ...done(U.emre, at(-1, 11), 91_480), trackedMinutes: 25 }),
+    item({
+      workOrderId: W.octaviaInspection,
+      position: 2,
+      title: 'Ölwechsel inkl. Ölfilter',
+      kind: 'flat_rate',
+      unitPriceCents: 8_950,
+      maintenanceTypeId: M.oil,
+      intervalKm: 15_000,
+      intervalMonths: 12,
+      ...done(U.emre, at(-1, 11), 91_480),
+      trackedMinutes: 25,
+      // Verbaute Teile (Beispieldaten): Mechaniker erfasst ohne Preis, Service ergänzt den Preis
+      parts: [
+        { id: seedId(31, 1), partNumber: 'OF-1034', description: 'Ölfilter', quantity: 1, unitPriceCents: 1_290, recordedAt: at(-1, 10, 45) },
+        { id: seedId(31, 2), partNumber: null, description: 'Motoröl 5W-30', quantity: 4.5, unitPriceCents: 1_490, recordedAt: at(-1, 10, 50) },
+      ],
+    }),
     // Octavia 2024 (Vorbesitzer)
     item({ workOrderId: W.rohde2024, position: 1, title: 'Inspektion nach Herstellervorgabe', unitPriceCents: 17_900, maintenanceTypeId: M.inspection, intervalKm: 30_000, intervalMonths: 24, ...done(U.owner, at(-900, 13), 71_350) }),
     item({ workOrderId: W.rohde2024, position: 2, title: 'Pollenfilter erneuern', kind: 'part', unitPriceCents: 3_490, ...done(U.owner, at(-900, 13, 20), 71_350) }),
@@ -373,7 +389,7 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
     item({ workOrderId: W.transit, position: 1, title: 'Inspektion nach Herstellervorgabe', unitPriceCents: 24_900, maintenanceTypeId: M.inspection, intervalKm: 30_000, intervalMonths: 24, ...done(U.lukas, at(-1, 11), 142_305) }),
     item({ workOrderId: W.transit, position: 2, title: 'Bremsflüssigkeit wechseln', kind: 'flat_rate', unitPriceCents: 6_900, maintenanceTypeId: M.brakeFluid, intervalMonths: 24, ...done(U.lukas, at(-1, 13), 142_305) }),
     // Sprinter heute
-    item({ workOrderId: W.sprinter, position: 1, title: 'Fehlersuche Geräusch beim Anfahren', unitPriceCents: 7_800, quantity: 1, unit: 'Std.', assignedTo: U.lukas, executionStatus: 'in_progress', runningSince: at(0, 8), trackedMinutes: 0 }),
+    item({ workOrderId: W.sprinter, position: 1, title: 'Fehlersuche Geräusch beim Anfahren', unitPriceCents: 7_800, quantity: 1, unit: 'Std.', assignedTo: U.lukas, executionStatus: 'in_progress', runningSince: at(0, 8), lastTimeAt: at(0, 8), trackedMinutes: 0 }),
     item({ workOrderId: W.sprinterDoor, position: 1, title: 'Führungsschiene Schiebetür erneuern', unitPriceCents: 58_000, ...done(U.emre, at(-21, 14), 186_990) }),
     item({ workOrderId: W.sprinterDoor, position: 2, title: 'Arbeitszeit Schiebetür', unitPriceCents: 7_800, quantity: 5.5, unit: 'Std.', ...done(U.emre, at(-21, 15), 186_990) }),
     // Golf Service (geplant, Teil noch nicht da)

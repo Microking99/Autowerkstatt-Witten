@@ -6,8 +6,9 @@
  *   2. Andere Kundin sieht weder Auftrag noch Rechnung (404 → "nicht verfügbar")
  *   3. Zahlung: "Jetzt bezahlen" ändert nichts; erst die Anbieterbestätigung (Webhook + Abfrage
  *      beim Anbieter) setzt "Bezahlt"; Werkstatt sieht genau eine Online-Zahlung
- *   4. Mechaniker führt beide Positionen aus (Wartung nur mit km-Stand), Service prüft den
- *      Abschluss, Servicehistorie der Kundin enthält genau einen Eintrag mit diesem km-Stand
+ *   4. Mechaniker führt beide Positionen aus (Wartung nur mit km-Stand) und erfasst ein Teil,
+ *      Service sieht das Teil in der Werkstattansicht und prüft den Abschluss, Servicehistorie
+ *      der Kundin enthält genau einen Eintrag mit diesem km-Stand (Teile sieht sie nicht)
  *   5. QR-Code ohne Anmeldung zeigt keine Kundendaten; fremde Kundin kommt nicht an die Akte
  *   6. Mechaniker ohne Zuweisung sieht den fremden Auftrag nicht
  */
@@ -17,6 +18,7 @@ import { byTestId, fixture, login, providerConfirmsLatestCheckout, switchTo, vis
 test.describe.configure({ mode: 'serial' });
 
 const KM = '61234';
+const PART = 'Ölfilter [TEST]';
 
 async function expectNotAvailable(page: Page) {
   await expect(byTestId(page, 'nicht-verfuegbar')).toBeVisible();
@@ -118,6 +120,21 @@ test('4. Mechaniker führt aus, Service prüft den Abschluss, Servicehistorie ge
   await page.goto(`/mechaniker/auftraege/${f.workOrderId}/positionen/${f.oilItemId}`);
   await byTestId(page, 'position-starten').click();
   await expect(byTestId(page, 'position-status')).toContainText('In Arbeit');
+  // Laufende Zeit kommt vom Server (runningSince), nicht aus einem Zähler auf dem Gerät
+  await expect(byTestId(page, 'position-zeit-hinweis')).toContainText('Läuft seit');
+  await expect(page.getByTestId(/^(nicht-synchronisiert|wird-uebertragen)$/).filter({ visible: true })).toHaveCount(0, { timeout: 15_000 });
+
+  // Verbautes Teil erfassen (ohne Preis); die Liste kommt nach dem Neuladen vom Server
+  await byTestId(page, 'teil-erfassen').click();
+  await byTestId(page, 'teil-bezeichnung').fill(PART);
+  await byTestId(page, 'teil-nummer').fill('OF-E2E-1');
+  await byTestId(page, 'teil-speichern').click();
+  await expect(page.getByTestId('teil').filter({ visible: true }).filter({ hasText: PART })).toHaveCount(1);
+  await page.reload();
+  await expect(page.getByTestId('teil').filter({ visible: true }).filter({ hasText: `1 × ${PART} (OF-E2E-1)` })).toHaveCount(1);
+  await expect(byTestId(page, 'position-zeit-hinweis')).toContainText('Läuft seit');
+  await expect(page.getByText(/€/).filter({ visible: true })).toHaveCount(0);
+
   await byTestId(page, 'position-abschliessen').click();
   await expect(byTestId(page, 'abschluss-blatt')).toBeVisible();
   await byTestId(page, 'abschluss-bestaetigen').click();
@@ -137,8 +154,15 @@ test('4. Mechaniker führt aus, Service prüft den Abschluss, Servicehistorie ge
   await byTestId(page, 'abschluss-bestaetigen').click();
   await expect(byTestId(page, 'position-status')).toContainText('Erledigt');
 
+  // Service sieht das vom Mechaniker erfasste Teil in der Werkstattansicht (ohne Preis erfasst)
+  await switchTo(page, 'service', `/werkstatt/auftraege/${f.workOrderId}/arbeiten`);
+  const parts = page.getByTestId(/^teile-position-/).filter({ visible: true }).filter({ hasText: PART });
+  await expect(parts).toHaveCount(1);
+  await expect(parts).toContainText('OF-E2E-1');
+  await expect(parts).toContainText('ohne Preis');
+
   // Service: fachlicher Abschluss erzeugt den Serviceeintrag (nur für die Wartungsposition)
-  await switchTo(page, 'service', `/werkstatt/auftraege/${f.workOrderId}`);
+  await page.goto(`/werkstatt/auftraege/${f.workOrderId}`);
   await byTestId(page, 'abschluss-pruefen').click();
   await expect(byTestId(page, 'abschluss-dialog')).toContainText('1 Serviceeintrag');
   await byTestId(page, 'abschluss-dialog-bestaetigen').click();
@@ -155,6 +179,10 @@ test('4. Mechaniker führt aus, Service prüft den Abschluss, Servicehistorie ge
   await expect(visibleText(page, /Ölwechsel/)).toBeVisible();
   await expect(visibleText(page, /61\.234\skm/)).toBeVisible();
   await expect(page.getByText(/Brems/).filter({ visible: true })).toHaveCount(0);
+  // Verbaute Teile sind Werkstattinterna: nicht in der Kundenansicht des Auftrags
+  await page.goto(`/kunde/auftraege/${f.workOrderId}`);
+  await expect(visibleText(page, /Ölwechsel/)).toBeVisible();
+  await expect(page.getByText(new RegExp(PART.replace(/[[\]]/g, '\\$&'))).filter({ visible: true })).toHaveCount(0);
   w.expectClean('Abschluss');
 });
 

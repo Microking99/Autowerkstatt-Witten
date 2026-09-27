@@ -1,11 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { WerkstattApi } from '../data/api';
 import { DEMO_EMAILS, DEMO_PASSWORD } from '../data/demo/constants';
 import { DemoApi } from '../data/demo/DemoApi';
 import { IDS } from '../data/demo/seed';
 import { ApiError, ERROR_CODES } from '../data/errors';
 import { OfflineQueue, execute, type QueueStorage } from './OfflineQueue';
-import { applyOutcome, classifyError, createEntry, discardEntry, nextRunnable, parseStored, serialize, type QueueEntry } from './queueCore';
+import {
+  applyOutcome,
+  classifyError,
+  createEntry,
+  discardEntry,
+  idempotencyKeyOf,
+  isDeviceTimeConflict,
+  nextRunnable,
+  occurredAtOf,
+  parseStored,
+  retryEntry,
+  serialize,
+  type QueueEntry,
+} from './queueCore';
 
 const NOW = new Date('2026-09-29T08:00:00.000Z');
 let n = 0;
@@ -71,6 +84,115 @@ describe('Offline-Warteschlange: reine Regeln', () => {
     const restored = parseStored(serialize([entry('s', 'x', { state: 'sending' })]));
     expect(restored[0]?.state).toBe('pending');
     expect(parseStored('kaputt')).toEqual([]);
+  });
+
+  it('Gerätezeit: Start, Pause, Abschluss, "nicht durchgeführt" senden den Erfassungszeitpunkt, andere nicht', () => {
+    const at = NOW.toISOString();
+    for (const kind of ['startWorkItem', 'pauseWorkItem', 'finishWorkItem', 'notDoneWorkItem'] as const) {
+      expect(occurredAtOf({ kind, createdAt: at })).toBe(at);
+      expect(occurredAtOf({ kind, createdAt: at, withoutDeviceTime: true })).toBeUndefined();
+    }
+    for (const kind of ['addPart', 'createFinding', 'photo', 'addInternalNote', 'sendMessage', 'reportFinding'] as const) expect(occurredAtOf({ kind, createdAt: at })).toBeUndefined();
+  });
+
+  it('Erneut senden: neuer Idempotency-Key je Wiederholung; "ohne Gerätezeit" nur auf Wunsch', () => {
+    const rejected = entry('a', 's', { state: 'conflict', lastError: { status: 422, code: ERROR_CODES.invalidOccurredAt, message: 'zu alt' } });
+    expect(isDeviceTimeConflict(rejected)).toBe(true);
+    expect(isDeviceTimeConflict({ ...rejected, lastError: { status: 409, code: 'not_authorized', message: '' } })).toBe(false);
+    expect(idempotencyKeyOf(rejected)).toBe('a');
+    const once = retryEntry([rejected], 'a');
+    expect(once[0]).toMatchObject({ state: 'pending', lastError: null, revision: 1 });
+    expect(once[0]?.withoutDeviceTime).toBeUndefined();
+    expect(idempotencyKeyOf(once[0]!)).toBe('a.r1');
+    const twice = retryEntry([{ ...once[0]!, state: 'conflict' }], 'a', { withoutDeviceTime: true });
+    expect(twice[0]).toMatchObject({ revision: 2, withoutDeviceTime: true });
+    expect(idempotencyKeyOf(twice[0]!)).toBe('a.r2');
+    // Gespeicherte Einträge ohne die neuen Felder bleiben lesbar
+    expect(parseStored(serialize([entry('alt', 's')]))[0]).toMatchObject({ id: 'alt', state: 'pending' });
+  });
+
+  it('execute übergibt Gerätezeit und Schlüssel an die Schnittstelle', async () => {
+    const calls: unknown[][] = [];
+    const record = (name: string) => vi.fn(async (...args: unknown[]) => {
+      calls.push([name, ...args]);
+      return {};
+    });
+    const api = { startWorkItem: record('start'), pauseWorkItem: record('pause'), finishWorkItem: record('finish'), notDoneWorkItem: record('notDone'), addPart: record('part') } as unknown as WerkstattApi;
+    const at = '2026-09-29T06:30:00.000Z';
+    const base = (id: string, kind: QueueEntry['kind'], payload: Record<string, unknown>) => createEntry({ id, kind, workOrderId: 'wo', scope: 'item:1', label: id, payload: { itemId: 'i1', ...payload } }, at);
+    await execute(api, base('s1', 'startWorkItem', {}));
+    await execute(api, { ...base('p1', 'pauseWorkItem', {}), revision: 1, withoutDeviceTime: true });
+    await execute(api, base('f1', 'finishWorkItem', { input: { odometerKm: 1000 } }));
+    await execute(api, base('n1', 'notDoneWorkItem', { input: { reason: 'Kunde verzichtet' } }));
+    await execute(api, { ...base('t1', 'addPart', { input: { description: 'Teil', quantity: 1 } }), revision: 2 });
+    expect(calls).toEqual([
+      ['start', 'i1', { occurredAt: at }, { idempotencyKey: 's1' }],
+      ['pause', 'i1', {}, { idempotencyKey: 'p1.r1' }],
+      ['finish', 'i1', { odometerKm: 1000, occurredAt: at }, { idempotencyKey: 'f1' }],
+      ['notDone', 'i1', { reason: 'Kunde verzichtet', occurredAt: at }, { idempotencyKey: 'n1' }],
+      ['part', 'i1', { description: 'Teil', quantity: 1 }, { idempotencyKey: 't1.r2' }],
+    ]);
+  });
+});
+
+describe('Offline-Warteschlange: Zeitpunkt vom Gerät', () => {
+  const HOUR = 3_600_000;
+
+  async function setup() {
+    const clocks = { device: new Date(NOW), server: new Date(NOW) };
+    const api = new DemoApi({ latencyMs: 0, now: () => clocks.server });
+    api.setToken((await api.login({ email: DEMO_EMAILS.mechanic, password: DEMO_PASSWORD })).token);
+    const queue = new OfflineQueue(api, memoryStorage(), 'q', () => clocks.device);
+    const wo = await api.getWorkOrder(IDS.workOrders.yaris);
+    const item = wo.items.find((i) => !i.maintenanceTypeId && i.executionStatus === 'planned') ?? wo.items.find((i) => i.executionStatus === 'planned')!;
+    const entry = (kind: QueueEntry['kind'], payload: Record<string, unknown> = {}) => ({ id: uuid(), kind, workOrderId: wo.id, scope: `item:${item.id}`, label: kind, payload: { itemId: item.id, ...payload } });
+    return { api, queue, clocks, item, entry, current: async () => (await api.getWorkOrder(wo.id)).items.find((i) => i.id === item.id)! };
+  }
+
+  it('offline erfasst, eine Stunde später übertragen: der Server bucht die Erfassungszeitpunkte', async () => {
+    const { queue, clocks, entry, current } = await setup();
+    await queue.submit([entry('startWorkItem')], { online: false });
+    clocks.device = new Date(NOW.getTime() + 45 * 60_000);
+    await queue.submit([entry('pauseWorkItem')], { online: false });
+    clocks.device = clocks.server = new Date(NOW.getTime() + HOUR);
+    await queue.flush();
+    expect(queue.list()).toHaveLength(0);
+    expect(await current()).toMatchObject({ executionStatus: 'paused', trackedMinutes: 45, runningSince: null });
+  });
+
+  it('Zeitpunkt älter als 72 Stunden: Konflikt; ohne Gerätezeit erneut senden bucht die Serverzeit', async () => {
+    const { queue, clocks, entry, current } = await setup();
+    const start = entry('startWorkItem');
+    await queue.submit([start], { online: false });
+    clocks.device = clocks.server = new Date(NOW.getTime() + 80 * HOUR);
+    await queue.flush();
+    const conflict = queue.list().find((e) => e.id === start.id)!;
+    expect(conflict).toMatchObject({ state: 'conflict', lastError: { status: 422, code: ERROR_CODES.invalidOccurredAt } });
+    expect(conflict.lastError?.message).toContain('72 Stunden');
+    expect((await current()).executionStatus).toBe('planned');
+
+    await queue.retry(start.id, { withoutDeviceTime: true });
+    expect(queue.list()).toHaveLength(0);
+    expect(await current()).toMatchObject({ executionStatus: 'in_progress', runningSince: clocks.server.toISOString() });
+  });
+
+  it('online sofort gesendet, Geräteuhr 10 Minuten vor: einmal ohne Gerätezeit, dann gilt die Serverzeit', async () => {
+    const { queue, clocks, entry, current } = await setup();
+    clocks.device = new Date(NOW.getTime() + 10 * 60_000);
+    const result = await queue.submit([entry('startWorkItem')], { online: true });
+    expect(result).toEqual({ type: 'done' });
+    expect(queue.list()).toHaveLength(0);
+    expect((await current()).runningSince).toBe(NOW.toISOString());
+  });
+
+  it('andere Ablehnungen werden online nicht mit Serverzeit wiederholt', async () => {
+    const { api, queue } = await setup();
+    const octavia = await api.getWorkOrder(IDS.workOrders.octaviaInspection);
+    const locked = octavia.items.find((i) => i.authorization === 'pending_approval')!;
+    const spy = vi.spyOn(api, 'startWorkItem');
+    const result = await queue.submit([{ id: uuid(), kind: 'startWorkItem', workOrderId: octavia.id, scope: `item:${locked.id}`, label: 'Start', payload: { itemId: locked.id } }], { online: true });
+    expect(result).toMatchObject({ type: 'rejected', error: { code: ERROR_CODES.notAuthorized } });
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 });
 

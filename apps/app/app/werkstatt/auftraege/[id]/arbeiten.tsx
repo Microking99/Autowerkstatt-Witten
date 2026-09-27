@@ -1,8 +1,9 @@
 /**
  * Werkstatt, Auftrag, Register Arbeiten: Positionen mit Freigabe- und Ausführungsstatus,
- * Zeiten und Zuweisung; gemeldete Feststellungen der Mechaniker. Aktionen: Position
- * hinzufügen bzw. ändern (nach bestätigter Annahme nur über Freigabe: approval_required),
- * aus einer Feststellung eine Freigabeanfrage erstellen, Feststellung verwerfen.
+ * Zeiten (laufend seit) und Zuweisung; verbaute Teile je Position (mit Preis, soweit erfasst);
+ * gemeldete Feststellungen der Mechaniker. Aktionen: Position hinzufügen bzw. ändern (nach
+ * bestätigter Annahme nur über Freigabe: approval_required), aus einer Feststellung eine
+ * Freigabeanfrage erstellen, Feststellung verwerfen.
  */
 import {
   findingSeverityLabels,
@@ -11,6 +12,7 @@ import {
   workItemExecutionLabels,
   type Finding,
   type MaintenanceType,
+  type PartUsed,
   type WorkItem,
   type WorkItemKind,
   type WorkOrderDetail,
@@ -21,7 +23,7 @@ import { StyleSheet, View } from 'react-native';
 import { useApi } from '../../../../src/data/ApiProvider';
 import { ERROR_CODES, type ApiError } from '../../../../src/data/errors';
 import { useApiMutation, useApiQuery } from '../../../../src/data/hooks';
-import { formatDateTime, formatKm, formatMoney } from '../../../../src/lib/format';
+import { formatDateTime, formatKm, formatMoney, formatTime } from '../../../../src/lib/format';
 import { lineGross } from '../../../../src/screens/customer/money';
 import { WorkOrderFrame } from '../../../../src/screens/workshop/WorkOrderFrame';
 import { ActionError, centsToInput, findingStatusLabels, parseEuro, parseQuantity, useCan } from '../../../../src/screens/workshop/shared';
@@ -46,6 +48,33 @@ import {
 } from '../../../../src/ui';
 
 const KIND_LABELS: Record<WorkItemKind, string> = { labor: 'Arbeit', part: 'Teil', flat_rate: 'Pauschale', other: 'Sonstiges' };
+
+/** "4,5 × Motoröl 5W-30 (OF-1034)" */
+function partText(p: PartUsed): string {
+  return `${String(p.quantity).replace('.', ',')} × ${p.description}${p.partNumber ? ` (${p.partNumber})` : ''}`;
+}
+
+/** Preis je Teil, falls erfasst (Mechaniker erfassen ohne Preis) */
+function partPrice(p: PartUsed): string {
+  if (p.unitPriceCents === null || p.unitPriceCents === undefined) return 'ohne Preis';
+  return `${formatMoney(p.unitPriceCents)} je Einheit`;
+}
+
+/** Verbaute Teile einer Position; Preis nur, wenn die Antwort ihn enthält. */
+function PartList({ parts, testID }: { parts: readonly PartUsed[]; testID?: string }) {
+  return (
+    <View style={styles.cellGap} testID={testID}>
+      {parts.map((p) => (
+        <Row key={p.id} wrap gap={8} style={styles.between}>
+          <AppText style={styles.flex}>{partText(p)}</AppText>
+          <AppText variant="small" tone="muted" numeric>
+            {`${partPrice(p)}, erfasst ${formatDateTime(p.recordedAt)}`}
+          </AppText>
+        </Row>
+      ))}
+    </View>
+  );
+}
 
 export default function WorkItemsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -73,6 +102,7 @@ function Works({ order }: { order: WorkOrderDetail }) {
   const open = (findings.data ?? []).filter((f) => f.status === 'reported' || f.status === 'new');
   const done = (findings.data ?? []).filter((f) => f.status === 'converted' || f.status === 'dismissed');
   const typeName = (id: string | null) => (id ? (types.data?.find((m) => m.id === id)?.name ?? 'Wartungsart') : null);
+  const withParts = order.items.filter((i) => (i.parts?.length ?? 0) > 0);
 
   return (
     <>
@@ -128,6 +158,8 @@ function Works({ order }: { order: WorkOrderDetail }) {
                   <View style={styles.cellGap}>
                     <StatusChip status={workItemExecutionLabels[i.executionStatus]} />
                     {i.trackedMinutes ? <AppText variant="small" tone="muted" numeric>{`${i.trackedMinutes} min`}</AppText> : null}
+                    {i.executionStatus === 'in_progress' && i.runningSince ? <AppText variant="small" tone="muted" numeric>{`läuft seit ${formatTime(i.runningSince)} Uhr`}</AppText> : null}
+                    {i.parts?.length ? <AppText variant="small" tone="subtle" numeric>{`${i.parts.length} ${i.parts.length === 1 ? 'Teil' : 'Teile'}`}</AppText> : null}
                     {i.doneAt ? <AppText variant="small" tone="subtle" numeric>{`${formatDateTime(i.doneAt)}${i.maintenanceTypeId ? `, ${formatKm(i.doneOdometerKm)}` : ''}`}</AppText> : null}
                   </View>
                 ),
@@ -151,6 +183,16 @@ function Works({ order }: { order: WorkOrderDetail }) {
               ))}
           </View>
         ) : null}
+      </Section>
+
+      <Section title="Verbaute Teile">
+        {withParts.length === 0 ? <AppText tone="muted">Noch keine Teile erfasst. Mechaniker erfassen verbaute Teile an der Position.</AppText> : null}
+        {withParts.map((i) => (
+          <View key={i.id} style={[styles.notes, { borderColor: t.colors.border, borderRadius: t.radius.panel, backgroundColor: t.colors.surface }]} testID={`teile-position-${i.position}`}>
+            <AppText variant="bodyStrong">{`${i.position}. ${i.title}`}</AppText>
+            <PartList parts={i.parts ?? []} />
+          </View>
+        ))}
       </Section>
 
       <Section title={`Gemeldete Feststellungen (${open.length})`}>
@@ -344,9 +386,10 @@ function ItemSheet({ order, item, types, confirmedIntake, onClose }: { order: Wo
       {type ? <Select label="Intervall" value={interval} onChange={setInterval} options={intervalOptions} /> : null}
       <Select label="Mechaniker für diese Position" value={assignee} onChange={setAssignee} options={[{ value: 'auftrag', label: 'Wie Auftrag (alle Zugewiesenen)' }, ...staff.map((s) => ({ value: s.id, label: s.displayName }))]} />
       {existing ? (
-        <AppText variant="small" tone="subtle">
-          Verbaute Teile erfasst der Mechaniker an der Position. Die Liste wird hier noch nicht angezeigt, weil die Schnittstelle sie in der Positionsansicht nicht liefert.
-        </AppText>
+        <View style={styles.cellGap}>
+          <AppText variant="caption" tone="muted">{`Verbaute Teile (${existing.parts?.length ?? 0})`}</AppText>
+          {existing.parts?.length ? <PartList parts={existing.parts} /> : <AppText variant="small" tone="subtle">Noch keine Teile erfasst. Mechaniker erfassen verbaute Teile an der Position.</AppText>}
+        </View>
       ) : null}
       {needsApproval ? (
         <Banner
@@ -367,5 +410,7 @@ const styles = StyleSheet.create({
   notes: { borderWidth: 1, padding: 12, gap: 6 },
   finding: { borderWidth: 1, borderLeftWidth: 4, padding: 16, gap: 10 },
   alignStart: { alignItems: 'flex-start' },
+  between: { justifyContent: 'space-between' },
+  flex: { flex: 1, minWidth: 160 },
   small: { flexGrow: 1, flexBasis: 120, minWidth: 110 },
 });

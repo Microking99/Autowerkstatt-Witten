@@ -28,6 +28,7 @@ import {
   type Permission,
   type QrResolution,
   type Role,
+  type AssignableStaff,
   type SchedulingConflict,
   type Visibility,
 } from '@werkstatt/contracts';
@@ -43,6 +44,7 @@ import {
   markNotDone,
   pauseItem,
   planOwnershipTransfer,
+  resolveOccurredAt,
   startItem,
   type Actor,
   type WorkItemTransitionResult,
@@ -85,11 +87,13 @@ import type {
   OwnershipTransferInput,
   Page,
   PartUsedInput,
+  PauseWorkItemInput,
   ProposeAlternativeInput,
   RefundInput,
   RegisterDeviceInput,
   SendMessageInput,
   ServiceEntryCorrectionInput,
+  StartWorkItemInput,
   UpdateStaffInput,
   UpdateWorkOrderInput,
   UploadInput,
@@ -560,6 +564,18 @@ export class DemoApi implements WerkstattApi {
       .filter((u) => u.role !== 'customer')
       .sort((a, b) => a.displayName.localeCompare(b.displayName, 'de'))
       .map((u) => map.staffUser(u));
+  }
+
+  /** Wie die API: workOrders.write oder appointments.write; aktive und eingeladene Werkstattmitarbeiter. */
+  async listAssignableStaff(): Promise<AssignableStaff[]> {
+    await this.gate();
+    const v = this.viewer();
+    if (!isStaff(v)) throw ApiError.notFound();
+    if (!can(v, 'workOrders.write') && !can(v, 'appointments.write')) throw ApiError.forbidden('Für diese Aktion fehlt Ihnen die Berechtigung.');
+    return this.state.users
+      .filter((u) => u.role !== 'customer' && (u.status === 'active' || u.status === 'invited'))
+      .map((u) => ({ userId: u.id, displayName: u.displayName, role: u.role as AssignableStaff['role'] }))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'de') || a.userId.localeCompare(b.userId));
   }
 
   async inviteUser(input: InviteStaffInput) {
@@ -1771,38 +1787,58 @@ export class DemoApi implements WerkstattApi {
     return { item, wo, t: result.value };
   }
 
-  private minutesSince(iso: string | null): number {
-    return iso ? Math.max(0, Math.round((this.clock().getTime() - Date.parse(iso)) / 60_000)) : 0;
+  private minutesBetween(fromIso: string | null, to: Date): number {
+    return fromIso ? Math.max(0, Math.round((to.getTime() - Date.parse(fromIso)) / 60_000)) : 0;
   }
 
-  private applyTimeEntry(item: DWorkItem, t: { timeEntry: { action: 'open' | 'close' | 'none' } }): Pick<DWorkItem, 'runningSince' | 'trackedMinutes'> {
-    if (t.timeEntry.action === 'open') return { runningSince: this.nowIso(), trackedMinutes: item.trackedMinutes };
-    if (t.timeEntry.action === 'close') return { runningSince: null, trackedMinutes: item.trackedMinutes + this.minutesSince(item.runningSince) };
-    return { runningSince: item.runningSince, trackedMinutes: item.trackedMinutes };
+  /**
+   * Zeitpunkt vom Gerät wie in der API (Domain `resolveOccurredAt`): höchstens 5 Minuten voraus,
+   * 72 Stunden zurück, nicht vor dem letzten erfassten Zeitpunkt der Position; sonst 422
+   * `invalid_occurred_at`. Aufruf erst nach der Übergangsprüfung (gleiche Reihenfolge wie die API).
+   */
+  private occurredAt(item: DWorkItem, occurredAt: string | undefined): { at: Date; audit: { occurredAt?: string } } {
+    const now = this.clock();
+    const result = resolveOccurredAt({ occurredAt, now, lastRecordedAt: item.lastTimeAt ?? item.runningSince ?? null });
+    if (!result.ok) throw ApiError.unprocessable(API_ERROR_CODES.invalidOccurredAt, result.error.message, { reason: result.error.reason, lastRecordedAt: result.error.lastRecordedAt });
+    const at = result.value.at;
+    return { at, audit: result.value.fromDevice && at.getTime() !== now.getTime() ? { occurredAt: at.toISOString() } : {} };
   }
 
-  async startWorkItem(itemId: string, options: { idempotencyKey?: string } = {}) {
+  private applyTimeEntry(item: DWorkItem, t: { timeEntry: { action: 'open' | 'close' | 'none' } }, at: Date): Pick<DWorkItem, 'runningSince' | 'trackedMinutes' | 'lastTimeAt'> {
+    if (t.timeEntry.action === 'open') return { runningSince: at.toISOString(), trackedMinutes: item.trackedMinutes, lastTimeAt: at.toISOString() };
+    if (t.timeEntry.action === 'close') return { runningSince: null, trackedMinutes: item.trackedMinutes + this.minutesBetween(item.runningSince, at), lastTimeAt: at.toISOString() };
+    return { runningSince: item.runningSince, trackedMinutes: item.trackedMinutes, lastTimeAt: item.lastTimeAt ?? null };
+  }
+
+  /** Zeitpunkt für die Übergangsprüfung: Gerätezeit (Gültigkeit wird danach geprüft) oder jetzt. */
+  private candidate(occurredAt: string | undefined): Date {
+    return occurredAt ? new Date(occurredAt) : this.clock();
+  }
+
+  async startWorkItem(itemId: string, input: StartWorkItemInput = {}, options: { idempotencyKey?: string } = {}) {
     await this.gate();
     const v = this.viewer();
     return this.once(options.idempotencyKey, v.user.id, () => {
-      const { item, t } = this.executeItem(v, itemId, (s) => startItem(s, { now: this.clock() }));
-      const next: DWorkItem = { ...item, executionStatus: t.executionStatus, ...this.applyTimeEntry(item, t), assignedTo: item.assignedTo ?? v.user.id };
+      const { item, t } = this.executeItem(v, itemId, (s) => startItem(s, { now: this.candidate(input.occurredAt) }));
+      const { at, audit } = this.occurredAt(item, input.occurredAt);
+      const next: DWorkItem = { ...item, executionStatus: t.executionStatus, ...this.applyTimeEntry(item, t, at), assignedTo: item.assignedTo ?? v.user.id };
       this.replaceItem(next);
-      this.audit(v, 'work_item.started', 'work_item', itemId, { workOrderId: item.workOrderId });
+      this.audit(v, 'work_item.started', 'work_item', itemId, { workOrderId: item.workOrderId, ...audit });
       this.refreshWorkStatus(item.workOrderId);
       this.changed();
       return this.map.workItem(next, v);
     });
   }
 
-  async pauseWorkItem(itemId: string, options: { idempotencyKey?: string } = {}) {
+  async pauseWorkItem(itemId: string, input: PauseWorkItemInput = {}, options: { idempotencyKey?: string } = {}) {
     await this.gate();
     const v = this.viewer();
     return this.once(options.idempotencyKey, v.user.id, () => {
-      const { item, t } = this.executeItem(v, itemId, (s) => pauseItem(s, { now: this.clock() }));
-      const next: DWorkItem = { ...item, executionStatus: t.executionStatus, ...this.applyTimeEntry(item, t) };
+      const { item, t } = this.executeItem(v, itemId, (s) => pauseItem(s, { now: this.candidate(input.occurredAt) }));
+      const { at, audit } = this.occurredAt(item, input.occurredAt);
+      const next: DWorkItem = { ...item, executionStatus: t.executionStatus, ...this.applyTimeEntry(item, t, at) };
       this.replaceItem(next);
-      this.audit(v, 'work_item.paused', 'work_item', itemId, { workOrderId: item.workOrderId });
+      this.audit(v, 'work_item.paused', 'work_item', itemId, { workOrderId: item.workOrderId, ...audit });
       this.changed();
       return this.map.workItem(next, v);
     });
@@ -1819,22 +1855,23 @@ export class DemoApi implements WerkstattApi {
     return this.once(options.idempotencyKey, v.user.id, () => {
       const hasKmKey = Object.prototype.hasOwnProperty.call(input, 'odometerKm');
       const { item, wo, t } = this.executeItem(v, itemId, (s) =>
-        finishItem(s, { now: this.clock(), odometerKm: input.odometerKm ?? null, odometerUnknown: hasKmKey && input.odometerKm === null, resultNotes: input.resultNotes ?? null }),
+        finishItem(s, { now: this.candidate(input.occurredAt), odometerKm: input.odometerKm ?? null, odometerUnknown: hasKmKey && input.odometerKm === null, resultNotes: input.resultNotes ?? null }),
       );
+      const { at, audit } = this.occurredAt(item, input.occurredAt);
       const next: DWorkItem = {
         ...item,
         executionStatus: t.executionStatus,
-        doneAt: t.doneAt ?? this.nowIso(),
+        doneAt: at.toISOString(),
         doneBy: v.user.id,
         doneOdometerKm: t.doneOdometerKm,
         resultNotes: t.resultNotes,
         intervalKm: input.intervalKm !== undefined ? input.intervalKm : item.intervalKm,
         intervalMonths: input.intervalMonths !== undefined ? input.intervalMonths : item.intervalMonths,
-        ...this.applyTimeEntry(item, t),
+        ...this.applyTimeEntry(item, t, at),
       };
       this.replaceItem(next);
-      if (t.doneOdometerKm !== null) this.recordOdometer(wo.vehicleId, t.doneOdometerKm, this.nowIso(), 'work_completion', wo.id);
-      this.audit(v, 'work_item.finished', 'work_item', itemId, { workOrderId: item.workOrderId, odometerUnknown: t.odometerUnknown });
+      if (t.doneOdometerKm !== null) this.recordOdometer(wo.vehicleId, t.doneOdometerKm, at.toISOString(), 'work_completion', wo.id);
+      this.audit(v, 'work_item.finished', 'work_item', itemId, { workOrderId: item.workOrderId, odometerUnknown: t.odometerUnknown, ...audit });
       this.refreshWorkStatus(item.workOrderId);
       this.changed();
       return this.map.workItem(next, v);
@@ -1845,10 +1882,11 @@ export class DemoApi implements WerkstattApi {
     await this.gate();
     const v = this.viewer();
     return this.once(options.idempotencyKey, v.user.id, () => {
-      const { item, t } = this.executeItem(v, itemId, (s) => markNotDone(s, { now: this.clock(), reason: input.reason }));
-      const next: DWorkItem = { ...item, executionStatus: t.executionStatus, resultNotes: t.resultNotes, ...this.applyTimeEntry(item, t) };
+      const { item, t } = this.executeItem(v, itemId, (s) => markNotDone(s, { now: this.candidate(input.occurredAt), reason: input.reason }));
+      const { at, audit } = this.occurredAt(item, input.occurredAt);
+      const next: DWorkItem = { ...item, executionStatus: t.executionStatus, resultNotes: t.resultNotes, ...this.applyTimeEntry(item, t, at) };
       this.replaceItem(next);
-      this.audit(v, 'work_item.not_done', 'work_item', itemId, { workOrderId: item.workOrderId, reason: input.reason });
+      this.audit(v, 'work_item.not_done', 'work_item', itemId, { workOrderId: item.workOrderId, reason: input.reason, ...audit });
       this.refreshWorkStatus(item.workOrderId);
       this.changed();
       return this.map.workItem(next, v);
@@ -1861,7 +1899,8 @@ export class DemoApi implements WerkstattApi {
     return this.once(options.idempotencyKey, v.user.id, () => {
       const { item } = this.executeItem(v, itemId, (s) => ({ ok: true, value: { executionStatus: s.executionStatus, doneAt: null, doneOdometerKm: null, odometerUnknown: false, resultNotes: null, timeEntry: { action: 'none' } } }));
       if (!input.description?.trim()) throw ApiError.validation('Bitte das Teil beschreiben.');
-      const next = { ...item, parts: [...item.parts, { partNumber: input.partNumber?.trim() || null, description: input.description.trim(), quantity: input.quantity, unitPriceCents: v.role === 'mechanic' ? null : (input.unitPriceCents ?? null) }] };
+      const part = { id: uuid(), partNumber: input.partNumber?.trim() || null, description: input.description.trim(), quantity: input.quantity, unitPriceCents: v.role === 'mechanic' ? null : (input.unitPriceCents ?? null), recordedAt: this.nowIso() };
+      const next = { ...item, parts: [...item.parts, part] };
       this.replaceItem(next);
       this.audit(v, 'work_item.part_added', 'work_item', itemId, { workOrderId: item.workOrderId });
       this.changed();

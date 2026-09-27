@@ -3,7 +3,13 @@
  *
  * - Jeder Eintrag trägt eine Client-UUID. Sie ist zugleich Idempotency-Key bzw. Objekt-ID
  *   (Feststellung, Foto, Nachricht), damit eine Wiederholung nach Verbindungsabbruch auf dem
- *   Server nichts doppelt anlegt.
+ *   Server nichts doppelt anlegt. Nach einer Ablehnung (Konflikt) sendet "Erneut senden" mit
+ *   einem neuen Schlüssel (`<uuid>.r<n>`): Die API speichert auch 4xx-Antworten und würde sonst
+ *   nur die alte Ablehnung wiederholen. Eine Ablehnung heißt, dass nichts ausgeführt wurde.
+ * - Start, Pause, Abschluss und "nicht durchgeführt" senden den Erfassungszeitpunkt auf dem
+ *   Gerät (`occurredAt` = `createdAt`). Lehnt der Server ihn ab (422 `invalid_occurred_at`,
+ *   z. B. Geräteuhr falsch oder mehr als 72 Stunden alt), ist das ein Konflikt: ohne Gerätezeit
+ *   erneut senden (dann gilt der Zeitpunkt der Übertragung) oder verwerfen.
  * - Reihenfolge: Einträge werden in der Reihenfolge der Erfassung übertragen. Innerhalb eines
  *   Bereichs (Position bzw. Auftrag) wartet alles hinter einem abgelehnten Eintrag, bis er
  *   geklärt ist (erneut senden oder verwerfen). Andere Bereiche laufen weiter.
@@ -12,6 +18,8 @@
  * - Freigaben, Zahlungen, fachlicher Abschluss und Rechnungen gibt es hier nicht: Offline
  *   erfasste Daten gelten nie als Freigabe oder Zahlung (AGENTS.md Regel 10).
  */
+
+import { API_ERROR_CODES } from '@werkstatt/contracts';
 
 export type QueueOpKind =
   | 'photo'
@@ -50,6 +58,31 @@ export interface QueueEntry {
   lastAttemptAt: string | null;
   /** Einträge, die vorher erfolgreich übertragen sein müssen (z. B. Fotos vor der Feststellung) */
   dependsOn: string[];
+  /** Anzahl manueller Wiederholungen nach Konflikt (neuer Idempotency-Key je Wiederholung) */
+  revision?: number;
+  /** Ohne Gerätezeit senden (nach Konflikt `invalid_occurred_at`): Serverzeit gilt */
+  withoutDeviceTime?: boolean;
+}
+
+/** Aktionen, die den Erfassungszeitpunkt auf dem Gerät mitsenden (`occurredAt`). */
+export const DEVICE_TIME_KINDS: ReadonlySet<QueueOpKind> = new Set<QueueOpKind>(['startWorkItem', 'pauseWorkItem', 'finishWorkItem', 'notDoneWorkItem']);
+
+/** Fehlercode der API, wenn der Zeitpunkt vom Gerät nicht übernommen wird. */
+export const INVALID_OCCURRED_AT = API_ERROR_CODES.invalidOccurredAt;
+
+/** Zeitpunkt vom Gerät für diesen Eintrag (Erfassungszeitpunkt) oder `undefined` (Serverzeit). */
+export function occurredAtOf(entry: Pick<QueueEntry, 'kind' | 'createdAt' | 'withoutDeviceTime'>): string | undefined {
+  return DEVICE_TIME_KINDS.has(entry.kind) && !entry.withoutDeviceTime ? entry.createdAt : undefined;
+}
+
+/** Idempotency-Key: die Client-UUID, nach manuellen Wiederholungen mit Zähler. */
+export function idempotencyKeyOf(entry: Pick<QueueEntry, 'id' | 'revision'>): string {
+  return entry.revision ? `${entry.id}.r${entry.revision}` : entry.id;
+}
+
+/** Konflikt, weil der Server den Zeitpunkt vom Gerät nicht übernimmt. */
+export function isDeviceTimeConflict(entry: Pick<QueueEntry, 'state' | 'lastError'>): boolean {
+  return entry.state === 'conflict' && entry.lastError?.code === INVALID_OCCURRED_AT;
 }
 
 export type NewQueueEntry = Pick<QueueEntry, 'id' | 'kind' | 'workOrderId' | 'scope' | 'label' | 'payload'> & { dependsOn?: string[] };
@@ -115,9 +148,16 @@ export function recoverInterrupted(entries: readonly QueueEntry[]): QueueEntry[]
   return entries.map((e) => (e.state === 'sending' ? { ...e, state: 'pending' as const } : e));
 }
 
-/** Konflikt erneut versuchen: zurück auf "wartet". */
-export function retryEntry(entries: readonly QueueEntry[], id: string): QueueEntry[] {
-  return entries.map((e) => (e.id === id && e.state === 'conflict' ? { ...e, state: 'pending' as const, lastError: null } : e));
+/**
+ * Konflikt erneut versuchen: zurück auf "wartet", mit neuem Idempotency-Key (Revision). Mit
+ * `withoutDeviceTime` ohne Zeitpunkt vom Gerät (Serverzeit gilt).
+ */
+export function retryEntry(entries: readonly QueueEntry[], id: string, options: { withoutDeviceTime?: boolean } = {}): QueueEntry[] {
+  return entries.map((e) =>
+    e.id === id && e.state === 'conflict'
+      ? { ...e, state: 'pending' as const, lastError: null, revision: (e.revision ?? 0) + 1, ...(options.withoutDeviceTime ? { withoutDeviceTime: true } : {}) }
+      : e,
+  );
 }
 
 /**
