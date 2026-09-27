@@ -43,6 +43,37 @@ der Serverantwort wirksam und erzeugt nie selbst einen Serviceeintrag (ADR-008).
   (Statusaktionen). Die API führt Wiederholungen nicht doppelt aus.
 - Die Warteschlange wird in Erfassungsreihenfolge abgearbeitet, sobald eine Verbindung besteht;
   Fotos werden zuerst hochgeladen, danach die Datensätze, die sie referenzieren.
+- Nach einer Ablehnung (Konflikt) sendet "Erneut senden" mit neuem `Idempotency-Key`
+  (`<Client-UUID>.r<n>`): Die API speichert auch 4xx-Antworten je Schlüssel und würde sonst nur
+  die alte Ablehnung wiederholen. Eine Ablehnung bedeutet, dass nichts ausgeführt wurde; bei
+  Verbindungsfehlern bleibt der Schlüssel gleich.
+
+### Gerätezeit (Ergänzung API-3, 27.09.2026)
+
+- Start, Pause, Abschluss und "nicht durchgeführt" senden den **Erfassungszeitpunkt auf dem
+  Gerät** als `occurredAt` (Vertrag: `StartWorkItemRequestSchema`, `PauseWorkItemRequestSchema`,
+  `FinishWorkItemRequestSchema`, `NotDoneWorkItemRequestSchema`). So zählt eine offline
+  gestartete Arbeit ab dem Start in der Halle, nicht ab der Übertragung.
+- Die API übernimmt den Zeitpunkt nur, wenn er höchstens 5 Minuten nach der Serverzeit und
+  höchstens 72 Stunden davor liegt (`OCCURRED_AT_MAX_FUTURE_MS`, `OCCURRED_AT_MAX_PAST_MS`) und
+  nicht vor dem letzten erfassten Zeitpunkt der Position (letzter Beginn bzw. letztes Ende eines
+  Zeitabschnitts). Sonst 422 `invalid_occurred_at`; geprüft wird nach dem Statusübergang, ein
+  unzulässiger Übergang (409) hat Vorrang. Regel: `resolveOccurredAt` in `packages/domain`,
+  gleich in API und Demo-Modus.
+- Der Zeitpunkt gilt für den Zeitabschnitt (Beginn bzw. Ende), `doneAt` und den km-Stand beim
+  Abschluss (`recordedAt`). Weicht er von der Serverzeit ab, steht er als `occurredAt` im
+  Audit-Protokoll. Ohne `occurredAt` (bzw. ohne Körper) gilt wie bisher die Serverzeit.
+- 422 `invalid_occurred_at` ist in der Warteschlange ein Konflikt. `/mechaniker/sync` zeigt den
+  Grund und bietet "Ohne Gerätezeit senden" (neuer Schlüssel, kein `occurredAt`, es gilt der
+  Zeitpunkt der Übertragung) oder "Verwerfen".
+- Sofort übertragene Aktionen (Verbindung besteht): Lehnt die API nur den Zeitpunkt ab (Geräteuhr
+  falsch gestellt), sendet die App einmal ohne Gerätezeit; Erfassung und Übertragung fallen hier
+  zusammen. Andere Ablehnungen werden wie bisher direkt angezeigt.
+- Die Gerätezeit gilt nur für Arbeitszeiten und Ausführungsstatus, nie für Freigaben oder
+  Zahlungen (AGENTS.md Regel 10).
+- Anzeige: Laufende Zeit und Teileliste kommen vom Server (`runningSince`, `trackedMinutes`,
+  `parts`); lokal ergänzt wird nur, was noch in der Warteschlange steht (gekennzeichnet
+  "Nicht übertragen" bzw. "noch nicht übertragen").
 
 ### Konflikte
 

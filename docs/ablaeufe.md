@@ -124,6 +124,14 @@ flowchart TB
 - Der Mechaniker sieht keine Preise und keine Kontaktdaten des Kunden.
 - Offline erfasste Statusänderungen, die der Server ablehnt (z. B. Position inzwischen
   abgelehnt), erscheinen unter `/mechaniker/sync` mit Grund (ADR-011).
+- Start, Pause, Abschluss und "nicht durchgeführt" tragen den Erfassungszeitpunkt auf dem Gerät
+  (`occurredAt`): Zeiten, Abschlusszeitpunkt und km-Stand gelten ab der Erfassung in der Halle,
+  nicht ab der Übertragung. Der Server nimmt ihn nur bis 5 Minuten voraus, bis 72 Stunden zurück
+  und nicht vor dem letzten erfassten Zeitpunkt der Position an; sonst Konflikt in
+  `/mechaniker/sync` mit "Ohne Gerätezeit senden" (Zeitpunkt der Übertragung) oder "Verwerfen".
+- Laufende Zeit ("Läuft seit ...") und verbaute Teile zeigt die Positionsansicht vom Server; noch
+  nicht übertragene Teile stehen mit "Nicht übertragen" darunter. Der Service sieht die Teile im
+  Register Arbeiten (mit Preis, soweit erfasst); Kunden sehen keine Teile und keine laufende Zeit.
 - Eine erledigte Position erzeugt noch keinen Serviceeintrag; das geschieht erst beim
   fachlichen Abschluss durch den Service (ADR-008).
 
