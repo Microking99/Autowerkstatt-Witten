@@ -111,7 +111,9 @@ Wartungsfälligkeiten sind **keine** Termine; sie werden aus `service_entries` b
 **Arbeitsstatus** `work_orders.status`:
 `draft` → `open` → `in_progress` → `work_completed` → `completed` → `picked_up`
 (jederzeit vor `completed`: `cancelled`).
-- `work_completed`: alle ausführbaren Positionen sind `done` oder `not_done`.
+- `work_completed`: alle ausführbaren Positionen sind `done` oder `not_done`. Zurück nach
+  `in_progress` nur, wenn wieder eine ausführbare Position offen ist (z. B. eine nachträglich
+  freigegebene Zusatzarbeit).
 - `completed`: **fachlicher Abschluss geprüft** (Recht `workOrders.completeReview`). Nur dieser
   Übergang erzeugt Serviceeinträge.
 - Abholbereit ist ein eigener Zeitstempel (`ready_for_pickup_at`), kein Status.

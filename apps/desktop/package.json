@@ -1,0 +1,17 @@
+{
+  "name": "@werkstatt/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows-Anwendung (Tauri 2) als Hülle um den Web-Export von apps/app",
+  "scripts": {
+    "tauri": "tauri",
+    "icons": "tauri icon ../../packages/design-tokens/assets/icon-rounded.png",
+    "prebuild": "pnpm --filter @werkstatt/app export:web",
+    "build": "tauri build",
+    "build:windows": "tauri build --bundles nsis",
+    "check": "cargo check --manifest-path src-tauri/Cargo.toml"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.0"
+  }
+}

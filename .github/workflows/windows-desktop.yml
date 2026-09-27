@@ -1,0 +1,53 @@
+# Windows-Installer (NSIS) für die PC-Anwendung. Nur manuell auslösbar, damit keine
+# unnötigen Windows-Minuten verbraucht werden. Der Installer ist UNSIGNIERT, bis eine
+# Signatur eingerichtet ist (offene Entscheidung O-20, siehe docs/offene-entscheidungen.md).
+name: Windows-Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_origin:
+        description: "Herkunft der API (z. B. https://api.example.de); leer = nur lokale Entwicklung"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - name: Web-Export der App
+        shell: bash
+        env:
+          EXPO_PUBLIC_API_URL: ${{ inputs.api_origin }}
+        run: pnpm --filter @werkstatt/app export:web
+      - name: Tauri-Build (NSIS)
+        shell: bash
+        working-directory: apps/desktop
+        env:
+          API_ORIGIN: ${{ inputs.api_origin }}
+        run: |
+          if [ -n "$API_ORIGIN" ]; then
+            WS_ORIGIN="${API_ORIGIN/https:/wss:}"
+            CSP="default-src 'self'; img-src 'self' data: blob: $API_ORIGIN; connect-src 'self' $API_ORIGIN $WS_ORIGIN; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:"
+            node -e "require('fs').writeFileSync('csp-override.json', JSON.stringify({app:{security:{csp:process.argv[1]}}}))" "$CSP"
+            pnpm tauri build --bundles nsis --config csp-override.json
+          else
+            pnpm tauri build --bundles nsis
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autowerkstatt-witten-windows-installer
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          retention-days: 14

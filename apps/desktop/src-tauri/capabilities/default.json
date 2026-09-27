@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimale Rechte: nur externe Links im Standardbrowser öffnen.",
+  "windows": ["main"],
+  "permissions": ["core:default", "opener:default"]
+}

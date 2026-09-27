@@ -72,14 +72,18 @@ Rechte sagen, **was** jemand tun darf; Objektregeln sagen, **woran**. Beide müs
 - Sieht zu diesen Aufträgen: Fahrzeugdaten, Annahme (inkl. interner Hinweise), Positionen,
   Feststellungen, Fotos, Checklisten, bisherige Servicehistorie des Fahrzeugs.
 - Sieht keine Preise, Rechnungen, Zahlungen und keine Kontaktdaten des Kunden (nur Anzeigename).
-- Kann nur Positionen ausführen, die ihm zugewiesen sind, und nur solche mit Status
-  `approved` (vereinbart bzw. vom Kunden freigegeben).
+  Den Zahlungsstatus eines Auftrags sieht er nur als Kennzeichen (z. B. "Offen", ohne Beträge),
+  damit er weiß, ob ein Fahrzeug herausgegeben werden kann.
+- Kann Positionen ausführen, die ihm zugewiesen sind, sowie Positionen ohne Zuweisung in
+  Aufträgen, denen er zugewiesen ist; nie Positionen eines anderen Mitarbeiters. Ausführbar
+  sind nur Positionen mit Autorisierung `agreed` (bei der Annahme vereinbart) oder `approved`
+  (vom Kunden freigegeben), und nur in Aufträgen mit Arbeitsstatus `open` oder `in_progress`.
 
 ### Kunde (Konto verknüpft mit Kundendatensatz K)
 | Objekt | Sichtbar, wenn … |
 |---|---|
 | Fahrzeug | aktueller Halterzeitraum des Fahrzeugs gehört zu K (`vehicle_ownerships.ended_at IS NULL`). |
-| Auftrag | `work_orders.customer_id = K` (Aufträge gehören dem Kunden, nicht dem Fahrzeug). |
+| Auftrag | `work_orders.customer_id = K` (Aufträge gehören dem Kunden, nicht dem Fahrzeug) und Status nicht `draft`. |
 | Nachrichten | zu einem Auftrag von K. Interne Notizen nie. |
 | Freigabeanfrage | zu einem Auftrag von K, Status nicht `draft`. Entscheiden nur mit aktivem Konto von K. |
 | Dokument | `visibility = customer`, veröffentlicht, und `documents.customer_id = K`. Interne Dokumente nie. |

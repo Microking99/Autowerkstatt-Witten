@@ -1,0 +1,78 @@
+# Prüfungen bei jedem Push und Pull Request: Typen, Unit- und Integrationstests,
+# Web-Export und Browser-Tests des klickbaren Entwurfs.
+# Ein grüner Lauf ist KEIN Nachweis für iOS-, Android- oder Windows-Builds.
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**", "codex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Typen und Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # Nur für den kurzlebigen Testcontainer; kein Geheimnis.
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: werkstatt
+          POSTGRES_DB: werkstatt_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U werkstatt"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://werkstatt@localhost:5432/werkstatt_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  app-web:
+    name: App (Web-Export und Browser-Tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - id: app
+        name: App vorhanden?
+        run: if [ -f apps/app/package.json ]; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.app.outputs.exists == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.app.outputs.exists == 'true'
+        run: pnpm --filter @werkstatt/app export:demo
+      - if: steps.app.outputs.exists == 'true'
+        run: pnpm --filter @werkstatt/app exec playwright install --with-deps chromium
+      - if: steps.app.outputs.exists == 'true'
+        run: pnpm --filter @werkstatt/app e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/app/playwright-report
+          retention-days: 7

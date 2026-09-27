@@ -26,6 +26,7 @@
     "@fastify/websocket": "^11.3.1",
     "@node-rs/argon2": "^2.2.1",
     "@werkstatt/contracts": "workspace:*",
+    "@werkstatt/domain": "workspace:*",
     "drizzle-orm": "^0.45.3",
     "fastify": "^5.12.5",
     "fastify-plugin": "^6.0.0",
