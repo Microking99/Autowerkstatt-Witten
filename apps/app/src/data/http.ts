@@ -258,6 +258,7 @@ export class HttpApi implements WerkstattApi {
   archiveCustomer: WerkstattApi['archiveCustomer'] = (id) => this.call('archiveCustomer', { params: { id }, schema: CustomerDetailSchema });
   inviteCustomer: WerkstattApi['inviteCustomer'] = (id, input) => this.call('inviteCustomer', { params: { id }, body: input, schema: CustomerDetailSchema });
   disableCustomerAccount: WerkstattApi['disableCustomerAccount'] = (id) => this.call('disableCustomerAccount', { params: { id }, schema: CustomerDetailSchema });
+  enableCustomerAccount: WerkstattApi['enableCustomerAccount'] = (id) => this.call('enableCustomerAccount', { params: { id }, schema: CustomerDetailSchema });
   exportCustomerData: WerkstattApi['exportCustomerData'] = (id) =>
     this.download(buildPath(endpoints.exportCustomerData.path, { id }), 'kundendaten.zip', 'Der Export konnte nicht erstellt werden.');
 

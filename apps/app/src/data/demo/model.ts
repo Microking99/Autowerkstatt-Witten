@@ -237,6 +237,8 @@ export interface DIntake {
   notesInternal: string | null;
   notesCustomer: string | null;
   confirmedAt: Iso | null;
+  /** erste Bestätigung; bleibt gesetzt, auch wenn eine Änderung die Bestätigung aufhebt (R-ANN-3) */
+  firstConfirmedAt?: Iso | null;
   confirmationMethod: IntakeConfirmationMethod;
   contentHash: string | null;
 }

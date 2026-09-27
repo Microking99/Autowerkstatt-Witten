@@ -43,12 +43,12 @@ describe('HttpApi', () => {
   });
 
   it('übersetzt Fehlerantworten in ApiError (404, 409 mit Code)', async () => {
-    const api404 = new HttpApi({ baseUrl: 'https://api.example', fetchImpl: mockFetch(404, { error: { code: 'NOT_FOUND', message: 'Nicht gefunden' } }) });
-    await expect(api404.getWorkOrder('x')).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
-    const api409 = new HttpApi({ baseUrl: 'https://api.example', fetchImpl: mockFetch(409, { error: { code: ERROR_CODES.approvalVersionOutdated, message: 'Das Angebot wurde geändert.' } }) });
+    const api404 = new HttpApi({ baseUrl: 'https://api.example', fetchImpl: mockFetch(404, { error: { code: 'not_found', message: 'Nicht gefunden' } }) });
+    await expect(api404.getWorkOrder('x')).rejects.toMatchObject({ status: 404, code: 'not_found' });
+    const api409 = new HttpApi({ baseUrl: 'https://api.example', fetchImpl: mockFetch(409, { error: { code: ERROR_CODES.versionSuperseded, message: 'Das Angebot wurde geändert.' } }) });
     await expect(
       api409.decideApproval('a', { versionId: '0f8fad5b-d9cb-469f-a165-70867728950e', contentHash: 'a'.repeat(64), decision: 'approved', channel: 'web' }),
-    ).rejects.toMatchObject({ status: 409, code: ERROR_CODES.approvalVersionOutdated, message: 'Das Angebot wurde geändert.' });
+    ).rejects.toMatchObject({ status: 409, code: ERROR_CODES.versionSuperseded, message: 'Das Angebot wurde geändert.' });
   });
 
   it('meldet Netzwerkfehler als code NETWORK', async () => {

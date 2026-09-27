@@ -1,3 +1,4 @@
+import { createActor, effectivePermissions } from '@werkstatt/domain';
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../../errors';
 import type { DMaintenanceType, DServiceEntry, DWorkItem, DWorkOrder } from '../model';
@@ -23,8 +24,11 @@ const item = (p: Partial<DWorkItem>): DWorkItem => ({
   approvedVersionId: null, assignedTo: null, doneAt: '2026-09-25T10:00:00.000Z', doneBy: 'u-m', doneOdometerKm: 91_480, resultNotes: null, trackedMinutes: 0, runningSince: null, parts: [], ...p,
 });
 
+const admin = createActor({ userId: 'u-admin', role: 'admin', status: 'active' });
+const serviceRights = new Set(effectivePermissions('service', []));
+
 const args = (items: DWorkItem[], existing: DServiceEntry[] = [], wo = workOrder) => ({
-  workOrder: wo, items, existingEntries: existing, maintenanceTypes: types, workshopName: 'Autowerkstatt Witten', reviewerId: 'u-service', now: NOW, odometerKm: null, newId: nextId,
+  workOrder: wo, items, existingEntries: existing, maintenanceTypes: types, workshopName: 'Autowerkstatt Witten', reviewerId: 'u-service', permissions: serviceRights, now: NOW, odometerKm: null, newId: nextId,
 });
 
 describe('Serviceeinträge nur aus fachlichem Abschluss (Regel 8)', () => {
@@ -34,27 +38,39 @@ describe('Serviceeinträge nur aus fachlichem Abschluss (Regel 8)', () => {
     const { workOrder: after, entries } = completeReview(args([oil, other]));
     expect(after.status).toBe('completed');
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ workItemId: oil.id, odometerKm: 91_480, nextDueKm: 106_480, nextDueDate: '2027-09-25', revisionNo: 1, status: 'valid' });
+    // Datum der Durchführung = Tag des fachlichen Abschlusses (wie die API)
+    expect(entries[0]).toMatchObject({ workItemId: oil.id, odometerKm: 91_480, nextDueKm: 106_480, nextDueDate: '2027-09-26', revisionNo: 1, status: 'valid' });
+  });
+
+  it('verlangt das Recht für den fachlichen Abschluss', () => {
+    expect(() => completeReview({ ...args([item({ maintenanceTypeId: 'mt-oil' })]), permissions: new Set() })).toThrow(ApiError);
   });
 
   it('übernimmt abgelehnte, nicht durchgeführte oder nicht freigegebene Positionen nie (Regel 5)', () => {
-    const rejected = item({ maintenanceTypeId: 'mt-oil', authorization: 'rejected', executionStatus: 'not_done' });
+    const rejected = item({ maintenanceTypeId: 'mt-oil', authorization: 'rejected', executionStatus: 'planned' });
     const notDone = item({ maintenanceTypeId: 'mt-oil', executionStatus: 'not_done' });
     const withdrawn = item({ maintenanceTypeId: 'mt-oil', authorization: 'withdrawn', executionStatus: 'planned' });
     const { entries } = completeReview(args([rejected, notDone, withdrawn, item({})]));
     expect(entries).toHaveLength(0);
   });
 
-  it('verweigert den Abschluss, solange Arbeiten offen sind oder eine Freigabe aussteht', () => {
+  it('verweigert den Abschluss, solange ausführbare Arbeiten offen sind', () => {
     expect(() => completeReview(args([item({ maintenanceTypeId: 'mt-oil', executionStatus: 'in_progress' })]))).toThrow(ApiError);
-    expect(() => completeReview(args([item({}), item({ authorization: 'pending_approval', executionStatus: 'planned' })]))).toThrow(ApiError);
     expect(() => completeReview(args([item({})], [], { ...workOrder, status: 'in_progress' }))).toThrow(ApiError);
+  });
+
+  it('wartende Freigaben blockieren den Abschluss nicht (nur Hinweis), erscheinen aber nie in der Historie', () => {
+    const pending = item({ maintenanceTypeId: 'mt-oil', authorization: 'pending_approval', executionStatus: 'planned' });
+    const { entries } = completeReview(args([item({}), pending]));
+    expect(entries).toHaveLength(0);
   });
 
   it('erzeugt bei wiederholtem Abschluss keine Duplikate', () => {
     const oil = item({ maintenanceTypeId: 'mt-oil' });
     const first = completeReview(args([oil]));
-    expect(() => completeReview(args([oil], first.entries, first.workOrder))).toThrow(ApiError);
+    expect(first.entries).toHaveLength(1);
+    // wiederholter Abschluss (wie die API idempotent): keine Fehlermeldung, keine neuen Einträge
+    expect(completeReview(args([oil], first.entries, first.workOrder)).entries).toHaveLength(0);
     // Auch ein erneuter Lauf mit zurückgesetztem Status legt nichts doppelt an
     const again = completeReview(args([oil], first.entries));
     expect(again.entries).toHaveLength(0);
@@ -62,7 +78,7 @@ describe('Serviceeinträge nur aus fachlichem Abschluss (Regel 8)', () => {
 
   it('täuscht ohne km-Stand keine km-Fälligkeit vor (R-SERV-4)', () => {
     const { entries } = completeReview(args([item({ maintenanceTypeId: 'mt-oil', doneOdometerKm: null })]));
-    expect(entries[0]).toMatchObject({ odometerKm: null, nextDueKm: null, nextDueDate: '2027-09-25' });
+    expect(entries[0]).toMatchObject({ odometerKm: null, nextDueKm: null, nextDueDate: '2027-09-26' });
   });
 });
 
@@ -70,7 +86,7 @@ describe('Korrekturen als Revision (R-SERV-8)', () => {
   it('legt eine neue Revision an und markiert die alte als ersetzt', () => {
     const { entries } = completeReview(args([item({ maintenanceTypeId: 'mt-oil', doneOdometerKm: 8_402 })]));
     const original = entries[0]!;
-    const { previous, revision } = correctEntry(original, { odometerKm: 84_020, reason: 'Tippfehler' }, { newId: 'rev-2', userId: 'u-admin', now: NOW });
+    const { previous, revision } = correctEntry(original, { odometerKm: 84_020, reason: 'Tippfehler' }, { newId: 'rev-2', actor: admin, maintenanceTypeName: 'Ölwechsel mit Filter', now: NOW });
     expect(previous.status).toBe('superseded');
     expect(revision).toMatchObject({ revisionOfId: original.id, revisionNo: 2, odometerKm: 84_020, nextDueKm: 99_020, correctionReason: 'Tippfehler', status: 'valid' });
     expect(visibleEntries([previous, revision], 'veh-1').map((e) => e.id)).toEqual(['rev-2']);
@@ -78,7 +94,13 @@ describe('Korrekturen als Revision (R-SERV-8)', () => {
 
   it('verlangt eine Begründung', () => {
     const { entries } = completeReview(args([item({ maintenanceTypeId: 'mt-oil' })]));
-    expect(() => correctEntry(entries[0]!, { reason: '  ' }, { newId: 'x', userId: 'u', now: NOW })).toThrow(ApiError);
+    expect(() => correctEntry(entries[0]!, { reason: '  ', odometerKm: 1 }, { newId: 'x', actor: admin, maintenanceTypeName: null, now: NOW })).toThrow(ApiError);
+  });
+
+  it('verlangt das Korrekturrecht', () => {
+    const { entries } = completeReview(args([item({ maintenanceTypeId: 'mt-oil' })]));
+    const mechanic = createActor({ userId: 'u-m', role: 'mechanic', status: 'active' });
+    expect(() => correctEntry(entries[0]!, { reason: 'Tippfehler', odometerKm: 1 }, { newId: 'x', actor: mechanic, maintenanceTypeName: null, now: NOW })).toThrow(ApiError);
   });
 });
 

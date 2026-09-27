@@ -1,3 +1,4 @@
+import { createActor } from '@werkstatt/domain';
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../../errors';
 import type { DCheckout, DInvoice, DPayment, DProviderCheckout } from '../model';
@@ -32,9 +33,10 @@ describe('Zahlungsstatus', () => {
   });
 
   it('fasst Auftragsstatus aus mehreren Rechnungen zusammen', () => {
-    expect(aggregatePaymentStatus([])).toBe('no_invoice');
-    const open = summarizeInvoice(invoice, [], [], TODAY);
-    expect(aggregatePaymentStatus([open])).toBe('open');
+    expect(aggregatePaymentStatus([], [], [], TODAY).status).toBe('no_invoice');
+    expect(aggregatePaymentStatus([invoice], [], [], TODAY).status).toBe('open');
+    // Entwürfe zählen nicht
+    expect(aggregatePaymentStatus([{ ...invoice, status: 'draft' }], [], [], TODAY).status).toBe('no_invoice');
   });
 });
 
@@ -45,10 +47,14 @@ describe('"Jetzt bezahlen" ändert nichts am Rechnungsstatus (Regel 7)', () => {
     expect(summarizeInvoice(invoice, [], [], TODAY).paymentStatus).toBe('open');
   });
 
-  it('deaktiviert ältere offene Versuche', () => {
+  it('verwendet einen gültigen offenen Versuch wieder; nach Ablauf entsteht ein neuer', () => {
     const first = checkoutFor(invoice);
-    const second = startCheckout({ invoice, summary: summarizeInvoice(invoice, [], [], TODAY), existing: [first], checkoutId: 'co-2', providerCheckoutId: 'pc-2', userId: 'u', now: NOW, hostedUrl: 'https://anbieter.example/pc-2' });
-    expect(second.deactivatedIds).toEqual(['co-1']);
+    const again = startCheckout({ invoice, summary: summarizeInvoice(invoice, [], [], TODAY), existing: [first], checkoutId: 'co-2', providerCheckoutId: 'pc-2', userId: 'u', now: NOW, hostedUrl: 'https://anbieter.example/pc-2' });
+    expect(again.reused).toBe(true);
+    expect(again.checkout.id).toBe('co-1');
+    const later = '2026-09-26T11:00:00.000Z';
+    const second = startCheckout({ invoice, summary: summarizeInvoice(invoice, [], [], TODAY), existing: [first], checkoutId: 'co-2', providerCheckoutId: 'pc-2', userId: 'u', now: later, hostedUrl: 'https://anbieter.example/pc-2' });
+    expect(second.reused).toBe(false);
     expect(second.checkout.checkoutReference).toBe('R-2026-0311-2');
   });
 
@@ -105,9 +111,13 @@ describe('Anbieterbestätigung wird serverseitig geprüft', () => {
     expect(second.events[0]?.receiveCount).toBe(2);
   });
 
-  it('manuelle Zahlung darf den offenen Betrag nicht übersteigen', () => {
+  it('manuelle Zahlung: nur mit Recht, Pflichtangaben, höchstens der offene Betrag', () => {
     const summary = summarizeInvoice(invoice, [], [], TODAY);
-    expect(() => validateManualPayment(summary, 10_000)).toThrow(ApiError);
-    expect(() => validateManualPayment(summary, 9_996)).not.toThrow();
+    const admin = createActor({ userId: 'u-admin', role: 'admin', status: 'active' });
+    const mechanic = createActor({ userId: 'u-mech', role: 'mechanic', status: 'active' });
+    const payment = { method: 'cash' as const, amountCents: 9_996, receivedAt: NOW, referenceText: 'Kasse 1, Beleg 17' };
+    expect(() => validateManualPayment({ actor: admin, invoice, summary, payment: { ...payment, amountCents: 10_000 }, now: NOW })).toThrow(ApiError);
+    expect(() => validateManualPayment({ actor: mechanic, invoice, summary, payment, now: NOW })).toThrow(ApiError);
+    expect(() => validateManualPayment({ actor: admin, invoice, summary, payment, now: NOW })).not.toThrow();
   });
 });

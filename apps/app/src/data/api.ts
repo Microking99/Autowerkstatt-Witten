@@ -294,6 +294,8 @@ export interface WerkstattApi {
   archiveCustomer(id: string): Promise<CustomerDetail>;
   inviteCustomer(id: string, input: { email: string }): Promise<CustomerDetail>;
   disableCustomerAccount(id: string): Promise<CustomerDetail>;
+  /** Gesperrten Zugang wieder freischalten (nie aktiviertes Konto bleibt eingeladen) */
+  enableCustomerAccount(id: string): Promise<CustomerDetail>;
   /** Datenexport eines Kunden (ZIP, customers.read + reports.export), DSGVO Art. 15/20 */
   exportCustomerData(customerId: string): Promise<DownloadResult>;
 

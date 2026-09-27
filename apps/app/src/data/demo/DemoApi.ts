@@ -35,6 +35,7 @@ import {
   berlinDateOf,
   canExecuteWorkItem,
   canTransitionWorkOrder,
+  canViewDocument,
   checkOdometerPlausibility,
   computeIntakeHash,
   createActor,
@@ -187,6 +188,10 @@ function base62(bytes: number): string {
 const pwHash = (password: string) => sha256Hex(`demo:${password}`);
 const tokenHash = (token: string) => sha256Hex(`token:${token}`);
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic']);
+/** Auftragsstatus, in denen eine Zuweisung Zugriff auf Fahrzeugakte und Dokumente gibt. */
+const ACTIVE_ASSIGNMENT_STATUSES: readonly string[] = ['draft', 'open', 'in_progress', 'work_completed'];
+/** Felder, die Umfang oder Preis einer vereinbarten Leistung bestimmen (API: AGREED_SCOPE_FIELDS). */
+const AGREED_SCOPE_FIELDS = ['kind', 'title', 'description', 'quantity', 'unit', 'unitPriceCents', 'vatRateBp'] as const;
 
 export class DemoApi implements WerkstattApi {
   readonly mode = 'demo' as const;
@@ -364,8 +369,20 @@ export class DemoApi implements WerkstattApi {
       return vehicle;
     }
     if (can(v, 'vehicles.read')) return vehicle;
-    if (this.visibleWorkOrders(v).some((w) => w.vehicleId === id)) return vehicle;
+    if (this.activeAssignmentScope(v).vehicleIds.has(id)) return vehicle;
     throw ApiError.forbidden();
+  }
+
+  /**
+   * Laufende Aufträge (Entwurf bis Arbeit abgeschlossen), denen ein Mitarbeiter selbst oder über
+   * eine Position zugewiesen ist. Nur darüber sieht er ohne Leserecht Fahrzeugakte,
+   * Servicehistorie und interne Dokumente (API: services/access.ts `activeAssignmentScope`).
+   */
+  private activeAssignmentScope(v: Viewer): { workOrderIds: Set<string>; vehicleIds: Set<string> } {
+    const orders = this.state.workOrders.filter(
+      (w) => ACTIVE_ASSIGNMENT_STATUSES.includes(w.status) && mechanicCanSeeWorkOrder(v.user.id, w, this.state.workItems, false),
+    );
+    return { workOrderIds: new Set(orders.map((w) => w.id)), vehicleIds: new Set(orders.map((w) => w.vehicleId)) };
   }
 
   private invoiceFor(v: Viewer, id: string) {
@@ -800,9 +817,26 @@ export class DemoApi implements WerkstattApi {
     if (!c) throw ApiError.notFound();
     const account = this.state.customerAccounts.find((a) => a.customerId === id);
     const user = account ? this.userById(account.userId) : undefined;
-    if (!user) throw ApiError.unprocessable(API_ERROR_CODES.noAccount, 'Dieser Kunde hat keinen App-Zugang.');
+    if (!user) throw ApiError.conflict(API_ERROR_CODES.noAccount, 'Der Kunde hat keinen App-Zugang.');
     user.status = 'disabled';
-    this.audit(v, 'customer_account.disabled', 'customer', id);
+    this.audit(v, 'customer_account.disabled', 'customer', id, { userId: user.id });
+    this.changed();
+    return this.map.customerDetail(c, v);
+  }
+
+  /** Gesperrten Zugang wieder freischalten: nie aktiviertes Konto bleibt eingeladen, sonst aktiv. */
+  async enableCustomerAccount(id: string) {
+    await this.gate();
+    const v = this.viewer();
+    this.require(v, 'customerAccounts.manage');
+    const c = this.state.customers.find((x) => x.id === id);
+    if (!c) throw ApiError.notFound();
+    const account = this.state.customerAccounts.find((a) => a.customerId === id);
+    const user = account ? this.userById(account.userId) : undefined;
+    if (!user) throw ApiError.conflict(API_ERROR_CODES.noAccount, 'Der Kunde hat keinen App-Zugang.');
+    if (user.status !== 'disabled') throw ApiError.conflict(API_ERROR_CODES.notDisabled, 'Der Zugang ist nicht gesperrt.');
+    user.status = user.passwordHash ? 'active' : 'invited';
+    this.audit(v, 'customer_account.enabled', 'customer', id, { userId: user.id, status: user.status });
     this.changed();
     return this.map.customerDetail(c, v);
   }
@@ -828,7 +862,7 @@ export class DemoApi implements WerkstattApi {
     const bytes = new TextEncoder().encode(json);
     let binary = '';
     for (const b of bytes) binary += String.fromCharCode(b);
-    const b64 = typeof btoa === 'function' ? btoa(binary) : toBase64(bytes);
+    const b64 = typeof btoa === 'function' ? btoa(binary) : toBase64(binary);
     return { uri: `data:application/json;base64,${b64}`, fileName: `datenexport-${c.customerNumber}-${this.today()}.json`, mimeType: 'application/json' };
   }
 
@@ -1045,7 +1079,7 @@ export class DemoApi implements WerkstattApi {
   private entriesVisibleTo(v: Viewer, vehicleId: string) {
     this.vehicleFor(v, vehicleId);
     if (v.role === 'customer') return visibleEntries(this.state.serviceEntries, vehicleId);
-    if (!can(v, 'serviceHistory.read') && !this.visibleWorkOrders(v).some((w) => w.vehicleId === vehicleId)) throw ApiError.forbidden();
+    if (!can(v, 'serviceHistory.read') && !this.activeAssignmentScope(v).vehicleIds.has(vehicleId)) throw ApiError.forbidden();
     return this.state.serviceEntries
       .filter((e) => e.vehicleId === vehicleId)
       .sort((a, b) => (a.performedOn < b.performedOn ? 1 : a.performedOn > b.performedOn ? -1 : b.revisionNo - a.revisionNo));
@@ -1486,6 +1520,15 @@ export class DemoApi implements WerkstattApi {
     const next: DWorkOrder = { ...wo, status: input.to, updatedAt: this.nowIso(), ...(input.to === 'cancelled' ? { cancelledAt: this.nowIso(), cancelReason: input.reason ?? null } : {}) };
     this.replaceWorkOrder(next);
     this.audit(v, 'work_order.status_changed', 'work_order', id, { workOrderId: id, from: wo.status, to: input.to, reason: input.reason ?? null });
+    if (input.to === 'cancelled') {
+      // Wie die API: gesendete offene Anfragen eines stornierten Auftrags werden zurückgezogen
+      for (const r of this.state.approvals.filter((x) => x.workOrderId === id && x.status === 'pending_customer')) {
+        const { request, items } = approvalRules.withdrawRequest(r, this.nowIso(), this.state.workItems);
+        this.replaceApproval(request);
+        this.state.workItems = items;
+        this.audit(v, 'approval.withdrawn', 'approval_request', r.id, { workOrderId: id, reason: 'work_order_cancelled' });
+      }
+    }
     this.changed();
     return this.map.workOrderDetail(next, v);
   }
@@ -1576,6 +1619,12 @@ export class DemoApi implements WerkstattApi {
     return computeIntakeHash({ ...intake, items: this.state.workItems.filter((i) => i.workOrderId === intake.workOrderId) });
   }
 
+  /** Wurde die Annahme jemals bestätigt? (API: intakes.first_confirmed_at, bleibt dauerhaft gesetzt) */
+  private intakeWasConfirmed(workOrderId: string): boolean {
+    const intake = this.state.intakes.find((i) => i.workOrderId === workOrderId);
+    return !!(intake?.firstConfirmedAt ?? intake?.confirmedAt);
+  }
+
   /** Ändert sich der bestätigte Inhalt, gilt die frühere Bestätigung nicht mehr (Audit). */
   private invalidateIntakeIfChanged(workOrderId: string, v: Viewer) {
     const intake = this.state.intakes.find((i) => i.workOrderId === workOrderId);
@@ -1643,7 +1692,7 @@ export class DemoApi implements WerkstattApi {
     const current = this.intakeHash(intake);
     if (current !== input.contentHash.toLowerCase()) throw ApiError.conflict(API_ERROR_CODES.intakeChanged, 'Die Annahme wurde inzwischen geändert. Bitte die aktuelle Fassung prüfen.');
     if (!(intake.confirmedAt && intake.contentHash === current)) {
-      Object.assign(intake, { confirmedAt: this.nowIso(), confirmationMethod: input.method, contentHash: current });
+      Object.assign(intake, { confirmedAt: this.nowIso(), firstConfirmedAt: intake.firstConfirmedAt ?? this.nowIso(), confirmationMethod: input.method, contentHash: current });
       this.audit(v, 'intake.confirmed', 'work_order', workOrderId, { workOrderId, method: input.method, contentHash: current });
       if (v.role === 'customer') {
         const wo = this.state.workOrders.find((w) => w.id === workOrderId)!;
@@ -1662,9 +1711,9 @@ export class DemoApi implements WerkstattApi {
     if (!['draft', 'open', 'in_progress', 'work_completed'].includes(wo.status)) {
       throw ApiError.conflict(API_ERROR_CODES.workOrderClosed, 'Zu einem abgeschlossenen Auftrag können keine Positionen hinzugefügt werden.');
     }
-    const intake = this.state.intakes.find((i) => i.workOrderId === workOrderId);
-    if (intake?.confirmedAt) {
-      // R-ANN-3: Die bestätigte Annahme deckt keine späteren Zusatzarbeiten
+    if (this.intakeWasConfirmed(workOrderId)) {
+      // R-ANN-3: Die bestätigte Annahme deckt keine späteren Zusatzarbeiten, auch wenn eine
+      // spätere Änderung die Bestätigung ungültig gemacht hat
       throw ApiError.conflict(API_ERROR_CODES.approvalRequired, 'Die Annahme ist bestätigt. Weitere Arbeiten bitte als Freigabeanfrage an den Kunden senden.');
     }
     if (!input.title?.trim()) throw ApiError.validation('Bitte einen Titel angeben.');
@@ -1685,6 +1734,11 @@ export class DemoApi implements WerkstattApi {
     const item = this.itemFor(v, itemId);
     if (item.approvalRequestId) throw ApiError.conflict(API_ERROR_CODES.approvalBound, 'Diese Position gehört zu einer Freigabeanfrage. Änderungen bitte als neue Fassung der Anfrage senden.');
     if (item.executionStatus === 'done' || item.executionStatus === 'not_done') throw ApiError.conflict(API_ERROR_CODES.itemFinished, 'Abgeschlossene Positionen können nicht mehr geändert werden.');
+    if (item.origin === 'intake' && AGREED_SCOPE_FIELDS.some((f) => input[f] !== undefined) && this.intakeWasConfirmed(item.workOrderId)) {
+      // R-ANN-3: Umfang und Preis bestätigter Leistungen ändern sich nur über eine Freigabe;
+      // Zuweisung, Wartungsart und Intervall bleiben änderbar
+      throw ApiError.conflict(API_ERROR_CODES.approvalRequired, 'Die Annahme ist bestätigt. Änderungen an Umfang oder Preis bitte als Freigabeanfrage an den Kunden senden.');
+    }
     this.assertAssignable([input.assignedTo]);
     const next = { ...item, ...Object.fromEntries(Object.entries(input).filter(([, x]) => x !== undefined)) } as DWorkItem;
     this.replaceItem(next);
@@ -2025,10 +2079,8 @@ export class DemoApi implements WerkstattApi {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'approvals.request');
-    const wo = this.workOrderFor(v, workOrderId);
-    if (!['draft', 'open', 'in_progress', 'work_completed'].includes(wo.status)) {
-      throw ApiError.conflict(API_ERROR_CODES.workOrderClosed, 'Zu einem abgeschlossenen Auftrag können keine Freigaben angefragt werden.');
-    }
+    this.workOrderFor(v, workOrderId);
+    this.ensureOpenForApprovals(workOrderId);
     this.validateApprovalReferences(workOrderId, input);
     const req = approvalRules.createDraft({ id: uuid(), versionId: uuid(), workOrderId, draft: input, createdBy: v.user.id, now: this.nowIso() });
     this.state.approvals.push(req);
@@ -2078,9 +2130,22 @@ export class DemoApi implements WerkstattApi {
     this.refreshWorkStatus(workOrderId);
   }
 
+  /** Freigaben nur zu Aufträgen, deren Arbeit noch aussteht (Anlage, Senden, neue Fassung). */
+  private ensureOpenForApprovals(workOrderId: string) {
+    const wo = this.state.workOrders.find((w) => w.id === workOrderId);
+    if (!wo || !ACTIVE_ASSIGNMENT_STATUSES.includes(wo.status)) {
+      throw ApiError.conflict(API_ERROR_CODES.workOrderClosed, 'Zu einem abgeschlossenen Auftrag können keine Freigaben angefragt werden.');
+    }
+  }
+
   private doRevise(v: Viewer, id: string, input: ApprovalDraft) {
     const r = this.approvalFor(v, id);
+    this.ensureOpenForApprovals(r.workOrderId);
     this.validateApprovalReferences(r.workOrderId, input);
+    if (r.status !== 'draft' && this.state.workItems.some((i) => i.approvalRequestId === r.id && i.executionStatus !== 'planned')) {
+      // Wie die API: Aus der Anfrage wurde bereits gearbeitet, Änderungen brauchen eine neue Anfrage
+      throw ApiError.conflict(API_ERROR_CODES.approvalInExecution, 'Aus dieser Anfrage wurden bereits Arbeiten begonnen. Änderungen bitte als neue Freigabeanfrage senden.');
+    }
     const before = approvalRules.currentVersion(r);
     const next = approvalRules.reviseRequest(r, input, { versionId: uuid(), createdBy: v.user.id, now: this.nowIso() });
     this.replaceApproval(next);
@@ -2109,7 +2174,9 @@ export class DemoApi implements WerkstattApi {
     await this.gate();
     const v = this.viewer();
     this.require(v, 'approvals.request');
-    const r = approvalRules.sendRequest(this.approvalFor(v, id), this.nowIso());
+    const current = this.approvalFor(v, id);
+    this.ensureOpenForApprovals(current.workOrderId);
+    const r = approvalRules.sendRequest(current, this.nowIso());
     this.replaceApproval(r);
     // Positionen entstehen erst beim Senden (keine Preise vor dem Senden im Auftrag)
     this.state.workItems = approvalRules.syncItemsWithVersion(this.state.workItems, r, uuid);
@@ -2186,9 +2253,20 @@ export class DemoApi implements WerkstattApi {
     const docs = this.state.documents.filter((d) => d.deletedAt === null);
     if (v.role === 'customer') return docs.filter((d) => customerCanSeeDocument(v.customerId ?? '', d));
     if (v.role === 'mechanic') {
-      // Mechaniker: nie Angebote und Rechnungen (Preise), sonst nur zu eigenen Aufträgen
-      const orders = new Set(this.visibleWorkOrders(v).map((w) => w.id));
-      return docs.filter((d) => d.kind !== 'offer' && d.kind !== 'invoice' && d.workOrderId && orders.has(d.workOrderId) && (d.visibility === 'customer' || can(v, 'documents.readInternal')));
+      // Domain-Regel: nur mit documents.readInternal, nur zu laufenden zugewiesenen Aufträgen
+      // bzw. deren Fahrzeugen, nie Angebote und Rechnungen (Preise)
+      const actor = this.actorOf(v);
+      const scope = this.activeAssignmentScope(v);
+      return docs.filter(
+        (d) =>
+          canViewDocument(actor, {
+            customerId: d.customerId,
+            visibility: d.visibility,
+            publishedAt: d.publishedAt,
+            kind: d.kind,
+            actorAssignedViaActiveWorkOrder: (d.workOrderId !== null && scope.workOrderIds.has(d.workOrderId)) || (d.vehicleId !== null && scope.vehicleIds.has(d.vehicleId)),
+          }).allowed,
+      );
     }
     if (can(v, 'documents.readInternal')) return docs;
     return docs.filter((d) => d.visibility === 'customer');
