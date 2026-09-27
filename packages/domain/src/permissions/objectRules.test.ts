@@ -38,6 +38,23 @@ const workOrderOfA: WorkOrderAccessInput = { customerId: IDS.customerA, assignee
 const workOrderOfB: WorkOrderAccessInput = { customerId: IDS.customerB, assigneeUserIds: [IDS.otherMechanicUser], itemAssigneeUserIds: [] };
 
 describe('Auftragsentwürfe', () => {
+  it('Kunden sehen Chat und Freigabeanfragen eines Auftragsentwurfs nicht (404)', () => {
+    const draft: WorkOrderAccessInput = { ...workOrderOfA, status: 'draft' };
+    const chat = canViewMessages(customerA(), draft);
+    expect(allowed(chat)).toBe(false);
+    expect(notFoundOf(chat)).toBe(true);
+    expect(allowed(canSendMessage(customerA(), draft))).toBe(false);
+    const approval = canViewApprovalRequest(customerA(), { workOrder: draft, status: 'pending_customer' });
+    expect(allowed(approval)).toBe(false);
+    expect(notFoundOf(approval)).toBe(true);
+    // ab "offen" wie bisher
+    const open: WorkOrderAccessInput = { ...workOrderOfA, status: 'open' };
+    expect(allowed(canViewMessages(customerA(), open))).toBe(true);
+    expect(allowed(canViewApprovalRequest(customerA(), { workOrder: open, status: 'pending_customer' }))).toBe(true);
+    // Mitarbeiter unverändert
+    expect(allowed(canViewMessages(service(), draft))).toBe(true);
+  });
+
   it('Kunden sehen Aufträge im Entwurf nicht (404), ab "offen" schon; Mitarbeiter immer', () => {
     const draft: WorkOrderAccessInput = { ...workOrderOfA, status: 'draft' };
     const d = canViewWorkOrder(customerA(), draft);
