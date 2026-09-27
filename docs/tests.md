@@ -1,185 +1,209 @@
-# Testplan
+# Testplan und Testbericht
 
-Stand: 26.09.2026. Bezug: Abschnitt 11 in `docs/anforderungen.md`, AGENTS.md Abschnitt 7.
+Stand: 27.09.2026. Bezug: Abschnitt 11 in `docs/anforderungen.md`, AGENTS.md Abschnitt 7.
 
 > **Ein Browser-Test ist kein Nachweis für iOS, Android oder Windows.** Browser-Tests prüfen den
-> Web-Export (bzw. den Demo-Modus) in Chromium. Ob eine Funktion auf einem iPhone, einem
-> Android-Gerät oder in der Windows-Anwendung funktioniert, belegt nur ein Test auf dem
-> jeweiligen Build und Gerät. Solche Tests sind derzeit **blockiert**: Es gibt keinen Build,
-> keine Testgeräte und keine Konten (Apple, Google, Expo, Windows-Signatur).
+> Web-Export in Chromium, entweder im Demo-Modus oder gegen die echte API mit Testdatenbank. Ob
+> eine Funktion auf einem iPhone, einem Android-Gerät oder in der Windows-Anwendung
+> funktioniert, belegt nur ein Test auf dem jeweiligen Build und Gerät. Solche Tests sind
+> **blockiert**: Es gibt keinen Build, keine Testgeräte und keine Konten (Apple, Google, Expo,
+> Windows-Signatur).
 
 ## 1. Testebenen
 
 | Ebene | Werkzeug | Ort | Befehl | Prüft |
 |---|---|---|---|---|
-| Domain-Unit | Vitest | `packages/domain/src/**/*.test.ts` (entsteht in P-02) | `pnpm --filter @werkstatt/domain test` | Reine Regeln: Rechte, Statusübergänge, Hash, Zahlungsprüfung, Servicehistorie, Fälligkeiten |
-| Vertrag | Vitest | `packages/contracts/src/contracts.test.ts` (vorhanden) | `pnpm --filter @werkstatt/contracts test` | Routen, öffentliche Endpunkte, Schemas |
-| API-Integration | Vitest gegen PostgreSQL 16, externe Dienste über Test-Adapter | `apps/api/test/**` bzw. `apps/api/src/**/*.test.ts` (entsteht in P-03) | `pnpm --filter @werkstatt/api db:start`, danach `pnpm --filter @werkstatt/api test` | Rechte in Routen, Transaktionen, Eindeutigkeiten, Webhooks, Outbox |
-| App-E2E Web | Playwright (Chromium) gegen den Web-Export des Demo-Modus, später gegen eine Test-API | `apps/app/e2e/**` (entsteht in P-04/P-05) | `pnpm --filter @werkstatt/app e2e` | Abläufe und Zustände der Oberfläche im Browser |
-| Gerätetest iOS/Android | Maestro-Abläufe auf Builds (z. B. über EAS Workflows) und manuelle Prüfung | `apps/app/.maestro/**` (entsteht in C-04) | noch keiner | Verhalten der nativen Apps |
-| Gerätetest Windows | Manuelle Prüfung des NSIS-Installers nach Protokoll | Protokoll entsteht mit dem ersten Build | noch keiner | Installation, Start, Anmeldung, Zahlung im Standardbrowser |
+| Domain-Unit | Vitest | `packages/domain/src/**/*.test.ts` | `pnpm --filter @werkstatt/domain test` | Reine Regeln: Rechte, Statusübergänge, Hash, Zahlungsprüfung, Servicehistorie, Fälligkeiten, Termine |
+| Vertrag | Vitest | `packages/contracts/src/*.test.ts` | `pnpm --filter @werkstatt/contracts test` | Routen, Deep Links, `safeNextPath`, öffentliche Endpunkte, Schemas, Fehlercodes |
+| Design-Tokens | Vitest | `packages/design-tokens/src/index.test.ts` | `pnpm --filter @werkstatt/design-tokens test` | Farbkontraste hell und dunkel |
+| API-Integration | Vitest gegen PostgreSQL 16; SumUp, E-Mail und Push über Test-Adapter | `apps/api/test/*.test.ts` | `pnpm --filter @werkstatt/api db:start`, danach `pnpm test` | Rechte in allen Routen, Transaktionen, Idempotenz, Webhooks, Outbox, Servicehistorie |
+| App-Unit | Vitest | `apps/app/src/**/*.test.ts` | `pnpm --filter @werkstatt/app test` | HttpApi, Offline-Warteschlange, Regeln des Demo-Modus |
+| App-E2E Demo | Playwright (Chromium) gegen den Web-Export im Demo-Modus, Telefon 390x844 und PC 1440x900 | `apps/app/e2e/*.spec.ts` | `pnpm --filter @werkstatt/app export:demo`, dann `pnpm --filter @werkstatt/app e2e` | Klickwege A bis G, Werkstatt, Mechaniker, Tastatur, Zugang, alle Zustände |
+| App-E2E echte API | Playwright (Chromium) gegen den Web-Export mit `EXPO_PUBLIC_API_URL` und die echte API mit frischer Datenbank `werkstatt_e2e` | `apps/app/e2e-api/*.spec.ts`, Server `apps/api/scripts/e2e-server.ts` | `pnpm --filter @werkstatt/app export:api-e2e`, dann `pnpm --filter @werkstatt/app e2e:api` | Jede Ansicht je Rolle ohne Vertragsabweichung; Freigabe, Zahlung, Abschluss, QR und Fremdzugriff über Oberfläche und Server |
+| Gerätetest iOS/Android | Maestro-Abläufe auf Builds (z. B. über EAS) und manuelle Prüfung | entsteht mit dem ersten Build (Codex-Paket C-04) | noch keiner | Verhalten der nativen Apps |
+| Gerätetest Windows | Manuelle Prüfung des NSIS-Installers nach Protokoll | entsteht mit dem ersten Build | noch keiner | Installation, Start, Anmeldung, Zahlung im Standardbrowser |
 
 Testdaten sind ausschließlich Beispieldaten (`[TEST]`, `is_test_data = true`), nie echte
-Kundendaten. Externe Dienste (SumUp, E-Mail, Push) laufen in Tests über Test-Implementierungen
-der Adapter.
+Kundendaten. Das Passwort der Testkonten für die E2E-Tests gegen die API wird je Lauf zufällig
+erzeugt und nirgends gespeichert. Der Test-Zahlungsanbieter bucht nichts; seine Bestätigung
+läuft wie im Betrieb über Webhook und Statusabfrage.
 
-## 2. Mindest-Testfälle T-01 bis T-13
+## 2. Ergebnis des letzten vollständigen Laufs
 
-Status: `geplant`, `implementiert (Datei)`, `grün (Datum, Befehl)`, `blockiert (Grund)`.
-Alle Dateipfade sind geplant und entstehen in den genannten Paketen; genaue Namen können
-abweichen und werden hier nachgetragen.
+| Befehl | Ergebnis (27.09.2026, lokal, Linux) |
+|---|---|
+| `pnpm typecheck` | alle fünf Pakete ohne Fehler |
+| `pnpm test` | design-tokens 8, contracts 13, domain 247, app 99, api 142 Tests grün |
+| `pnpm --filter @werkstatt/app e2e` (Demo) | 104 bestanden, 2 übersprungen (Tastaturtests nur im Projekt "pc"); Lauf vom APP-2-Paket, nach dem Zusammenführen in CI grün |
+| `pnpm --filter @werkstatt/app e2e:api` (echte API) | 10 bestanden |
+| GitHub Actions `CI` | Jobs "Typen und Tests", "App (Web-Export und Browser-Tests)" und "App gegen echte API" |
+
+Nicht ausgeführt: iOS-, Android- und Windows-Builds, Gerätetests, Tests gegen die
+SumUp-Sandbox, echter E-Mail- oder Push-Versand.
+
+## 3. Mindest-Testfälle T-01 bis T-13
+
+Status: `grün (Datum)`, `blockiert (Grund)`. Anzahl = Tests in der Datei (bei Sammeldateien
+nur die zum Fall gehörenden Gruppen).
 
 ### T-01 Kunde mit mehreren Fahrzeugen
 
 Anforderungen: R-KUN-3, R-ROLLE-4, R-FZG-3.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Domain-Unit | `packages/domain/src/permissions/customer-rules.test.ts` (entsteht) | Kunde sieht alle Fahrzeuge mit aktuellem Halterzeitraum, keine beendeten | geplant |
-| API-Integration | `apps/api/test/customers-vehicles.test.ts` (entsteht) | Auftragsanlage bietet alle Fahrzeuge des Kunden; `/vehicles` für Kunden liefert genau die eigenen aktuellen | geplant |
-| App-E2E Web | `apps/app/e2e/kunde-fahrzeuge.spec.ts` (entsteht) | Liste "Meine Fahrzeuge" mit mehreren Fahrzeugen, Wechsel zwischen Fahrzeugen | geplant |
-| Gerätetest iOS/Android/Windows | `apps/app/.maestro/kunde-fahrzeuge.yaml` (entsteht) | wie E2E auf Gerät | blockiert: kein Build, keine Geräte, keine Konten |
+| Domain-Unit | `packages/domain/src/permissions/objectRules.test.ts` | Fahrzeugsicht nur mit aktuellem Halterzeitraum | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t01-kunde-mehrere-fahrzeuge.test.ts` (2) | Kundin sieht genau ihre zwei Fahrzeuge; Auftrag nur mit einem Fahrzeug des gewählten Kunden | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/d-servicehistorie.spec.ts` | Fahrzeugliste, Wechsel zu Golf, Fälligkeiten und Historie | grün (27.09.2026) |
+| App-E2E API | `apps/app/e2e-api/00-rundgang.spec.ts` (Kundin) | Fahrzeugliste und Fahrzeugakte gegen die echte API | grün (27.09.2026) |
+| Gerätetest | | wie E2E auf Gerät | blockiert: kein Build, keine Geräte, keine Konten |
 
 ### T-02 Keine Einsicht in fremde Akten und Dokumente
 
-Anforderungen: R-ROLLE-4, R-ROLLE-5, R-DOK-2, AGENTS.md Regel 1. Szenarien: C-01 R1, R2, R12.
+Anforderungen: R-ROLLE-4, R-ROLLE-5, R-DOK-2, AGENTS.md Regel 1.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Domain-Unit | `packages/domain/src/permissions/object-rules.test.ts` (entsteht) | Objektregeln für Auftrag, Dokument, Foto, Rechnung, Nachricht, Freigabe, Termin | geplant |
-| API-Integration | `apps/api/test/access-foreign-objects.test.ts` (entsteht) | Kunde A erhält für jedes Objekt von Kunde B `404`; Listen ohne fremde Einträge; Dateidownload fremder und interner Dokumente `404` | geplant |
-| App-E2E Web | `apps/app/e2e/nicht-verfuegbar.spec.ts` (entsteht) | Direkter Aufruf einer fremden Route zeigt "Nicht verfügbar" ohne Daten | geplant |
-| Gerätetest | `apps/app/.maestro/deep-link-fremd.yaml` (entsteht) | Deep Link auf fremden Vorgang in der App | blockiert: kein Build, keine Geräte, keine Konten |
+| Domain-Unit | `packages/domain/src/permissions/objectRules.test.ts` (43), `redaction.test.ts` (5) | Objektregeln für Auftrag, Dokument, Foto, Rechnung, Nachricht, Freigabe, Termin; Feldfilter | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t02-keine-fremden-daten.test.ts` (2), `review-rechte.test.ts` (24, u. a. R01 IDOR über alle Routen mit ID) | Kunde A erhält für Objekte von Kunde B `404`; Listen ohne fremde Einträge; Dateien und interne Dokumente `404` | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/a-angebot.spec.ts`, `c-rechnung.spec.ts` | Fremder Auftrag bzw. fremde Rechnung per URL zeigt "Nicht verfügbar" | grün (27.09.2026) |
+| App-E2E API | `apps/app/e2e-api/10-ablaeufe.spec.ts` Schritt 2 | Andere Kundin: Auftrag, Freigabe, Rechnung, Fahrzeug nicht verfügbar, keine Namen oder Beträge sichtbar | grün (27.09.2026) |
+| Gerätetest | | Deep Link auf fremden Vorgang in der App | blockiert: kein Build, keine Geräte, keine Konten |
 
 ### T-03 Unterschiedliche Mitarbeiterrechte
 
-Anforderungen: R-ROLLE-2, R-ROLLE-3, R-ADM-1, R-MECH-3. Szenarien: C-01 R5 bis R10, R18.
+Anforderungen: R-ROLLE-2, R-ROLLE-3, R-ADM-1, R-MECH-3.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Domain-Unit | `packages/domain/src/permissions/roles.test.ts` (entsteht) | Rollenstandards, gewährte und entzogene Rechte, nicht zuweisbare Rechte, letzter Admin | geplant |
-| API-Integration | `apps/api/test/staff-permissions.test.ts` (entsteht) | Service ohne `payments.refund` erhält `403`; Mechaniker sieht nur zugewiesene Aufträge und keine Preise; Deaktivierung beendet Sitzungen | geplant |
-| App-E2E Web | `apps/app/e2e/rollen.spec.ts` (entsteht) | Menüs und Aktionen je Rolle; Aufruf fremder Rollenbereiche leitet um | geplant |
-| Gerätetest | `apps/app/.maestro/mechaniker-heute.yaml` (entsteht) | Mechanikeransicht auf Telefon | blockiert: kein Build, keine Geräte, keine Konten |
+| Domain-Unit | `packages/domain/src/permissions/catalog.test.ts` (21) | Rollenstandards, gewährte und entzogene Rechte, nicht zuweisbare Rechte | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t03-mitarbeiterrechte.test.ts` (6), `review-rechte.test.ts`, `kundenzugang.test.ts` (1) | Mechaniker nur zugewiesene Aufträge, keine Preise, keine Rechnungen; Service ohne `payments.refund` 403; nicht zuweisbare Rechte und Inhaber-Schutz; Deaktivierung beendet Sitzungen; gesperrter Kundenzugang nur mit Recht wieder frei | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/zugang.spec.ts`, `w-werkstatt.spec.ts` | Fremder Rollenbereich leitet um; ohne Recht keine manuelle Zahlung und kein Stellen | grün (27.09.2026) |
+| App-E2E API | `apps/app/e2e-api/10-ablaeufe.spec.ts` Schritte 4 und 6 | Mechaniker sieht keine Preise; ohne Zuweisung kein Zugriff auf den Auftrag | grün (27.09.2026) |
+| Gerätetest | | Mechanikeransicht auf Telefon | blockiert: kein Build, keine Geräte, keine Konten |
 
 ### T-04 Freigabe und Ablehnung von Zusatzarbeiten
 
 Anforderungen: R-FRG-1 bis R-FRG-5, AGENTS.md Regeln 4 und 5.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Domain-Unit | `packages/domain/src/approvals/approvals.test.ts` (entsteht) | Entscheidung nur zur aktuellen Version mit gleichem Hash; Ablehnung sperrt Positionen; getrennte Anfragen bleiben unberührt | geplant |
-| API-Integration | `apps/api/test/approvals.test.ts` (entsteht) | Freigeben und Ablehnen durch den Kunden; Mitarbeiter und Mechaniker können nicht entscheiden; genau eine Entscheidung je Version; Audit-Eintrag mit Person, Zeitpunkt, Betrag, Hash | geplant |
-| App-E2E Web | `apps/app/e2e/kunde-zusatzarbeit.spec.ts` (entsteht) | Klickweg B inkl. Abbruch, Ablehnung, Verbindungsfehler | geplant |
-| Gerätetest | `apps/app/.maestro/kunde-zusatzarbeit.yaml` (entsteht) | Klickweg B aus einer Push-Benachrichtigung | blockiert: kein Build, keine Geräte, keine Konten |
+| Domain-Unit | `packages/domain/src/approvals/approvals.test.ts` (21), `totals.test.ts` (3) | Kanonischer Inhalt und Hash; Entscheidung nur zur aktuellen Version; Ablehnung sperrt nur diese Positionen | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t04-freigabe-ablehnung.test.ts` (2), `review-freigaben.test.ts` (12) | Nur Kunden entscheiden; gleichzeitige Entscheidungen; genau eine Entscheidung je Version; Audit mit Hash | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/b-zusatzarbeit.spec.ts` (3), `a-angebot.spec.ts` (5) | Klickwege A und B inkl. Abbruch, Ablehnung, Verbindungsfehler; "Ja" im Chat ist keine Freigabe | grün (27.09.2026) |
+| App-E2E API | `apps/app/e2e-api/10-ablaeufe.spec.ts` Schritt 1 | Freigabe mit Prüfsumme, nach Neuladen vom Server bestätigt, Werkstatt sieht "Freigegeben" | grün (27.09.2026) |
+| Gerätetest | | Klickweg B aus einer Push-Benachrichtigung | blockiert: kein Build, keine Geräte, keine Konten |
 
 ### T-05 Erneute Freigabe nach Änderung
 
 Anforderungen: R-FRG-3, R-FRG-6.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Domain-Unit | `packages/domain/src/approvals/versioning.test.ts` (entsteht) | Änderung erzeugt neue Version mit neuem Hash; alte Entscheidung gilt nicht; Positionen wieder wartend | geplant |
-| API-Integration | `apps/api/test/approvals-revision.test.ts` (entsteht) | Entscheidung zur alten Version liefert `409`; neue Version verlangt neue Entscheidung | geplant |
-| App-E2E Web | `apps/app/e2e/kunde-angebot-geaendert.spec.ts` (entsteht) | Hinweis "Das Angebot wurde geändert" und Laden der neuen Fassung | geplant |
-| Gerätetest | `apps/app/.maestro/kunde-angebot-geaendert.yaml` (entsteht) | wie E2E | blockiert: kein Build, keine Geräte, keine Konten |
+| Domain-Unit | `packages/domain/src/approvals/approvals.test.ts` | Änderung erzeugt neue Version mit neuem Hash; alte Entscheidung gilt nicht | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t05-erneute-freigabe.test.ts` (2), `review-freigaben.test.ts` | Entscheidung zur alten Version `409`; keine Änderung laufender Arbeiten (`approval_in_execution`) | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/a-angebot.spec.ts` | Angebot ändert sich während der Ansicht: Hinweis und Laden der neuen Fassung | grün (27.09.2026) |
+| Gerätetest | | wie E2E | blockiert: kein Build, keine Geräte, keine Konten |
 
 ### T-06 Erfolgreiche, abgebrochene und mehrfach gemeldete Zahlungen
 
-Anforderungen: R-ZAHL-5 bis R-ZAHL-8. Szenarien: C-02 Z3 bis Z10.
+Anforderungen: R-ZAHL-5 bis R-ZAHL-8.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Domain-Unit | `packages/domain/src/payments/verification.test.ts` (entsteht) | Prüfregeln (Status, Betrag, Währung, Händler, Referenz), Zahlungsstatusberechnung | geplant |
-| API-Integration | `apps/api/test/payments-webhook.test.ts` (entsteht) | Erfolg über Test-Adapter; Abbruch und Ablauf; derselbe Webhook mehrfach und parallel ergibt genau eine Zahlung; gefälschter Webhook ohne Wirkung | geplant |
-| App-E2E Web | `apps/app/e2e/kunde-rechnung-bezahlen.spec.ts` (entsteht) | Klickweg C mit simulierter Zahlungsseite im Demo-Modus | geplant |
-| Gerätetest | `apps/app/.maestro/kunde-rechnung-bezahlen.yaml` (entsteht) | Zahlungsseite in SFSafariViewController bzw. Custom Tab, Rückkehr | blockiert: kein Build, keine Geräte, kein SumUp-Testzugang |
-| Anbieter-Test | Sandbox-Checkliste `docs/zahlungen.md` Abschnitt 12 | Echter Ablauf gegen die SumUp-Sandbox | blockiert: kein SumUp-Testzugang (O-2) |
+| Domain-Unit | `packages/domain/src/payments/sumup.test.ts` (14), `status.test.ts` (10), `manual.test.ts` (10) | Abgleich von Status, Betrag, Währung, Händler, Referenz; Zahlungsstatus; manuelle Zahlung | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t06-zahlungen.test.ts` (7), `review-zahlungen.test.ts` (17) | Erfolg, Abbruch, Ablauf; Webhook mehrfach und parallel ergibt eine Zahlung; gefälschte Webhooks ohne Wirkung; falscher Betrag oder Händler | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/c-rechnung.spec.ts` (6) | Klickweg C mit simulierter Anbieterseite, Abbruch, doppelte Meldung, Fehlschlag, Verbindungsfehler | grün (27.09.2026) |
+| App-E2E API | `apps/app/e2e-api/10-ablaeufe.spec.ts` Schritt 3 | Bezahlt erst nach Anbieterbestätigung; zweiter Webhook bucht nicht doppelt; Werkstatt sieht genau eine Zahlung | grün (27.09.2026) |
+| Anbieter-Test | Sandbox-Checkliste `docs/zahlungen.md` | Echter Ablauf gegen die SumUp-Sandbox | blockiert: kein SumUp-Testzugang (O-2) |
+| Gerätetest | | Anbieterseite in SFSafariViewController bzw. Custom Tab, Rückkehr | blockiert: kein Build, keine Geräte, kein SumUp-Testzugang |
 
 ### T-07 Rechnung bleibt nach Klick auf "Bezahlen" offen
 
-Anforderungen: R-ZAHL-4, AGENTS.md Regel 7. Szenarien: C-02 Z1, Z2.
+Anforderungen: R-ZAHL-4, AGENTS.md Regel 7.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Domain-Unit | `packages/domain/src/payments/status.test.ts` (entsteht) | Checkout ohne bestätigte Zahlung ändert den Zahlungsstatus nicht | geplant |
-| API-Integration | `apps/api/test/payments-start-checkout.test.ts` (entsteht) | `POST /invoices/:id/checkout` liefert `invoicePaymentStatus = open`; Rückkehr und `PENDING` lassen die Rechnung offen | geplant |
-| App-E2E Web | `apps/app/e2e/kunde-rechnung-bezahlen.spec.ts` (entsteht) | Nach "Jetzt bezahlen" und Rückkehr ohne Bestätigung zeigt die Rechnung "Offen" | geplant |
-| Gerätetest | `apps/app/.maestro/kunde-rechnung-offen.yaml` (entsteht) | wie E2E | blockiert: kein Build, keine Geräte, keine Konten |
+| Domain-Unit | `packages/domain/src/payments/checkout.test.ts` (6) | Checkout ohne bestätigte Zahlung ändert den Status nicht | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t07-rechnung-bleibt-offen.test.ts` (1) | "Jetzt bezahlen" und Rückkehrseite lassen die Rechnung offen | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/c-rechnung.spec.ts` | Nach Rückkehr ohne Bestätigung "Offen" | grün (27.09.2026) |
+| App-E2E API | `apps/app/e2e-api/10-ablaeufe.spec.ts` Schritt 3 | Nach "Jetzt bezahlen" und Rückkehr steht die Rechnung auf "Offen", bis der Anbieter bestätigt | grün (27.09.2026) |
+| Gerätetest | | wie E2E | blockiert: kein Build, keine Geräte, keine Konten |
 
 ### T-08 Serviceeintrag nur aus abgeschlossener Arbeit und nur einmal
 
-Anforderungen: R-SERV-1, R-SERV-5, R-SERV-6, R-SERV-8. Szenarien: C-03 H1 bis H7, H14.
+Anforderungen: R-SERV-1, R-SERV-5, R-SERV-6, R-SERV-8.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Domain-Unit | `packages/domain/src/service-history/derive.test.ts` (entsteht) | Ableitung nur aus `done` mit Wartungsart und `agreed`/`approved`; nichts aus Angebot, Freigabe, Rechnung, Zahlung; Revisionen | geplant |
-| API-Integration | `apps/api/test/complete-review.test.ts` (entsteht) | Abschluss zweimal und parallel ergibt genau einen Eintrag je Position; Korrektur als Revision mit Audit | geplant |
-| App-E2E Web | `apps/app/e2e/werkstatt-abschluss.spec.ts` (entsteht) | Bestätigungsdialog nennt Anzahl der Einträge; Historie zeigt Eintrag | geplant |
-| Gerätetest | keiner vorgesehen (Serverlogik) | | nicht nötig |
+| Domain-Unit | `packages/domain/src/serviceHistory/entries.test.ts` (12), `due.test.ts` (13) | Ableitung nur aus ausgeführter Wartung; Revisionen; Fälligkeiten | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t08-servicehistorie.test.ts` (2), `review-servicehistorie.test.ts` (13) | Kein Eintrag ohne fachlichen Abschluss, nie aus Angebot, Freigabe, Rechnung oder Zahlung; zweifacher und paralleler Abschluss ergibt genau einen Eintrag; Korrektur als Revision | grün (27.09.2026) |
+| App-Unit | `apps/app/src/data/demo/rules/serviceHistory.test.ts` (11) | Gleiche Regeln im Demo-Modus | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/m-mechaniker.spec.ts`, `b-zusatzarbeit.spec.ts` | Abschlussprüfung nennt die Anzahl; genau zwei Einträge mit km-Stand; abgelehnte Bremsen nicht in der Historie | grün (27.09.2026) |
+| App-E2E API | `apps/app/e2e-api/10-ablaeufe.spec.ts` Schritt 4 | Mechaniker schließt mit km ab, Service prüft, genau ein Eintrag mit diesem km-Stand, bei der Kundin sichtbar | grün (27.09.2026) |
 
 ### T-09 QR-Zugriff ohne private Unterlagen
 
-Anforderungen: R-QR-1 bis R-QR-4, AGENTS.md Regel 9. Szenarien: C-01 R13, C-03 H12, H13.
+Anforderungen: R-QR-1 bis R-QR-4, AGENTS.md Regel 9.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Domain-Unit | `packages/domain/src/permissions/public-access.test.ts` (entsteht) | Felder der Kurzansicht und der Freigabe für Dritte | geplant |
-| API-Integration | `apps/api/test/public-qr-share.test.ts` (entsteht) | Ohne Kurzansicht nur Hinweis; mit Kurzansicht keine Namen, Kennzeichen, FIN, Preise, Dokumente; Freigabe nur ausgewählte Einträge, abgelaufen und widerrufen ohne Inhalt; Zugriffe gezählt | geplant |
-| App-E2E Web | `apps/app/e2e/qr-und-freigabe.spec.ts` (entsteht) | Klickwege D und E ohne Anmeldung | geplant |
-| Gerätetest | `apps/app/.maestro/qr-scan.yaml` (entsteht) | Scan mit der Kamera öffnet die App bzw. den Browser | blockiert: kein Build, keine Geräte, keine Konten |
+| Domain-Unit | `packages/domain/src/shares/shares.test.ts` (7) | Freigabe für Dritte: gültig, abgelaufen, widerrufen, Umfang | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t09-qr-und-freigabelink.test.ts` (2), `review-rechte.test.ts` | Ohne Kurzansicht nur Hinweis; keine Namen, Preise, Dokumente | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/e-qr.spec.ts` (5), `d-servicehistorie.spec.ts` | Klickwege D und E ohne Anmeldung, Freigabelink | grün (27.09.2026) |
+| App-E2E API | `apps/app/e2e-api/10-ablaeufe.spec.ts` Schritt 5 | QR ohne Anmeldung zeigt keine Kundendaten; fremde Kundin ohne Zugriff | grün (27.09.2026) |
+| Gerätetest | | Scan mit der Kamera öffnet App bzw. Browser | blockiert: kein Build, keine Geräte, keine Konten |
 
 ### T-10 Besitzerwechsel ohne private Kommunikation
 
-Anforderungen: R-FZG-4, AGENTS.md Regel 3. Szenarien: C-01 R3, R4, C-03 H11.
+Anforderungen: R-FZG-4, AGENTS.md Regel 3.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Domain-Unit | `packages/domain/src/permissions/ownership.test.ts` (entsteht) | Sichtbarkeit für Vorbesitzer und neuen Halter | geplant |
-| API-Integration | `apps/api/test/ownership-transfer.test.ts` (entsteht) | Neuer Halter sieht keine Aufträge, Nachrichten, Dokumente, Freigaben, Rechnungen des Vorbesitzers; Serviceeinträge ohne Auftragsbezug; Vorbesitzer behält eigene Unterlagen, verliert Fahrzeug | geplant |
-| App-E2E Web | `apps/app/e2e/halterwechsel.spec.ts` (entsteht) | Warnhinweis im Dialog; Kundensicht beider Halter | geplant |
-| Gerätetest | keiner vorgesehen (Serverlogik) | | nicht nötig |
+| Domain-Unit | `packages/domain/src/permissions/objectRules.test.ts`, `vehicles/vehicles.test.ts` (12) | Sichtbarkeit für Vorbesitzer und neuen Halter; Halterzeiträume | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t10-besitzerwechsel.test.ts` (1) | Neuer Halter sieht keine Aufträge, Nachrichten, Dokumente, Freigaben, Rechnungen des Vorbesitzers | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/w-werkstatt.spec.ts`, `d-servicehistorie.spec.ts`, `e-qr.spec.ts` | Hinweis zur Datentrennung; Vorbesitzer sieht das Fahrzeug nicht mehr, eigene alte Aufträge schon | grün (27.09.2026) |
 
 ### T-11 Benachrichtigungslinks führen zum richtigen Vorgang
 
 Anforderungen: R-BEN-1, R-ARCH-8.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Vertrag | `packages/contracts/src/contracts.test.ts` (vorhanden) | Deep-Link-Pfade ohne Inhalte; `safeNextPath` lässt nur interne Ziele zu | **grün** (26.09.2026, `pnpm test`, 9 Tests im Paket) |
-| API-Integration | `apps/api/test/notifications-outbox.test.ts` (entsteht) | Outbox im selben Transaktionsschritt; Zielpfad je Ereignis laut `docs/ansichten-und-routen.md` Abschnitt 6; Wiederholung mit Backoff; kein Doppelversand | geplant |
-| App-E2E Web | `apps/app/e2e/deep-links.spec.ts` (entsteht) | Link ohne Anmeldung führt nach Anmeldung zum Ziel; fremder Vorgang "Nicht verfügbar" | geplant |
-| Gerätetest | `apps/app/.maestro/push-deep-link.yaml` (entsteht) | Echte Push-Nachricht öffnet den richtigen Vorgang, auch bei geschlossener App | blockiert: kein Build, keine Geräte, keine Push-Zugänge |
+| Vertrag | `packages/contracts/src/contracts.test.ts` | Deep-Link-Pfade ohne Inhalte; `safeNextPath` nur interne Ziele | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t11-benachrichtigungslinks.test.ts` (2) | Outbox im selben Transaktionsschritt; Zielpfad je Ereignis | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/zugang.spec.ts` | Link ohne Anmeldung führt nach Anmeldung zum Ziel; simulierte Mitteilung; offene Weiterleitung verhindert | grün (27.09.2026) |
+| Gerätetest | | Echte Push-Nachricht öffnet den richtigen Vorgang | blockiert: kein Build, keine Geräte, keine Push-Zugänge |
 
 ### T-12 Daten nach Neustart erhalten
 
 Anforderungen: R-ARCH-9, R-ARCH-10, R-AUF-3.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| Domain-Unit | `packages/domain/src/sync/queue.test.ts` (entsteht, falls Warteschlangenlogik dort liegt) | Reihenfolge, Idempotenz, Konfliktregeln | geplant |
-| API-Integration | `apps/api/test/idempotency.test.ts` (entsteht) | Wiederholung mit gleichem `Idempotency-Key` bzw. Client-UUID erzeugt nichts doppelt | geplant |
-| App-E2E Web | `apps/app/e2e/entwurf-erhalten.spec.ts` (entsteht) | Auftragsentwurf und Chat-Entwurf nach Neuladen erhalten | geplant |
-| Gerätetest | `apps/app/.maestro/offline-neustart.yaml` (entsteht) | Mechaniker offline: Feststellung mit Foto erfassen, App beenden, neu starten, online gehen, Übertragung prüfen | blockiert: kein Build, keine Geräte, keine Konten |
+| API-Integration | `apps/api/test/t12-neustart.test.ts` (1), `infrastruktur.test.ts` (12) | Daten nach Neustart der API; Wiederholung mit gleichem `Idempotency-Key` erzeugt nichts doppelt | grün (27.09.2026) |
+| App-Unit | `apps/app/src/offline/queue.test.ts` (11) | Reihenfolge, Idempotenz, Konflikte der Offline-Warteschlange | grün (27.09.2026) |
+| App-E2E Demo | `apps/app/e2e/w-werkstatt.spec.ts`, `m-mechaniker.spec.ts` | Auftragsentwurf übersteht Neuladen; Feststellung offline, danach übertragen | grün (27.09.2026) |
+| Gerätetest | | App offline beenden, neu starten, übertragen | blockiert: kein Build, keine Geräte, keine Konten |
 
 ### T-13 Kritische Abläufe auf den Plattformen
 
-Anforderungen: R-PLAT-1 bis R-PLAT-4. Kritische Abläufe: Anmeldung, Einladung annehmen,
-Freigabe (A, B), Bezahlen (C), QR (E), Push-Deep-Link, Mechaniker offline, Werkstatt
-Auftragsablauf am PC.
+Anforderungen: R-PLAT-1 bis R-PLAT-4.
 
-| Ebene | Geplante Testdatei | Prüft | Status |
+| Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| App-E2E Web | `apps/app/e2e/**` (entsteht) | Alle kritischen Abläufe im Browser | geplant |
-| Gerätetest iOS | `apps/app/.maestro/**` auf iOS-Build | Kritische Abläufe auf iPhone | blockiert: kein Build, keine Geräte, kein Apple- und Expo-Konto |
-| Gerätetest Android | `apps/app/.maestro/**` auf Android-Build | Kritische Abläufe auf Android | blockiert: kein Build, keine Geräte, kein Google- und Expo-Konto |
-| Gerätetest Windows | Manuelles Protokoll (entsteht) | Installation per NSIS, Start, Anmeldung, Werkstattablauf mit Tastatur, Zahlung im Standardbrowser | blockiert: Installer nie gebaut, kein Windows-Testrechner, keine Signatur |
+| App-E2E Web (Demo und echte API) | `apps/app/e2e/**`, `apps/app/e2e-api/**` | Kritische Abläufe im Browser (Chromium) | grün (27.09.2026); **kein Nachweis für die Plattformen** |
+| Gerätetest iOS | | Kritische Abläufe auf iPhone | blockiert: kein Build, keine Geräte, kein Apple- und Expo-Konto |
+| Gerätetest Android | | Kritische Abläufe auf Android | blockiert: kein Build, keine Geräte, kein Google- und Expo-Konto |
+| Gerätetest Windows | | Installation per NSIS, Start, Anmeldung, Werkstattablauf mit Tastatur, Zahlung im Standardbrowser | blockiert: Installer nie gebaut, kein Windows-Testrechner, keine Signatur |
 
-## 3. Bereits vorhandene automatisierte Tests
+## 4. Weitere automatisierte Prüfungen
 
-| Datei | Anzahl | Prüft | Ergebnis |
-|---|---|---|---|
-| `packages/contracts/src/contracts.test.ts` | 9 | Startseiten je Rolle, Deep-Link-Pfade, `safeNextPath`, Pfadparameter, abschließende Liste öffentlicher Endpunkte, FIN-Prüfung, Pflichtfelder Kunde, 64-stelliger Inhalts-Hash für Entscheidungen, deutsche Bezeichnung je Recht | grün am 26.09.2026 (`pnpm test`) |
-| `packages/design-tokens/src/index.test.ts` | 8 | Farbkontraste hell und dunkel (Text, Akzent, Statusfarben) | grün am 26.09.2026 (`pnpm test`) |
-
-`pnpm typecheck` war am 26.09.2026 für beide Pakete grün.
+| Datei | Prüft |
+|---|---|
+| `apps/api/test/anmeldung.test.ts`, `review-allgemein.test.ts` | Anmeldung, Sperre nach Fehlversuchen, Einladungen, Passwort-Reset, Suchbegriffe als Daten, Dateinamen und Dateitypen, keine Einschleusung geschützter Felder, Protokollierung |
+| `apps/api/test/datenexport.test.ts` | Datenexport für Betroffene ohne Passwort-Hashes, Tokens oder Speicherschlüssel |
+| `apps/api/test/endpunkte.test.ts`, `smoke.test.ts` | Jeder Endpunkt aus `packages/contracts/src/api.ts` ist registriert; Abläufe je Bereich (Kunden, Termine, Annahme, Dokumente, Einstellungen); Grundgerüst |
+| `packages/domain/src/appointments/appointments.test.ts`, `workOrders/*.test.ts`, `intake/intake.test.ts` | Termine und Konflikte, Arbeitsstatus, Positionen, Zeiterfassung, Annahme-Hash |
+| `apps/app/e2e/f-termin.spec.ts`, `g-rueckfrage.spec.ts`, `w-tastatur.spec.ts` | Klickwege F und G, Tastaturbedienung am PC |
+| `apps/app/e2e-api/00-rundgang.spec.ts` | Jede Ansicht je Rolle gegen die echte API; Antworten mit den zod-Schemas geprüft |

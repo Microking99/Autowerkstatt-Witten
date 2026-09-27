@@ -1,6 +1,6 @@
 # Zusammenarbeit Claude Code und Codex
 
-Stand: 26.09.2026. Entscheidung: ADR-014. Gemeinsame Regeln: `AGENTS.md`.
+Stand: 27.09.2026. Entscheidung: ADR-014. Gemeinsame Regeln: `AGENTS.md`.
 
 ## 1. Rollen
 
@@ -17,9 +17,13 @@ Stand: 26.09.2026. Entscheidung: ADR-014. Gemeinsame Regeln: `AGENTS.md`.
   `/plugin` steht in Cloud-Sitzungen nicht zur Verfügung.
 - **Codex hat bisher nicht mitgearbeitet.** Alle bisherigen Commits und Dokumente stammen von
   Claude Code (Hauptsitzung und Claude-Unteragenten).
-- Das für Codex vorgesehene Paket P-02 (Domain-Logik) wird wegen der fehlenden Anbindung von
-  einem Claude-Unteragenten umgesetzt. Das unabhängige Review durch Codex ist als C-01 bis
-  C-03 reserviert und findet statt, sobald Codex eingerichtet ist.
+- Das für Codex vorgesehene Paket P-02 (Domain-Logik) wurde wegen der fehlenden Anbindung von
+  einem Claude-Unteragenten umgesetzt. Als Ersatz für das fehlende Gegen-Review hat ein
+  **weiterer Claude-Unteragent** mit Angriffstests Rechte, Zahlungen, Freigaben und
+  Servicehistorie geprüft (R-01, `docs/uebergaben/2026-09-27-review-claude.md`). Das ist
+  **kein unabhängiges Review im Sinne von AGENTS.md**, weil dasselbe Modell prüft, das
+  umgesetzt hat. Das Review durch Codex bleibt als C-01 bis C-03 offen und findet statt,
+  sobald Codex eingerichtet ist.
 - Vorbereitet für Codex: `AGENTS.md` mit Abschnitt "Code Review Rules", Übergabevorlage
   `docs/uebergaben/VORLAGE.md`, ausgefüllte Übergaben C-01 bis C-03, gepinnte Design-Skills
   unter `.agents/skills/`.
@@ -155,20 +159,23 @@ Statuswerte: `geplant`, `in Arbeit`, `zur Prüfung`, `erledigt`, `blockiert (Gru
 
 | ID | Inhalt | Vorgesehen für | Umgesetzt von | Status | Stand | Notiz |
 |---|---|---|---|---|---|---|
-| P-01 | Projektgrundlage: Monorepo, AGENTS.md, Anforderungen, Rechte, Datenmodell, Routen, Designsystem, `packages/contracts`, `packages/design-tokens` | Claude | Claude | erledigt | 26.09.2026 | Commit `a42708c`; Tests grün (contracts 9, design-tokens 8) |
-| P-02 | Domain-Logik `packages/domain`: Rechte, Statusübergänge, Freigabe-Hash, Zahlungsprüfung, Servicehistorie, Fälligkeiten | Codex | Claude-Unteragent (Codex nicht angebunden) | erledigt, Review offen | 27.09.2026 | Zusammengeführt (`b0c2d4a`, Ergänzung `7c547ba`); 245 Tests grün; unabhängiges Review durch Codex: C-01 bis C-03 |
-| P-03 | API `apps/api`: Fastify, Drizzle-Schema und Migrationen, Anmeldung, Routen, SumUp-Adapter, Outbox, WebSocket | Claude-Unteragent | Claude-Unteragent | in Arbeit | 26.09.2026 | Paket gestartet (Arbeitszweig vorhanden); Ergebnis noch nicht zusammengeführt |
-| P-04 | App Kern und Kundensicht `apps/app`: Navigation, Anmeldung, Kundenbereich, Demo-Modus, Browser-Tests | Claude-Unteragent | Claude-Unteragent | in Arbeit | 26.09.2026 | Ergebnis noch nicht zusammengeführt |
-| P-05 | App Werkstatt und Mechaniker, Offline-Warteschlange | Claude-Unteragent | | geplant | 26.09.2026 | Abhängig von P-03, P-04 |
+| P-01 | Projektgrundlage: Monorepo, AGENTS.md, Anforderungen, Rechte, Datenmodell, Routen, Designsystem, `packages/contracts`, `packages/design-tokens` | Claude | Claude | erledigt | 26.09.2026 | Commit `a42708c` |
+| P-02 | Domain-Logik `packages/domain`: Rechte, Statusübergänge, Freigabe-Hash, Zahlungsprüfung, Servicehistorie, Fälligkeiten | Codex | Claude-Unteragent (Codex nicht angebunden) | erledigt, Codex-Review offen | 27.09.2026 | Zusammengeführt (`f129e99`); 247 Tests grün; Review C-01 bis C-03 offen |
+| P-03 | API `apps/api`: Fastify, Drizzle-Schema und Migrationen, Anmeldung, Routen, SumUp-Adapter (Test-Anbieter), Outbox, WebSocket | Claude-Unteragent | Claude-Unteragent | erledigt, Codex-Review offen | 27.09.2026 | Zusammengeführt (`f5bbc05`); 142 Integrationstests gegen PostgreSQL grün; nie gegen die SumUp-Sandbox getestet (O-2) |
+| P-04 (APP-1) | App Kern und Kundensicht `apps/app`: Navigation, Anmeldung, Kundenbereich, Demo-Modus, Browser-Tests | Claude-Unteragent | Claude-Unteragent | erledigt | 27.09.2026 | Zusammengeführt (`e393fb9`); nur im Browser geprüft |
+| P-05 (APP-2) | App Werkstatt und Mechaniker, Offline-Warteschlange, Tastatur | Claude-Unteragent | Claude-Unteragent | erledigt | 27.09.2026 | Zusammengeführt (`9e3cf31`); Playwright 104 bestanden im Demo-Modus; nur im Browser geprüft |
 | P-06 | Windows-Hülle `apps/desktop` (Tauri 2, NSIS) und CI-Workflows | Claude | Claude | erledigt (ohne Windows-Build) | 27.09.2026 | `cargo check` Linux und Ziel `x86_64-pc-windows-msvc` erfolgreich; Windows-Build nie ausgeführt, Installer unsigniert |
-| D-01 | Architektur-, Ablauf- und Prozessdokumentation (`docs/architektur.md`, `docs/adr/`, `docs/ablaeufe.md` u. a.) | Claude | Claude-Unteragent | erledigt | 27.09.2026 | Zusammengeführt; 32 Mermaid-Diagramme mit mermaid-cli gerendert |
-| P-07 | Datenexport für Betroffene (DSGVO Art. 15/20): `/me/export`, `/customers/:id/export`, Kundenroute `/kunde/konto/datenexport` | Claude | | geplant | 27.09.2026 | Endpunkte im Vertrag ergänzt |
-| C-01 | Unabhängiges Review Rechte und Objektregeln (domain und api) | Codex | | blockiert (Codex nicht eingerichtet; P-02/P-03 nicht fertig) | 26.09.2026 | Übergabe vorbereitet |
-| C-02 | Unabhängiges Review Zahlungslogik inkl. SumUp-Abgleich | Codex | | blockiert (Codex nicht eingerichtet; P-02/P-03 nicht fertig) | 26.09.2026 | Übergabe vorbereitet |
-| C-03 | Unabhängiges Review Servicehistorie und Fälligkeiten | Codex | | blockiert (Codex nicht eingerichtet; P-02/P-03 nicht fertig) | 26.09.2026 | Übergabe vorbereitet |
+| P-07 | Datenexport für Betroffene (DSGVO Art. 15/20): `/me/export`, `/customers/:id/export`, Kundenroute `/kunde/konto/datenexport` | Claude | Claude | erledigt | 27.09.2026 | API `0c0d977`, Oberfläche in P-05; Tests `apps/api/test/datenexport.test.ts` |
+| P-08 | Integration: App gegen die echte API im Browser (`apps/app/e2e-api`, `apps/api/scripts/e2e-server.ts`, CI-Job) | Claude | Claude | erledigt | 27.09.2026 | Commit `81b567a`; 10 Abläufe grün; ein Fehler gefunden und behoben (Kennzeichen doppelt) |
+| API-3 | Zuweisbare Mitarbeiter, Teile und laufende Zeit je Position, Gerätezeitpunkt für Offline-Zeiten | Claude-Unteragent | Claude-Unteragent | in Arbeit | 27.09.2026 | Vertrag festgelegt (`43f946f`); Übergabe folgt unter `docs/uebergaben/2026-09-27-api-3.md` |
+| D-01 | Architektur-, Ablauf- und Prozessdokumentation (`docs/architektur.md`, `docs/adr/`, `docs/ablaeufe.md` u. a.) | Claude | Claude-Unteragent | erledigt | 27.09.2026 | Zusammengeführt (`1b89363`); 32 Mermaid-Diagramme mit mermaid-cli gerendert |
+| R-01 | Ersatz-Review Rechte, Zahlungen, Freigaben, Servicehistorie (Angriffstests) | Codex | Claude-Unteragent (Ersatz, **nicht unabhängig**) | erledigt | 27.09.2026 | Zusammengeführt (`263bd70`); Befunde behoben (`829b43d`, `d12dc26`, `bb882be`) |
+| C-01 | Unabhängiges Review Rechte und Objektregeln (domain und api) | Codex | | blockiert (Codex nicht eingerichtet) | 27.09.2026 | Übergabe vorbereitet; Code liegt vor |
+| C-02 | Unabhängiges Review Zahlungslogik inkl. SumUp-Abgleich | Codex | | blockiert (Codex nicht eingerichtet) | 27.09.2026 | Übergabe vorbereitet; Code liegt vor |
+| C-03 | Unabhängiges Review Servicehistorie und Fälligkeiten | Codex | | blockiert (Codex nicht eingerichtet) | 27.09.2026 | Übergabe vorbereitet; Code liegt vor |
 | C-04 | Maestro-E2E-Abläufe für iOS und Android | Codex | | blockiert (keine Builds, keine Geräte, kein Expo-Konto) | 26.09.2026 | Möglichkeit: EAS Workflows für E2E-Läufe |
 | C-05 | Ergänzung Reifeneinlagerung | Codex | | zurückgestellt (Entscheidung O-7) | 26.09.2026 | Datenmodell vorbereitet |
-| C-06 | CSV/DATEV-Export-Spike | Codex | | zurückgestellt (Entscheidung E-3) | 26.09.2026 | CSV-Export der Rechnungen ist Teil von P-03 |
+| C-06 | CSV/DATEV-Export-Spike | Codex | | zurückgestellt (Entscheidung E-3) | 26.09.2026 | CSV-Export der Rechnungen ist in der API vorhanden |
 
 ## Quellen (abgerufen 26.09.2026)
 

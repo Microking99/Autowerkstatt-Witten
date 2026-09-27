@@ -9,10 +9,11 @@ Zielplattformen: native iPhone-App, native Android-App, Windows-Anwendung mit In
 geschützter Browserzugang, alle auf derselben Datenbasis. Oberflächen und Dokumentation sind
 deutsch.
 
-> **Stand (26.09.2026):** Grundlage, Vertrag (`packages/contracts`), Design-Tokens und
-> Dokumentation sind vorhanden und getestet. Domain-Logik, API und App entstehen gerade in
-> parallelen Arbeitspaketen. Es gibt noch **keinen** iOS-, Android- oder Windows-Build und
-> keinen Test auf echten Geräten. Details: [`docs/status.md`](docs/status.md).
+> **Stand (27.09.2026):** Domain-Logik, API, App (Kunde, Werkstatt, Mechaniker, Demo-Modus) und
+> Windows-Hülle sind vorhanden. Unit-, Integrations- und Browser-Tests laufen grün, auch die App
+> gegen die echte API mit Testdatenbank. Es gibt **keinen** iOS-, Android- oder Windows-Build,
+> keinen Test auf echten Geräten und keinen Anschluss an echte Dienste (SumUp, E-Mail, Push).
+> Das unabhängige Review durch Codex steht aus. Details: [`docs/status.md`](docs/status.md).
 
 ## Aufbau
 
@@ -31,8 +32,9 @@ Architekturüberblick: [`docs/architektur.md`](docs/architektur.md).
 ## Voraussetzungen
 
 - Node.js 22 (`.nvmrc`), pnpm 10 (`corepack enable`)
-- PostgreSQL 16 für die API (lokal über `pnpm --filter @werkstatt/api db:start`, sobald P-03
-  zusammengeführt ist)
+- PostgreSQL 16 für die API (lokal über `pnpm --filter @werkstatt/api db:start`; das Skript
+  nutzt die installierten PostgreSQL-Programme und legt die Daten unter `apps/api/.data/` ab)
+- Chromium für die Browser-Tests (Playwright; Pfad über `PLAYWRIGHT_BROWSERS_PATH`)
 - Für Windows-Builds: Windows mit Rust und Microsoft C++ Build Tools, oder der
   GitHub-Actions-Workflow "Windows-Installer"
 - Für iOS- und Android-Builds: Expo-Konto (EAS); kein eigener Mac nötig
@@ -40,22 +42,26 @@ Architekturüberblick: [`docs/architektur.md`](docs/architektur.md).
 ## Befehle
 
 ```bash
-pnpm install        # Abhängigkeiten
-pnpm test           # alle Tests
-pnpm typecheck      # TypeScript in allen Paketen
+pnpm install                              # Abhängigkeiten
+pnpm --filter @werkstatt/api db:start     # lokale PostgreSQL-Instanz (für API-Tests und Entwicklung)
+pnpm typecheck                            # TypeScript in allen Paketen
+pnpm test                                 # alle Unit- und Integrationstests
+
+pnpm --filter @werkstatt/api dev          # API lokal (Konfiguration: apps/api/.env.example)
+pnpm --filter @werkstatt/app web          # App im Browser gegen EXPO_PUBLIC_API_URL
+pnpm --filter @werkstatt/app demo         # klickbarer Entwurf mit Beispieldaten
+
+# Browser-Tests im Demo-Modus
+pnpm --filter @werkstatt/app export:demo
+pnpm --filter @werkstatt/app e2e
+
+# Browser-Tests gegen die echte API (frische Testdatenbank werkstatt_e2e, Test-Zahlungsanbieter)
+pnpm --filter @werkstatt/app export:api-e2e
+pnpm --filter @werkstatt/app e2e:api
 ```
 
-Sobald P-03 (API) und P-04 (App) zusammengeführt sind:
-
-```bash
-pnpm --filter @werkstatt/api db:start   # lokale PostgreSQL-Instanz
-pnpm --filter @werkstatt/api dev        # API lokal
-pnpm --filter @werkstatt/app web        # App im Browser
-pnpm --filter @werkstatt/app demo       # klickbarer Entwurf mit Beispieldaten
-pnpm --filter @werkstatt/app e2e        # Browser-Tests (Playwright)
-```
-
-Windows-Installer (P-06): siehe `apps/desktop/README.md`.
+Windows-Installer: siehe `apps/desktop/README.md`. iOS und Android: EAS-Profile in
+`apps/app/eas.json`, Workflow `mobile-eas.yml` (nur manuell, braucht Expo-Konto).
 
 ## Demo-Modus und Beispieldaten
 
@@ -96,7 +102,8 @@ Vollständige Regeln: [`AGENTS.md`](AGENTS.md).
 | [`docs/designsystem.md`](docs/designsystem.md) | Gestaltungsregeln und Tokens |
 | [`docs/zahlungen.md`](docs/zahlungen.md) | Zahlungskonzept SumUp |
 | [`docs/glossar.md`](docs/glossar.md) | Fachbegriffe und Bezeichner im Code |
-| [`docs/tests.md`](docs/tests.md) | Testplan T-01 bis T-13 |
+| [`docs/tests.md`](docs/tests.md) | Testplan und Testbericht T-01 bis T-13 |
+| [`docs/entwurf/`](docs/entwurf/) | Klickbarer Entwurf: Start, Rollen, Bildschirmfotos |
 | [`docs/status.md`](docs/status.md) | Aktueller Stand, Blocker |
 | [`docs/offene-entscheidungen.md`](docs/offene-entscheidungen.md) | Offene Entscheidungen mit Standardannahmen |
 | [`docs/pruefpunkte-recht-und-betrieb.md`](docs/pruefpunkte-recht-und-betrieb.md) | Prüfpunkte Recht und Betrieb (keine Rechtsberatung) |

@@ -8,7 +8,7 @@
 | Ausführend | Codex |
 | Branch | Review auf dem Integrationszweig nach Zusammenführung von P-02 und P-03; Korrekturen auf `codex/review-servicehistorie` |
 | Prüfer | Claude Code |
-| Status | blockiert (Codex nicht eingerichtet; P-02 und P-03 noch nicht zusammengeführt) |
+| Status | blockiert (Codex nicht eingerichtet). Stand 27.09.2026: P-02 und P-03 sind zusammengeführt, der Code ist prüfbar. Ein Claude-Ersatz-Review mit Angriffstests liegt vor (`docs/uebergaben/2026-09-27-review-claude.md`, Tests `apps/api/test/review-*.test.ts`); es ersetzt dieses unabhängige Review nicht. Codex soll zusätzlich prüfen, ob diese Tests die Szenarien unten wirklich abdecken. |
 
 ## 1. Aufgabe
 
