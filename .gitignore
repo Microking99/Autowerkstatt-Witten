@@ -1,6 +1,7 @@
 # Abhängigkeiten und Builds
 node_modules/
 dist/
+dist-*/
 build/
 .turbo/
 *.tsbuildinfo
@@ -17,6 +18,11 @@ apps/app/android/
 *.key
 *.mobileprovision
 *.keystore
+
+# Test-Berichte (Playwright, Vitest)
+test-results/
+playwright-report/
+blob-report/
 
 # Tauri / Rust
 apps/desktop/src-tauri/target/

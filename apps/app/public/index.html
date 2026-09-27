@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="%LANG_ISO_CODE%">
+  <head>
+    <meta charset="utf-8" />
+    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>%WEB_TITLE%</title>
+    <!-- Empfohlene Grundregeln von react-native-web; Hintergrund passend zum Farbschema, damit
+         beim Laden nichts aufblitzt (Farben aus @werkstatt/design-tokens: bg hell/dunkel). -->
+    <style id="expo-reset">
+      html,
+      body {
+        height: 100%;
+        background: #f3f4f6;
+      }
+      @media (prefers-color-scheme: dark) {
+        html,
+        body {
+          background: #0f1215;
+        }
+      }
+      body {
+        overflow: hidden;
+      }
+      #root {
+        display: flex;
+        height: 100%;
+        flex: 1;
+      }
+    </style>
+  </head>
+
+  <body>
+    <noscript>
+      Bitte aktivieren Sie JavaScript, um den Kundenzugang der Autowerkstatt Witten zu nutzen.
+    </noscript>
+    <div id="root"></div>
+  </body>
+</html>
