@@ -102,7 +102,7 @@ ohne Maus per `Tab` erreichbar, Fokus immer sichtbar.
 | `/werkstatt/termine/[id]` | Termindetail | Bestätigen; Alternative vorschlagen (Dialog); Absagen (Bestätigung + Grund); Auftrag anlegen/öffnen | Kalender |
 | `/werkstatt/kunden` | Kundenliste: Suche (Name, Telefon, E-Mail, Kennzeichen), Filter (App-Zugang ja/nein, offene Posten) | Neu; Zeile → Akte | Übersicht |
 | `/werkstatt/kunden/neu` | Kunde anlegen | Speichern → Akte (oder zurück in den Auftragsentwurf) | Liste |
-| `/werkstatt/kunden/[id]` | **Kundenakte**, Register: Übersicht, Fahrzeuge, Aufträge, Termine, Dokumente, Kommunikation, Zugang | Bearbeiten; Fahrzeug zuordnen/neu; Auftrag anlegen (Kunde vorbelegt); zur App einladen / Zugang sperren | Liste |
+| `/werkstatt/kunden/[id]` | **Kundenakte**, Register: Übersicht, Fahrzeuge, Aufträge, Termine, Dokumente, Kommunikation, Zugang | Bearbeiten; Fahrzeug zuordnen/neu; Auftrag anlegen (Kunde vorbelegt); zur App einladen / Zugang sperren / wieder freischalten; Datenexport | Liste |
 | `/werkstatt/fahrzeuge` | Fahrzeugliste (Kennzeichen, FIN, Halter) | Neu; Zeile → Akte | Übersicht |
 | `/werkstatt/fahrzeuge/neu` | Fahrzeug anlegen (Halter wählen/neu) | Speichern → Akte / zurück in Auftragsentwurf | Liste |
 | `/werkstatt/fahrzeuge/[id]` | **Fahrzeugakte**, Register: Übersicht, Kilometer, Aufträge, Servicehistorie, Dokumente, Halter, QR | km erfassen; Halterwechsel (Dialog mit Warnhinweis zu Datentrennung); Serviceeintrag korrigieren (Begründung Pflicht); QR-Aufkleber drucken | Liste |

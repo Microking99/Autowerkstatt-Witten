@@ -1,6 +1,6 @@
 # Status
 
-Stand: 26.09.2026. Regeln: AGENTS.md Abschnitt 7. Diese Datei beschreibt, was **tatsächlich**
+Stand: 26.09.2026, Nachtrag APP-2 (P-05) vom 27.09.2026. Regeln: AGENTS.md Abschnitt 7. Diese Datei beschreibt, was **tatsächlich**
 im Repository vorhanden und geprüft ist. Pakete, an denen gearbeitet wird, stehen als
 "in Arbeit" ohne Ergebnisbehauptung. Arbeitspakete im Detail: `docs/zusammenarbeit.md`
 Abschnitt 8.
@@ -25,6 +25,7 @@ Abschnitt 8.
 | P-02 | `packages/domain` (vorgesehen für Codex, ersatzweise Claude-Unteragent) | in Arbeit, nicht zusammengeführt |
 | P-03 | `apps/api` | in Arbeit, nicht zusammengeführt |
 | P-04 | `apps/app` Kern, Kundensicht, Demo-Modus | in Arbeit, nicht zusammengeführt |
+| P-05 (APP-2) | `apps/app`: Werkstatt- und Mechanikeransichten, Offline-Warteschlange (ADR-011), Tastaturbedienung, Kundenroute Annahme und Datenexport, Demo-Modus für alle Abläufe | Auf Branch `worktree-agent-ad64fd6b22319b054`, **nicht zusammengeführt**, zur Prüfung. Geprüft am 27.09.2026 nur im Browser (Chromium) gegen den Demo-Export: `pnpm typecheck` grün; `pnpm test` grün (App 99, Domain 246, API 142 mit lokaler Test-Datenbank, Contracts 13, Tokens 8); Playwright 104 bestanden, 2 übersprungen (Telefon 390x844 und PC 1440x900). Kein iOS-, Android- oder Windows-Build, kein Test gegen die echte API. Einzelheiten: `docs/uebergaben/2026-09-27-app-2.md`. |
 | P-06 | `apps/desktop` (Tauri 2, NSIS) und `.github/workflows` | Erster Stand auf dem Integrationszweig (Commits `498afdf`, `9477348`). Laut Commit-Nachricht: `cargo check` unter Linux erfolgreich (Tauri 2.12.0); in diesem Dokumentationspaket nicht wiederholt. Windows-Build **nicht ausgeführt**, Start unter Windows **nicht getestet**, Installer **unsigniert**. Die Workflows für Windows und EAS wurden **nie ausgeführt**. |
 
 ## 3. Stand je Anforderungsbereich
@@ -42,9 +43,9 @@ Abschnitt 8.
 | R-KAL Kalender und Termine | Anfrage ≠ Buchung, Konfliktprüfung | Schemas und Endpunkte im Vertrag | | |
 | R-KUN Kundenverwaltung | Kundenakte, Suche | Schemas und Endpunkte im Vertrag | Vitest: Pflichtfelder Privat-/Geschäftskunde | |
 | R-FZG Fahrzeugverwaltung | km-Historie, Halterzeiträume, Halterwechsel | Schemas und Endpunkte im Vertrag | Vitest: FIN-Prüfung | |
-| R-ANN Fahrzeugannahme | Annahme mit Hash | Schemas im Vertrag | | Kundenroute für App-Bestätigung fehlt noch (`docs/ablaeufe.md` Abschnitt 2) |
+| R-ANN Fahrzeugannahme | Annahme mit Hash | Schemas im Vertrag; Werkstattansicht und Kundenroute `/kunde/auftraege/[id]/annahme` in P-05 (Branch) | Playwright im Demo-Modus: Bestätigung vor Ort und in der Kunden-App (P-05) | |
 | R-AUF Aufträge | Ablauf R-AUF-2, drei getrennte Status | Schemas `StatusTriple` u. a. | | |
-| R-MECH Mechaniker | Ausführung, Feststellungen, Offline (ADR-011) | Schemas im Vertrag; App P-05 geplant | | |
+| R-MECH Mechaniker | Ausführung, Feststellungen, Offline (ADR-011) | Schemas im Vertrag; Mechanikeransichten und Offline-Warteschlange in P-05 (Branch) | Vitest (Warteschlange: Wiederholung, Idempotenz, Reihenfolge, Konflikt); Playwright im Demo-Modus: Feststellung bis zur freigegebenen Position, Wartungsabschluss mit km, Feststellung offline und Übertragung | Checkliste nur lokal (O-10); Diktat nur über die Gerätetastatur (O-9) |
 | R-DOK Dokumente, Buchhaltungsübersicht | Private Dateiablage (ADR-009), CSV-Export | Endpunkte im Vertrag | | Entscheidungen E-1 bis E-3 |
 | R-ADM Benutzer und Einstellungen | Einladungen, Rechte, Einstellungen | Endpunkte im Vertrag | | |
 | R-CHAT, R-FRG Chat und Freigaben | Versionierte Freigaben mit Hash (ADR-006), Echtzeit (ADR-012) | Schemas im Vertrag | Vitest: Entscheidung verlangt 64-stelligen Hash | Codex-Review C-01 |
