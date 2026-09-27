@@ -56,8 +56,13 @@ export type ExportScope = 'self' | 'full';
 
 /** Felder, die nie exportiert werden (Zugangsgeheimnisse, technische Schlüssel). */
 const NEVER_EXPORTED = new Set(['passwordHash', 'tokenHash', 'qrToken', 'pushToken', 'storageKey', 'hostedUrl']);
-/** Felder, die nur im vollständigen Export enthalten sind. */
-const FULL_ONLY = new Set(['notesInternal', 'internalNote']);
+/**
+ * Felder, die nur im vollständigen Export enthalten sind: interne Notizen und von Mitarbeitern
+ * erfasste Begründungen, die der Kunde auch in der App nicht sieht (Zahlungsnotiz
+ * `payments.note`, Erstattungsgrund `refunds.reason`, Notiz zum Halterwechsel
+ * `vehicle_ownerships.note`, Begründung für Planungskonflikte).
+ */
+const FULL_ONLY = new Set(['notesInternal', 'internalNote', 'note', 'reason', 'conflictOverrideReason']);
 
 function clean<T extends Record<string, unknown>>(row: T, scope: ExportScope): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -254,7 +259,15 @@ export async function buildCustomerExport(
     notifications: cleanAll(notificationRows, scope),
     notificationPreferences: cleanAll(preferenceRows, scope),
     devices: deviceRows.map((d) => ({ platform: d.platform, lastSeenAt: d.lastSeenAt?.toISOString() ?? null, disabledAt: d.disabledAt?.toISOString() ?? null })),
-    activityLog: cleanAll(auditRows, scope),
+    // Einträge anderer Personen (Mitarbeiter): deren IP-Adresse, Browserkennung, Anfrage-ID und
+    // Benutzerkennung gehören nicht in die Selbstauskunft (Daten Dritter). Der vollständige
+    // Export wird vor der Herausgabe durch die Werkstatt geprüft.
+    activityLog: cleanAll(
+      scope === 'self'
+        ? auditRows.map((r) => (r.actorUserId === userId ? r : { ...r, actorUserId: null, ip: null, userAgent: null, requestId: null }))
+        : auditRows,
+      scope,
+    ),
   };
 
   const zip: Zippable = {
