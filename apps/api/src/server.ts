@@ -7,6 +7,7 @@ import { ConfigError, loadConfig } from './config';
 import { deliverPendingNotifications } from './notifications/delivery';
 import { reconcilePendingCheckouts } from './services/payments';
 import { pruneIdempotencyKeys } from './lib/idempotency';
+import { notifyMaintenanceDue } from './services/maintenance';
 
 async function main(): Promise<void> {
   let config;
@@ -53,6 +54,16 @@ async function main(): Promise<void> {
       );
     }
     timers.push(setInterval(() => void pruneIdempotencyKeys(app).catch(() => undefined), 6 * 3600_000));
+    // Fälligkeiten einmal je Stunde prüfen (Benachrichtigung je Eintrag nur einmal, dedupliziert)
+    timers.push(
+      setInterval(
+        () =>
+          void notifyMaintenanceDue({ db: app.deps.db, now: app.deps.now }).catch((err: unknown) =>
+            app.log.error({ err: err instanceof Error ? err.message : String(err) }, 'Fälligkeitsprüfung fehlgeschlagen'),
+          ),
+        3600_000,
+      ),
+    );
   }
 
   const shutdown = async (signal: string) => {
