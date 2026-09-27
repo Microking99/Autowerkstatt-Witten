@@ -381,11 +381,12 @@ export interface WerkstattApi {
   addPart(itemId: string, input: PartUsedInput, options?: WriteOptions): Promise<WorkItem>;
   listFindings(workOrderId: string): Promise<Finding[]>;
   /** idempotent über `input.id` (Client-UUID) */
-  createFinding(workOrderId: string, input: FindingInput): Promise<Finding>;
+  /** Idempotenz über `input.id`; nach abgelehnter Übertragung mit eigenem Schlüssel (`options`) */
+  createFinding(workOrderId: string, input: FindingInput, options?: WriteOptions): Promise<Finding>;
   reportFinding(findingId: string, options?: WriteOptions): Promise<Finding>;
   dismissFinding(findingId: string): Promise<Finding>;
   listPhotos(workOrderId: string): Promise<Photo[]>;
-  attachPhoto(workOrderId: string, input: AttachPhotoInput): Promise<Photo>;
+  attachPhoto(workOrderId: string, input: AttachPhotoInput, options?: WriteOptions): Promise<Photo>;
   setPhotoVisibility(photoId: string, visibility: Visibility): Promise<Photo>;
   timeline(workOrderId: string): Promise<TimelineEntry[]>;
 
@@ -415,7 +416,7 @@ export interface WerkstattApi {
   listConversations(): Promise<Conversation[]>;
   listMessages(workOrderId: string, after?: string): Promise<Message[]>;
   /** idempotent über clientMessageId (erneutes Senden erzeugt keine Dublette) */
-  sendMessage(workOrderId: string, input: SendMessageInput): Promise<Message>;
+  sendMessage(workOrderId: string, input: SendMessageInput, options?: WriteOptions): Promise<Message>;
   markRead(workOrderId: string): Promise<void>;
   listInternalNotes(workOrderId: string): Promise<InternalNote[]>;
   addInternalNote(workOrderId: string, input: { body: string }, options?: WriteOptions): Promise<InternalNote>;

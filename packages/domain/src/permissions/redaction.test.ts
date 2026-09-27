@@ -97,13 +97,16 @@ describe('Feldfilter Auftrag', () => {
     expect(single.parts?.[0] && 'unitPriceCents' in single.parts[0]).toBe(false);
   });
 
-  it('Kunde: keine laufende Zeiterfassung und keine verbauten Teile', () => {
+  it('Kunde: keine Zeiterfassung (laufend und erfasst) und keine verbauten Teile', () => {
     const r = redactWorkOrderForActor(workOrderDetail(), customerA());
     expect('runningSince' in r.items[0]!).toBe(false);
+    expect('trackedMinutes' in r.items[0]!).toBe(false);
     expect('parts' in r.items[0]!).toBe(false);
     expect(JSON.stringify(r)).not.toContain('Ölfilter');
     const single = redactWorkItemForActor(workOrderDetail().items[0]!, customerA());
-    expect('runningSince' in single || 'parts' in single).toBe(false);
+    expect('runningSince' in single || 'parts' in single || 'trackedMinutes' in single).toBe(false);
+    // Werkstatt sieht die erfasste Zeit weiterhin
+    expect(redactWorkItemForActor(workOrderDetail().items[0]!, service()).trackedMinutes).toBe(42);
   });
 
   it('Service: Teile mit Preis', () => {

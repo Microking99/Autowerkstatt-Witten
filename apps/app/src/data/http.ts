@@ -342,13 +342,14 @@ export class HttpApi implements WerkstattApi {
   addPart: WerkstattApi['addPart'] = (id, input, o: WriteOptions = {}) =>
     this.call('addPart', { params: { id }, body: input, schema: WorkItemSchema, idempotencyKey: o.idempotencyKey });
   listFindings: WerkstattApi['listFindings'] = (id) => this.call('listFindings', { params: { id }, schema: z.array(FindingSchema) });
-  createFinding: WerkstattApi['createFinding'] = (id, input) =>
-    this.call('createFinding', { params: { id }, body: input, schema: FindingSchema, idempotencyKey: input.id ?? undefined });
+  createFinding: WerkstattApi['createFinding'] = (id, input, options) =>
+    this.call('createFinding', { params: { id }, body: input, schema: FindingSchema, idempotencyKey: options?.idempotencyKey ?? input.id ?? undefined });
   reportFinding: WerkstattApi['reportFinding'] = (id, o: WriteOptions = {}) =>
     this.call('reportFinding', { params: { id }, schema: FindingSchema, idempotencyKey: o.idempotencyKey });
   dismissFinding: WerkstattApi['dismissFinding'] = (id) => this.call('dismissFinding', { params: { id }, schema: FindingSchema });
   listPhotos: WerkstattApi['listPhotos'] = (id) => this.call('listPhotos', { params: { id }, schema: z.array(PhotoSchema) });
-  attachPhoto: WerkstattApi['attachPhoto'] = (id, input) => this.call('attachPhoto', { params: { id }, body: input, schema: PhotoSchema, idempotencyKey: input.id ?? undefined });
+  attachPhoto: WerkstattApi['attachPhoto'] = (id, input, options) =>
+    this.call('attachPhoto', { params: { id }, body: input, schema: PhotoSchema, idempotencyKey: options?.idempotencyKey ?? input.id ?? undefined });
   setPhotoVisibility: WerkstattApi['setPhotoVisibility'] = (id, visibility) => this.call('setPhotoVisibility', { params: { id }, body: { visibility }, schema: PhotoSchema });
   timeline: WerkstattApi['timeline'] = (id) => this.call('timeline', { params: { id }, schema: z.array(TimelineEntrySchema) });
 
@@ -390,8 +391,8 @@ export class HttpApi implements WerkstattApi {
   // Chat -----------------------------------------------------------------------
   listConversations: WerkstattApi['listConversations'] = () => this.call('listConversations', { schema: z.array(ConversationSchema) });
   listMessages: WerkstattApi['listMessages'] = (id, after) => this.call('listMessages', { params: { id }, query: { after }, schema: z.array(MessageSchema) });
-  sendMessage: WerkstattApi['sendMessage'] = (id, input) =>
-    this.call('sendMessage', { params: { id }, body: input, schema: MessageSchema, idempotencyKey: `message:${input.clientMessageId}` });
+  sendMessage: WerkstattApi['sendMessage'] = (id, input, options) =>
+    this.call('sendMessage', { params: { id }, body: input, schema: MessageSchema, idempotencyKey: options?.idempotencyKey ?? `message:${input.clientMessageId}` });
   markRead: WerkstattApi['markRead'] = (id) => this.call('markRead', { params: { id } });
   listInternalNotes: WerkstattApi['listInternalNotes'] = (id) => this.call('listInternalNotes', { params: { id }, schema: z.array(InternalNoteSchema) });
   addInternalNote: WerkstattApi['addInternalNote'] = (id, input, o: WriteOptions = {}) =>

@@ -15,7 +15,8 @@ function omit<T extends object, K extends keyof T>(value: T, keys: readonly K[])
 /**
  * Position für die Rolle filtern (auch einzeln, z. B. als Antwort auf Start oder Teil erfassen).
  * - Mechaniker: kein Positionspreis und keine Teilepreise (`unitPriceCents`).
- * - Kunde: keine laufende Zeiterfassung (`runningSince`) und keine verbauten Teile (`parts`).
+ * - Kunde: keine laufende Zeiterfassung (`runningSince`), keine erfasste Arbeitszeit
+ *   (`trackedMinutes`) und keine verbauten Teile (`parts`).
  * - Admin/Service: unverändert.
  */
 export function redactWorkItemForActor(item: WorkItem, actor: Pick<Actor, 'role'>): WorkItem {
@@ -23,7 +24,8 @@ export function redactWorkItemForActor(item: WorkItem, actor: Pick<Actor, 'role'
     const rest = omit(item, ['unitPriceCents']);
     return item.parts ? { ...rest, parts: item.parts.map((p) => omit(p, ['unitPriceCents'])) } : rest;
   }
-  if (actor.role === 'customer') return omit(item, ['runningSince', 'parts']);
+  // Arbeitszeiten einzelner Mitarbeiter sind interne Angaben; Kunden sehen Leistung und Preis
+  if (actor.role === 'customer') return omit(item, ['runningSince', 'parts', 'trackedMinutes']);
   return item.parts ? { ...item, parts: item.parts.map((p) => ({ ...p })) } : { ...item };
 }
 
@@ -32,7 +34,7 @@ export function redactWorkItemForActor(item: WorkItem, actor: Pick<Actor, 'role'
  * - Mechaniker: keine Preise (`unitPriceCents` je Position und je Teil), keine Kostenrahmen
  *   (`costLimitCents` am Auftrag und in der Annahme). Interne Hinweise bleiben sichtbar.
  * - Kunde: keine internen Notizen (`notesInternal`), keine internen Annahmehinweise
- *   (`intake.notesInternal`), keine laufende Zeiterfassung und keine verbauten Teile je Position.
+ *   (`intake.notesInternal`), keine Zeiterfassung und keine verbauten Teile je Position.
  * - Admin/Service: unverändert.
  */
 export function redactWorkOrderForActor(detail: WorkOrderDetail, actor: Pick<Actor, 'role'>): WorkOrderDetail {

@@ -46,6 +46,14 @@ describe('Zeitpunkt vom Gerät (occurredAt)', () => {
     expect(r).toEqual({ ok: true, value: { at: now, fromDevice: false } });
   });
 
+  it('ohne Gerätezeitpunkt nie vor dem letzten erfassten Zeitpunkt (Gerätezeit lag bis 5 Minuten voraus)', () => {
+    const last = '2026-09-27T10:03:00.000Z';
+    const r = resolveOccurredAt({ occurredAt: undefined, now, lastRecordedAt: last });
+    expect(r).toEqual({ ok: true, value: { at: new Date(last), fromDevice: false } });
+    // Folge: kein Abschnitt mit Ende vor Beginn
+    expect(trackedMinutes([{ startedAt: last, endedAt: r.ok ? r.value.at : null }], now)).toBe(0);
+  });
+
   it('nimmt Zeitpunkte bis 5 Minuten voraus und bis 72 Stunden zurück an', () => {
     for (const occurredAt of ['2026-09-27T10:05:00.000Z', '2026-09-24T10:00:00.000Z', '2026-09-27T08:00:00Z']) {
       const r = resolveOccurredAt({ occurredAt, now, lastRecordedAt: null });

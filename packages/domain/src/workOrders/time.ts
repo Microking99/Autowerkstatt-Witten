@@ -66,7 +66,8 @@ export interface OccurredAtIssue extends DomainIssue<'INVALID_OCCURRED_AT'> {
 
 /**
  * Zeitpunkt der Erfassung auf dem Gerät (`occurredAt`, Offline-Warteschlange, ADR-011) für Start,
- * Pause, Abschluss und "nicht durchgeführt" prüfen. Ohne Gerätezeitpunkt gilt `now` (Serverzeit).
+ * Pause, Abschluss und "nicht durchgeführt" prüfen. Ohne Gerätezeitpunkt gilt `now` (Serverzeit),
+ * höchstens aber der letzte erfasste Zeitpunkt der Position, falls dieser später liegt.
  *
  * Angenommen wird ein Zeitpunkt nur, wenn er
  * - höchstens 5 Minuten nach `now` liegt (Uhr des Geräts geht leicht vor),
@@ -82,7 +83,12 @@ export function resolveOccurredAt(input: {
   now: Date;
   lastRecordedAt: Date | string | null;
 }): Result<{ at: Date; fromDevice: boolean }, OccurredAtIssue> {
-  if (input.occurredAt === null || input.occurredAt === undefined) return ok({ at: new Date(input.now.getTime()), fromDevice: false });
+  if (input.occurredAt === null || input.occurredAt === undefined) {
+    // Serverzeit, aber nie vor dem letzten erfassten Zeitpunkt: Eine vorher angenommene Gerätezeit
+    // darf bis zu 5 Minuten voraus liegen; sonst entstünde ein Abschnitt mit Ende vor Beginn.
+    const last = input.lastRecordedAt === null ? null : toDate(input.lastRecordedAt).getTime();
+    return ok({ at: new Date(last !== null && last > input.now.getTime() ? last : input.now.getTime()), fromDevice: false });
+  }
   const at = toDate(input.occurredAt);
   const now = input.now.getTime();
   const reject = (reason: OccurredAtRejection, message: string, lastRecordedAt: string | null = null): Result<never, OccurredAtIssue> => ({

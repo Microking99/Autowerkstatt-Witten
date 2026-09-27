@@ -261,6 +261,7 @@ export const WorkItemSchema = z.object({
   doneAt: IsoDateTimeSchema.nullable(),
   doneOdometerKm: z.number().int().nullable(),
   resultNotes: z.string().nullable(),
+  /** Erfasste Arbeitszeit in Minuten. Fehlt für Kunden (interne Angabe zu Mitarbeitern). */
   trackedMinutes: z.number().int().optional(),
   /** Beginn der laufenden Zeiterfassung (nur bei `in_progress`), sonst null. Fehlt für Kunden. */
   runningSince: IsoDateTimeSchema.nullable().optional(),

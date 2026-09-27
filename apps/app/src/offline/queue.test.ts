@@ -133,6 +133,37 @@ describe('Offline-Warteschlange: reine Regeln', () => {
       ['part', 'i1', { description: 'Teil', quantity: 1 }, { idempotencyKey: 't1.r2' }],
     ]);
   });
+
+  it('Objekte mit Client-ID: erster Versuch über die Objekt-ID, nach "Erneut senden" eigener Schlüssel, gleiche Objekt-ID', async () => {
+    const calls: unknown[][] = [];
+    const record = (name: string) => vi.fn(async (...args: unknown[]) => {
+      calls.push([name, ...args]);
+      return { id: 'datei-1' };
+    });
+    const api = { createFinding: record('finding'), sendMessage: record('message'), uploadFile: record('upload'), attachPhoto: record('photo') } as unknown as WerkstattApi;
+    const at = '2026-09-29T06:30:00.000Z';
+    const make = (id: string, kind: QueueEntry['kind'], payload: Record<string, unknown>) => createEntry({ id, kind, workOrderId: 'wo', scope: 'order:wo', label: id, payload }, at);
+    const finding = make('fd1', 'createFinding', { text: 'Riemen rissig', severity: 'soon' });
+    const message = make('m1', 'sendMessage', { body: 'Hallo' });
+    const photo = make('ph1', 'photo', { photoId: 'foto-1', uri: 'file:///x.jpg', name: 'x.jpg', mimeType: 'image/jpeg', sizeBytes: 10, context: 'finding', takenAt: at });
+    for (const e of [finding, message, photo]) await execute(api, e);
+    for (const e of [finding, message, photo]) await execute(api, { ...e, revision: 1 });
+    const keyOf = (c: unknown[]) => c[c.length - 1];
+    expect(calls.map((c) => [c[0], keyOf(c)])).toEqual([
+      ['finding', undefined],
+      ['message', undefined],
+      ['upload', { idempotencyKey: 'ph1.upload' }],
+      ['photo', undefined],
+      ['finding', { idempotencyKey: 'fd1.r1' }],
+      ['message', { idempotencyKey: 'message:m1.r1' }],
+      ['upload', { idempotencyKey: 'ph1.r1.upload' }],
+      ['photo', { idempotencyKey: 'ph1.r1.photo' }],
+    ]);
+    // Objekt-IDs bleiben gleich (keine Dublette auf dem Server)
+    expect(calls.filter((c) => c[0] === 'finding').map((c) => (c[2] as { id: string }).id)).toEqual(['fd1', 'fd1']);
+    expect(calls.filter((c) => c[0] === 'message').map((c) => (c[2] as { clientMessageId: string }).clientMessageId)).toEqual(['m1', 'm1']);
+    expect(calls.filter((c) => c[0] === 'photo').map((c) => (c[2] as { id: string }).id)).toEqual(['foto-1', 'foto-1']);
+  });
 });
 
 describe('Offline-Warteschlange: Zeitpunkt vom Gerät', () => {

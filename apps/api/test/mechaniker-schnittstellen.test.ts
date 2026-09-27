@@ -87,7 +87,7 @@ describe('Zuweisbare Mitarbeiter (GET /staff/assignable)', () => {
 });
 
 describe('Teile und laufende Zeit je Position', () => {
-  it('Service sieht Teile mit Preis, Mechaniker ohne Preis, Kunde weder Teile noch laufende Zeit', async () => {
+  it('Service sieht Teile mit Preis, Mechaniker ohne Preis, Kunde weder Teile noch Arbeitszeiten', async () => {
     const { customer, vehicleId } = await customerWithVehicle(h, 'Teile');
     const wo = await orderWithItems(customer, vehicleId);
     const oil = wo.items[0]!;
@@ -134,11 +134,12 @@ describe('Teile und laufende Zeit je Position', () => {
     for (const p of mechView.parts!) expect(p).not.toHaveProperty('unitPriceCents');
     expect(mechRes.body).not.toContain('1490');
 
-    // Kunde: Positionen ohne laufende Zeit und ohne Teile
+    // Kunde: Positionen ohne Zeiterfassung (laufend und erfasst) und ohne Teile
     const custRes = await call(h, 'GET', `/work-orders/${wo.id}`, { token: customer.token });
     const custView = expectOk(custRes, WorkOrderDetailSchema);
     for (const i of custView.items) {
       expect(i).not.toHaveProperty('runningSince');
+      expect(i).not.toHaveProperty('trackedMinutes');
       expect(i).not.toHaveProperty('parts');
     }
     expect(custRes.body).not.toContain('Ölfilter');

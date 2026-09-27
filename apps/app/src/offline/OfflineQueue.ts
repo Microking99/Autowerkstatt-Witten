@@ -54,15 +54,23 @@ export async function execute(api: WerkstattApi, entry: QueueEntry): Promise<voi
   const key = idempotencyKeyOf(entry);
   const occurredAt = occurredAtOf(entry);
   const time = occurredAt ? { occurredAt } : {};
+  // Objekte mit Client-ID (Foto, Feststellung, Nachricht): Schlüssel sonst aus der Objekt-ID;
+  // nach "Erneut senden" eigener Schlüssel, damit nicht die gespeicherte Ablehnung zurückkommt.
+  // Die Objekt-ID bleibt gleich, eine Ablehnung hat nichts angelegt: keine Dublette möglich.
+  const retried = entry.revision ? key : null;
   switch (entry.kind) {
     case 'photo': {
       const photo = p as unknown as PhotoPayload;
-      const file = await api.uploadFile({ uri: photo.uri, name: photo.name, mimeType: photo.mimeType, sizeBytes: photo.sizeBytes }, { idempotencyKey: `${entry.id}.upload` });
-      await api.attachPhoto(entry.workOrderId, { id: photo.photoId, fileId: file.id, context: photo.context, caption: photo.caption ?? null, findingId: photo.findingId ?? null, takenAt: photo.takenAt });
+      const file = await api.uploadFile({ uri: photo.uri, name: photo.name, mimeType: photo.mimeType, sizeBytes: photo.sizeBytes }, { idempotencyKey: `${key}.upload` });
+      await api.attachPhoto(
+        entry.workOrderId,
+        { id: photo.photoId, fileId: file.id, context: photo.context, caption: photo.caption ?? null, findingId: photo.findingId ?? null, takenAt: photo.takenAt },
+        retried ? { idempotencyKey: `${retried}.photo` } : undefined,
+      );
       return;
     }
     case 'createFinding':
-      await api.createFinding(entry.workOrderId, { ...(p as unknown as FindingInput), id: entry.id });
+      await api.createFinding(entry.workOrderId, { ...(p as unknown as FindingInput), id: entry.id }, retried ? { idempotencyKey: retried } : undefined);
       return;
     case 'reportFinding':
       await api.reportFinding(String(p.findingId), { idempotencyKey: key });
@@ -86,7 +94,7 @@ export async function execute(api: WerkstattApi, entry: QueueEntry): Promise<voi
       await api.addInternalNote(entry.workOrderId, { body: String(p.body) }, { idempotencyKey: key });
       return;
     case 'sendMessage':
-      await api.sendMessage(entry.workOrderId, { clientMessageId: entry.id, body: String(p.body ?? ''), fileIds: [] });
+      await api.sendMessage(entry.workOrderId, { clientMessageId: entry.id, body: String(p.body ?? ''), fileIds: [] }, retried ? { idempotencyKey: `message:${retried}` } : undefined);
       return;
   }
 }
