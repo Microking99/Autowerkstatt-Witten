@@ -95,6 +95,17 @@ function UserForm({ user }: { user: StaffUser }) {
       </Section>
       <Section title={`Rechte${overrides.length ? ` (${overrides.length} ${overrides.length === 1 ? 'Abweichung' : 'Abweichungen'} vom Standard)` : ''}`}>
         <Banner tone="info" message="Rechte gelten serverseitig. Markiert sind Abweichungen vom Standard der Rolle. Nicht zulässige Rechte (zum Beispiel Preise für Mechaniker) sind gesperrt." />
+        {overrides.length > 0 ? (
+          <View style={[styles.group, { borderColor: t.colors.warning, backgroundColor: t.colors.warningSoft, borderRadius: t.radius.panel }]} testID="rechte-abweichungen">
+            <AppText variant="bodyStrong">Abweichungen vom Standard der Rolle</AppText>
+            {overrides.map((o) => (
+              <Row key={o.permission} gap={8} style={styles.never}>
+                <StatusChip status={o.granted ? { label: 'Zusätzlich erteilt', tone: 'warning', icon: 'Plus' } : { label: 'Entzogen', tone: 'warning', icon: 'Minus' }} />
+                <AppText style={styles.flex}>{permissionLabels[o.permission]}</AppText>
+              </Row>
+            ))}
+          </View>
+        ) : null}
         {GROUPS.map((g) => (
           <View key={g.title} style={[styles.group, { borderColor: t.colors.border, backgroundColor: t.colors.surface, borderRadius: t.radius.panel }]}>
             <AppText variant="bodyStrong">{g.title}</AppText>

@@ -166,7 +166,8 @@ const styles = StyleSheet.create({
   grow: { flexGrow: 1, flexBasis: 200 },
   actions: { gap: 12 },
   severities: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  severity: { minHeight: 56, paddingHorizontal: 12, justifyContent: 'center', flexGrow: 1, flexBasis: 150 },
+  // Breite reicht für "Sicherheitsrelevant" (ein Wort, nicht umbrechbar); am Telefon eine Option je Zeile
+  severity: { minHeight: 56, paddingHorizontal: 12, justifyContent: 'center', flexGrow: 1, flexBasis: 220 },
   severityRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   severityText: { flexShrink: 1 },
 });
