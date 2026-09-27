@@ -128,6 +128,8 @@ export interface WorkOrderAccessInput {
   assigneeUserIds: readonly string[];
   /** Den Positionen zugewiesene Mitarbeiter. */
   itemAssigneeUserIds?: readonly string[];
+  /** Arbeitsstatus; Kunden sehen Aufträge im Status `draft` nicht. */
+  status?: WorkOrderStatus;
 }
 
 /** true, wenn die Person dem Auftrag oder einer seiner Positionen zugewiesen ist. */
@@ -143,7 +145,11 @@ export function isAssignedToWorkOrder(userId: string, workOrder: WorkOrderAccess
 export function canViewWorkOrder(actor: Actor, workOrder: WorkOrderAccessInput): Decision {
   const pre = precheck(actor);
   if (pre) return pre;
-  if (!isStaff(actor)) return isOwnCustomer(actor, workOrder.customerId) ? ALLOW : deny(actor, 'NOT_OWN_RECORD');
+  if (!isStaff(actor)) {
+    if (!isOwnCustomer(actor, workOrder.customerId)) return deny(actor, 'NOT_OWN_RECORD');
+    // Entwürfe sind interne Arbeitsstände und für Kunden nicht vorhanden.
+    return workOrder.status === 'draft' ? deny(actor, 'NOT_OWN_RECORD') : ALLOW;
+  }
   if (staffHas(actor, 'workOrders.read')) return ALLOW;
   return isAssignedToWorkOrder(actor.userId, workOrder) ? ALLOW : deny(actor, 'NOT_ASSIGNED');
 }
@@ -212,6 +218,12 @@ export function canDecideApproval(actor: Actor, input: { workOrderCustomerId: st
 /** Minimale Positionsdaten für die Ausführungsprüfung. */
 export interface WorkItemExecutionAccessInput {
   assignedToUserId: string | null;
+  /**
+   * Dem Auftrag zugewiesene Mitarbeiter. Ein Mechaniker darf Positionen ohne eigene
+   * Zuweisung ausführen, wenn er dem Auftrag zugewiesen ist; Positionen, die einem anderen
+   * Mitarbeiter zugewiesen sind, nie.
+   */
+  workOrderAssigneeUserIds?: readonly string[];
   authorization: WorkItemAuthorization;
   /** Arbeitsstatus des Auftrags. */
   workOrderStatus: WorkOrderStatus;
@@ -233,7 +245,11 @@ export function canExecuteWorkItem(actor: Actor, item: WorkItemExecutionAccessIn
   if (!isStaff(actor)) return deny(actor, 'ROLE_NOT_ALLOWED');
   if (!staffHas(actor, 'workItems.execute')) return deny(actor, 'MISSING_PERMISSION');
   const privileged = actor.role === 'admin' || actor.role === 'service';
-  if (!privileged && item.assignedToUserId !== actor.userId) return deny(actor, 'NOT_ASSIGNED');
+  if (!privileged) {
+    const ownItem = item.assignedToUserId === actor.userId;
+    const unassignedOnOwnOrder = item.assignedToUserId === null && (item.workOrderAssigneeUserIds ?? []).includes(actor.userId);
+    if (!ownItem && !unassignedOnOwnOrder) return deny(actor, 'NOT_ASSIGNED');
+  }
   if (item.authorization !== 'agreed' && item.authorization !== 'approved') return deny(actor, 'ITEM_NOT_AUTHORIZED');
   if (!EXECUTABLE_WORK_ORDER_STATUSES.includes(item.workOrderStatus)) return deny(actor, 'WORK_ORDER_NOT_ACTIVE');
   return ALLOW;

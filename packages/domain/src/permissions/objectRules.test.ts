@@ -37,6 +37,17 @@ const customerC = (): Actor => customerActor(tid(7), IDS.customerC);
 const workOrderOfA: WorkOrderAccessInput = { customerId: IDS.customerA, assigneeUserIds: [IDS.mechanicUser], itemAssigneeUserIds: [] };
 const workOrderOfB: WorkOrderAccessInput = { customerId: IDS.customerB, assigneeUserIds: [IDS.otherMechanicUser], itemAssigneeUserIds: [] };
 
+describe('Auftragsentwürfe', () => {
+  it('Kunden sehen Aufträge im Entwurf nicht (404), ab "offen" schon; Mitarbeiter immer', () => {
+    const draft: WorkOrderAccessInput = { ...workOrderOfA, status: 'draft' };
+    const d = canViewWorkOrder(customerA(), draft);
+    expect(reasonOf(d)).toBe('NOT_OWN_RECORD');
+    expect(notFoundOf(d)).toBe(true);
+    expect(allowed(canViewWorkOrder(customerA(), { ...workOrderOfA, status: 'open' }))).toBe(true);
+    expect(allowed(canViewWorkOrder(service(), draft))).toBe(true);
+  });
+});
+
 describe('Abnahme: Kunde mit mehreren Fahrzeugen', () => {
   const vehicles = [
     { id: IDS.vehicle1, currentOwnerCustomerId: IDS.customerA },
@@ -213,6 +224,16 @@ describe('Positionen ausführen', () => {
     for (const authorization of ['pending_approval', 'rejected', 'withdrawn'] as const) {
       expect(reasonOf(canExecuteWorkItem(mechanic(), { ...base, authorization }))).toBe('ITEM_NOT_AUTHORIZED');
     }
+  });
+
+  it('Mechaniker des Auftrags darf Positionen ohne eigene Zuweisung ausführen, fremd zugewiesene nie', () => {
+    const onOwnOrder = { ...base, assignedToUserId: null, workOrderAssigneeUserIds: [IDS.mechanicUser] };
+    expect(allowed(canExecuteWorkItem(mechanic(), onOwnOrder))).toBe(true);
+    expect(reasonOf(canExecuteWorkItem(mechanic(), { ...onOwnOrder, workOrderAssigneeUserIds: [IDS.otherMechanicUser] }))).toBe('NOT_ASSIGNED');
+    expect(
+      reasonOf(canExecuteWorkItem(mechanic(), { ...onOwnOrder, assignedToUserId: IDS.otherMechanicUser })),
+    ).toBe('NOT_ASSIGNED');
+    expect(reasonOf(canExecuteWorkItem(mechanic(), { ...onOwnOrder, authorization: 'pending_approval' }))).toBe('ITEM_NOT_AUTHORIZED');
   });
 
   it('nur in offenen oder laufenden Aufträgen', () => {
