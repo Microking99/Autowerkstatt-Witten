@@ -14,12 +14,16 @@ import {
 import { canViewCustomer, hasPermission, licensePlateSearchKey } from '@werkstatt/domain';
 import { customerAccounts, customers, invoices, payments, users, vehicleOwnerships, vehicles } from '../db/schema/index';
 import { audit, auditContextFrom } from '../lib/audit';
-import { conflict } from '../lib/errors';
+import { badRequest, conflict } from '../lib/errors';
+import { patchSchema } from '../lib/schemas';
 import { IdParamsSchema, PageQuerySchema, decodeCursor, ensure, ensureFound, page, requireActor } from '../lib/http';
 import { createInvitation, invitationLink, sendInvitationMail } from '../auth/invitations';
 import { revokeAllSessions } from '../auth/session';
 import { customerStats, nextCustomerNumber, toCustomerDetail, toCustomerSummary } from '../services/customers';
 import type { App } from '../types';
+
+/** PATCH: nur übermittelte Felder ändern (ohne Standardwerte, sonst würden z. B. Testdaten-Kennzeichen gelöscht) */
+const CustomerPatchSchema = patchSchema(CustomerInputSchema);
 
 const ListQuerySchema = PageQuerySchema.extend({
   q: z.string().trim().max(100).optional(),
@@ -112,15 +116,21 @@ export async function customerRoutes(app: App): Promise<void> {
 
   app.patch(
     '/customers/:id',
-    { schema: { params: IdParamsSchema, body: CustomerInputSchema, response: { 200: CustomerDetailSchema } } },
+    { schema: { params: IdParamsSchema, body: CustomerPatchSchema, response: { 200: CustomerDetailSchema } } },
     async (request) => {
       const actor = requireActor(request);
       ensure(hasPermission(actor, 'customers.write'));
       const { db } = app.deps;
       const updated = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(customers).where(eq(customers.id, request.params.id)).for('update');
+        ensureFound(current);
+        // Ergebnis muss weiterhin dem Vertrag entsprechen (z. B. Nachname bzw. Firmenname)
+        const merged = CustomerInputSchema.safeParse({ ...current, ...request.body });
+        if (!merged.success) {
+          throw badRequest('Die Eingaben sind ungültig.', merged.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })), 'validation_failed');
+        }
         const [row] = await tx.update(customers).set(request.body).where(eq(customers.id, request.params.id)).returning();
-        ensureFound(row);
-        await audit(tx, auditContextFrom(request), { action: 'customer.updated', entityType: 'customer', entityId: row!.id });
+        await audit(tx, auditContextFrom(request), { action: 'customer.updated', entityType: 'customer', entityId: row!.id, data: { fields: Object.keys(request.body) } });
         return row!;
       });
       return toCustomerDetail(db, updated, actor);

@@ -56,6 +56,7 @@ import { randomToken, sha256Hex } from '../lib/crypto';
 import { conflict, forbidden, unprocessable } from '../lib/errors';
 import { IdParamsSchema, PageQuerySchema, decodeCursor, ensure, ensureFound, page, requireActor } from '../lib/http';
 import { vehicleAccessInput } from '../services/access';
+import { patchSchema } from '../lib/schemas';
 import { customerDisplayName } from '../services/customers';
 import { loadServiceEntries, serviceEntryDtos, toServiceEntryRecords } from '../services/serviceEntries';
 import { loadSettings } from '../services/settings';
@@ -68,7 +69,7 @@ const ListQuerySchema = PageQuerySchema.extend({
   archived: z.enum(['true', 'false']).optional(),
 });
 
-const VehicleUpdateSchema = VehicleInputSchema.omit({ ownerCustomerId: true }).partial();
+const VehicleUpdateSchema = patchSchema(VehicleInputSchema.omit({ ownerCustomerId: true }));
 
 type OdometerRow = typeof odometerReadings.$inferSelect;
 type ShareRow = typeof vehicleShares.$inferSelect;

@@ -28,8 +28,11 @@ export function testPasswordHash(): Promise<string> {
   return passwordHashCache;
 }
 
+/** Uhr der App: läuft mit der Echtzeit, lässt sich für Tests vorstellen. */
 export interface Clock {
-  now: Date;
+  offsetMs: number;
+  now(): Date;
+  advance(ms: number): void;
 }
 
 export interface Harness {
@@ -65,12 +68,20 @@ export async function createHarness(env: Record<string, string> = {}): Promise<H
     PAYMENT_REFRESH_MIN_SECONDS: '0',
     ...env,
   });
-  const clock: Clock = { now: new Date() };
+  const clock: Clock = {
+    offsetMs: 0,
+    now() {
+      return new Date(Date.now() + this.offsetMs);
+    },
+    advance(ms: number) {
+      this.offsetMs += ms;
+    },
+  };
   const fake = new FakePaymentProvider();
   const mailer = new LogMailer(null);
   const push = new LogPushSender(null);
   let database = createDatabase(url, { max: 5 });
-  const make = () => buildApp({ config, database, overrides: { payments: fake, mailer, push, now: () => clock.now } });
+  const make = () => buildApp({ config, database, overrides: { payments: fake, mailer, push, now: () => clock.now() } });
   const harness: Harness = {
     app: await make(),
     db: database.db,

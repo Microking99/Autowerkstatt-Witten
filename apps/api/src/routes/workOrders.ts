@@ -22,7 +22,6 @@ import {
   PhotoSchema,
   SetVisibilityRequestSchema,
   TimelineEntrySchema,
-  UpdateWorkOrderRequestSchema,
   WorkItemInputSchema,
   WorkItemSchema,
   WorkOrderDetailSchema,
@@ -68,6 +67,7 @@ import { HttpError, conflict, forbidden, notFound, unprocessable } from '../lib/
 import { IdParamsSchema, PageQuerySchema, decodeCursor, ensure, ensureFound, page, requireActor } from '../lib/http';
 import { enqueueNotification, notificationTargets, serviceRecipientIds } from '../notifications/outbox';
 import { contentDisposition } from '../storage/fileSignature';
+import { patchSchema } from '../lib/schemas';
 import { currentOwnerCustomerId, loadVisibleWorkOrder, workOrderListCondition, type WorkOrderRow } from '../services/access';
 import { nextOrderNumber } from '../services/customers';
 import { customerUserId } from '../services/recipients';
@@ -110,7 +110,9 @@ const ListQuerySchema = PageQuerySchema.extend({
 });
 
 const AssigneesSchema = z.object({ assigneeIds: z.array(IdSchema).max(20) });
-const WorkItemUpdateSchema = WorkItemInputSchema.partial();
+const WorkItemUpdateSchema = patchSchema(WorkItemInputSchema);
+// Vertrag: UpdateWorkOrderRequestSchema; ohne Standardwerte, damit fehlende Felder unverändert bleiben
+const WorkOrderPatchSchema = patchSchema(CreateWorkOrderRequestSchema.omit({ customerId: true, vehicleId: true, items: true }));
 const ItemParamsSchema = IdParamsSchema;
 
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic']);
@@ -281,7 +283,7 @@ export async function workOrderRoutes(app: App): Promise<void> {
 
   app.patch(
     '/work-orders/:id',
-    { schema: { params: IdParamsSchema, body: UpdateWorkOrderRequestSchema, response: { 200: WorkOrderDetailSchema } } },
+    { schema: { params: IdParamsSchema, body: WorkOrderPatchSchema, response: { 200: WorkOrderDetailSchema } } },
     async (request) => {
       const actor = requireActor(request);
       ensure(hasPermission(actor, 'workOrders.write'));

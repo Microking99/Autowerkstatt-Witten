@@ -161,7 +161,8 @@ export function canViewWorkOrder(actor: Actor, workOrder: WorkOrderAccessInput):
 export function canViewMessages(actor: Actor, workOrder: WorkOrderAccessInput): Decision {
   const pre = precheck(actor);
   if (pre) return pre;
-  if (!isStaff(actor)) return isOwnCustomer(actor, workOrder.customerId) ? ALLOW : deny(actor, 'NOT_OWN_RECORD');
+  // Kunden: gleiche Sicht wie auf den Auftrag (eigener Auftrag, kein Entwurf)
+  if (!isStaff(actor)) return canViewWorkOrder(actor, workOrder);
   if (!staffHas(actor, 'messages.customerChat')) return deny(actor, 'MISSING_PERMISSION');
   return canViewWorkOrder(actor, workOrder);
 }
@@ -192,7 +193,9 @@ export function canViewApprovalRequest(actor: Actor, input: { workOrder: WorkOrd
   const pre = precheck(actor);
   if (pre) return pre;
   if (!isStaff(actor)) {
-    if (!isOwnCustomer(actor, input.workOrder.customerId)) return deny(actor, 'NOT_OWN_RECORD');
+    // Kunden: nur zu Aufträgen, die sie sehen dürfen (eigener Auftrag, kein Entwurf)
+    const order = canViewWorkOrder(actor, input.workOrder);
+    if (!order.allowed) return order;
     return input.status === 'draft' ? deny(actor, 'DRAFT') : ALLOW;
   }
   if (!canSeePrices(actor)) return deny(actor, 'ROLE_NOT_ALLOWED');
