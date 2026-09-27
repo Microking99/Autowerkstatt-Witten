@@ -14,8 +14,11 @@ import {
   classifyError,
   createEntry,
   discardEntry,
+  idempotencyKeyOf,
+  isDeviceTimeConflict,
   markSending,
   nextRunnable,
+  occurredAtOf,
   parseStored,
   retryEntry,
   serialize,
@@ -42,9 +45,15 @@ export interface PhotoPayload {
   takenAt: string;
 }
 
-/** Einen Eintrag gegen die API ausführen. Idempotenz über die Client-UUID des Eintrags. */
+/**
+ * Einen Eintrag gegen die API ausführen. Idempotenz über die Client-UUID des Eintrags (nach
+ * manueller Wiederholung mit Zähler). Zeiten tragen den Erfassungszeitpunkt (`occurredAt`).
+ */
 export async function execute(api: WerkstattApi, entry: QueueEntry): Promise<void> {
   const p = entry.payload;
+  const key = idempotencyKeyOf(entry);
+  const occurredAt = occurredAtOf(entry);
+  const time = occurredAt ? { occurredAt } : {};
   switch (entry.kind) {
     case 'photo': {
       const photo = p as unknown as PhotoPayload;
@@ -56,25 +65,25 @@ export async function execute(api: WerkstattApi, entry: QueueEntry): Promise<voi
       await api.createFinding(entry.workOrderId, { ...(p as unknown as FindingInput), id: entry.id });
       return;
     case 'reportFinding':
-      await api.reportFinding(String(p.findingId), { idempotencyKey: entry.id });
+      await api.reportFinding(String(p.findingId), { idempotencyKey: key });
       return;
     case 'startWorkItem':
-      await api.startWorkItem(String(p.itemId), { idempotencyKey: entry.id });
+      await api.startWorkItem(String(p.itemId), time, { idempotencyKey: key });
       return;
     case 'pauseWorkItem':
-      await api.pauseWorkItem(String(p.itemId), { idempotencyKey: entry.id });
+      await api.pauseWorkItem(String(p.itemId), time, { idempotencyKey: key });
       return;
     case 'finishWorkItem':
-      await api.finishWorkItem(String(p.itemId), p.input as FinishWorkItemInput, { idempotencyKey: entry.id });
+      await api.finishWorkItem(String(p.itemId), { ...(p.input as FinishWorkItemInput), ...time }, { idempotencyKey: key });
       return;
     case 'notDoneWorkItem':
-      await api.notDoneWorkItem(String(p.itemId), p.input as NotDoneWorkItemInput, { idempotencyKey: entry.id });
+      await api.notDoneWorkItem(String(p.itemId), { ...(p.input as NotDoneWorkItemInput), ...time }, { idempotencyKey: key });
       return;
     case 'addPart':
-      await api.addPart(String(p.itemId), p.input as PartUsedInput, { idempotencyKey: entry.id });
+      await api.addPart(String(p.itemId), p.input as PartUsedInput, { idempotencyKey: key });
       return;
     case 'addInternalNote':
-      await api.addInternalNote(entry.workOrderId, { body: String(p.body) }, { idempotencyKey: entry.id });
+      await api.addInternalNote(entry.workOrderId, { body: String(p.body) }, { idempotencyKey: key });
       return;
     case 'sendMessage':
       await api.sendMessage(entry.workOrderId, { clientMessageId: entry.id, body: String(p.body ?? ''), fileIds: [] });
@@ -170,12 +179,23 @@ export class OfflineQueue {
    * Aktion des Mechanikers: speichern und sofort übertragen, wenn online. Lehnt der Server
    * dabei ab, wird der Eintrag nicht in der Warteschlange behalten, sondern der Fehler direkt
    * in der Ansicht gezeigt. Ohne Verbindung bleibt er gespeichert ("Nicht synchronisiert").
+   *
+   * Sofort übertragen heißt: Erfassung und Übertragung fallen zusammen. Lehnt der Server nur
+   * den Zeitpunkt vom Gerät ab (Geräteuhr weicht ab), wird einmal ohne Gerätezeit gesendet;
+   * dann gilt die Serverzeit, die hier dem Erfassungszeitpunkt entspricht.
    */
   async submit(items: NewQueueEntry[], options: { online: boolean }): Promise<SubmitResult> {
     await this.enqueue(items);
     if (!options.online) return { type: 'queued' };
     await this.flush();
     const ids = new Set(items.map((i) => i.id));
+    const clock = this.entries.filter((e) => ids.has(e.id) && isDeviceTimeConflict(e));
+    if (clock.length > 0) {
+      let entries = this.entries;
+      for (const e of clock) entries = retryEntry(entries, e.id, { withoutDeviceTime: true });
+      await this.set(entries);
+      await this.flush();
+    }
     const mine = this.entries.filter((e) => ids.has(e.id));
     if (mine.length === 0) return { type: 'done' };
     const conflict = mine.find((e) => e.state === 'conflict');
@@ -188,8 +208,9 @@ export class OfflineQueue {
     return { type: 'queued' };
   }
 
-  async retry(id: string): Promise<void> {
-    await this.set(retryEntry(this.entries, id));
+  /** Konflikt erneut senden (neuer Idempotency-Key); `withoutDeviceTime`: Serverzeit statt Gerätezeit. */
+  async retry(id: string, options: { withoutDeviceTime?: boolean } = {}): Promise<void> {
+    await this.set(retryEntry(this.entries, id, options));
     await this.flush();
   }
 

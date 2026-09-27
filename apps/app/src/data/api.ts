@@ -13,6 +13,7 @@ import type {
   AcceptInvitationRequestSchema,
   Appointment,
   AppointmentInputSchema,
+  AssignableStaff,
   AppointmentRequestInputSchema,
   AppointmentStatus,
   ApprovalDecisionRequest,
@@ -63,6 +64,7 @@ import type {
   Ownership,
   OwnershipTransferRequestSchema,
   PartUsedInputSchema,
+  PauseWorkItemRequestSchema,
   PaymentStatus,
   Photo,
   ProposeAlternativeRequestSchema,
@@ -77,6 +79,7 @@ import type {
   SessionUser,
   StaffUser,
   StartCheckoutResponse,
+  StartWorkItemRequestSchema,
   TimelineEntry,
   UpdateStaffRequestSchema,
   UpdateWorkOrderRequestSchema,
@@ -119,6 +122,9 @@ export type WorkOrderTransitionInput = z.input<typeof WorkOrderTransitionRequest
 export type IntakeInputData = z.input<typeof IntakeInputSchema>;
 export type ConfirmIntakeInput = z.input<typeof ConfirmIntakeRequestSchema>;
 export type WorkItemInputData = z.input<typeof WorkItemInputSchema>;
+/** `occurredAt`: Zeitpunkt der Erfassung auf dem Gerät (Offline-Warteschlange); ohne gilt die Serverzeit */
+export type StartWorkItemInput = z.input<typeof StartWorkItemRequestSchema>;
+export type PauseWorkItemInput = z.input<typeof PauseWorkItemRequestSchema>;
 export type FinishWorkItemInput = z.input<typeof FinishWorkItemRequestSchema>;
 export type NotDoneWorkItemInput = z.input<typeof NotDoneWorkItemRequestSchema>;
 export type PartUsedInput = z.input<typeof PartUsedInputSchema>;
@@ -277,6 +283,11 @@ export interface WerkstattApi {
 
   // Mitarbeiter (users.manage)
   listUsers(): Promise<StaffUser[]>;
+  /**
+   * Zuweisbare Mitarbeiter (aktiv oder eingeladen, Werkstattrollen), sortiert nach Namen, ohne
+   * E-Mail und Rechte. Recht: workOrders.write oder appointments.write.
+   */
+  listAssignableStaff(): Promise<AssignableStaff[]>;
   inviteUser(input: InviteStaffInput): Promise<StaffUser>;
   getUser(id: string): Promise<StaffUser>;
   updateUser(id: string, input: UpdateStaffInput): Promise<StaffUser>;
@@ -352,8 +363,14 @@ export interface WerkstattApi {
   confirmIntake(workOrderId: string, input: ConfirmIntakeInput): Promise<Intake>;
   addWorkItem(workOrderId: string, input: WorkItemInputData): Promise<WorkItem>;
   updateWorkItem(itemId: string, input: Partial<WorkItemInputData>): Promise<WorkItem>;
-  startWorkItem(itemId: string, options?: WriteOptions): Promise<WorkItem>;
-  pauseWorkItem(itemId: string, options?: WriteOptions): Promise<WorkItem>;
+  /**
+   * Start bzw. Fortsetzen. Mit `occurredAt` (Gerätezeit) prüft der Server die Grenzen
+   * (höchstens 5 Minuten voraus, 72 Stunden zurück, nicht vor dem letzten Zeitpunkt der
+   * Position), sonst 422 `invalid_occurred_at`. Gilt ebenso für Pause, Abschluss und
+   * "nicht durchgeführt".
+   */
+  startWorkItem(itemId: string, input?: StartWorkItemInput, options?: WriteOptions): Promise<WorkItem>;
+  pauseWorkItem(itemId: string, input?: PauseWorkItemInput, options?: WriteOptions): Promise<WorkItem>;
   /**
    * Abschluss. Bei Wartungspositionen ist der km-Stand Pflicht; ausdrücklich
    * `odometerKm: null` bedeutet "km-Stand unbekannt". Fehlt das Feld: 409 `odometer_required`.
@@ -447,6 +464,7 @@ export interface WerkstattApi {
 export type {
   Appointment,
   ApprovalRequest,
+  AssignableStaff,
   CustomerDetail,
   CustomerSummary,
   DashboardTile,

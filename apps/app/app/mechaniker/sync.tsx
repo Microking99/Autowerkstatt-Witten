@@ -1,8 +1,10 @@
 /**
  * Mechaniker, Synchronisierung: nicht übertragene Einträge der Offline-Warteschlange in der
  * Reihenfolge der Erfassung, vom Server abgelehnte Einträge (Konflikte) mit Grund.
- * Erneut senden oder verwerfen (Bestätigung). Freigaben, Zahlungen, fachlicher Abschluss
- * und Rechnungen gibt es offline nie.
+ * Erneut senden oder verwerfen (Bestätigung). Lehnt der Server nur den Erfassungszeitpunkt
+ * vom Gerät ab (`invalid_occurred_at`), heißt die Aktion "Ohne Gerätezeit senden": Dann gilt
+ * der Zeitpunkt der Übertragung. Freigaben, Zahlungen, fachlicher Abschluss und Rechnungen
+ * gibt es offline nie.
  */
 import { routes } from '@werkstatt/contracts';
 import { router, type Href } from 'expo-router';
@@ -10,7 +12,7 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { formatDateTime } from '../../src/lib/format';
 import { useOfflineQueue } from '../../src/offline/OfflineQueueProvider';
-import type { QueueEntry } from '../../src/offline/queueCore';
+import { isDeviceTimeConflict, type QueueEntry } from '../../src/offline/queueCore';
 import { conflictLabel, queueKindLabels, unsyncedLabel } from '../../src/screens/mechanic/pending';
 import { useTheme } from '../../src/theme';
 import { AppText, Banner, Button, ConfirmDialog, EmptyState, Page, PageHeader, Row, Section, StatusChip, useToast } from '../../src/ui';
@@ -56,23 +58,35 @@ export default function SyncScreen() {
       {conflicts.length > 0 ? (
         <Section title="Vom Server abgelehnt">
           <AppText tone="muted">Der Server entscheidet über Statuswechsel. Prüfen Sie den Grund und senden Sie erneut oder verwerfen Sie den Eintrag. Einträge derselben Position warten, bis das geklärt ist.</AppText>
-          {conflicts.map((e) => (
-            <View key={e.id} style={[styles.entry, { borderColor: t.colors.danger, backgroundColor: t.colors.surface, borderRadius: t.radius.panel }]} testID={`konflikt-${e.id}`}>
-              <Row wrap style={styles.between}>
-                <AppText variant="bodyStrong">{e.label}</AppText>
-                <StatusChip status={conflictLabel} />
-              </Row>
-              <AppText>{e.lastError?.message ?? 'Abgelehnt.'}</AppText>
-              <AppText variant="small" tone="subtle" numeric>
-                Erfasst {formatDateTime(e.createdAt)}, {e.attempts} {e.attempts === 1 ? 'Versuch' : 'Versuche'}
-              </AppText>
-              <Row wrap>
-                <Button label="Erneut senden" size="lg" icon="ArrowsClockwise" disabled={!online} onPress={() => void retry(e.id)} testID={`erneut-${e.id}`} />
-                <Button label="Verwerfen" size="lg" icon="Trash" onPress={() => setConfirmDiscard(e)} testID={`verwerfen-${e.id}`} />
-                <Button label="Auftrag öffnen" variant="quiet" iconRight="CaretRight" onPress={() => router.push(routes.mechanic.workOrder(e.workOrderId) as Href)} />
-              </Row>
-            </View>
-          ))}
+          {conflicts.map((e) => {
+            const deviceTime = isDeviceTimeConflict(e);
+            return (
+              <View key={e.id} style={[styles.entry, { borderColor: t.colors.danger, backgroundColor: t.colors.surface, borderRadius: t.radius.panel }]} testID={`konflikt-${e.id}`}>
+                <Row wrap style={styles.between}>
+                  <AppText variant="bodyStrong">{e.label}</AppText>
+                  <StatusChip status={deviceTime ? { label: 'Zeitpunkt abgelehnt', tone: 'danger', icon: 'Clock' } : conflictLabel} />
+                </Row>
+                <AppText>{e.lastError?.message ?? 'Abgelehnt.'}</AppText>
+                {deviceTime ? (
+                  <AppText tone="muted" testID={`geraetezeit-hinweis-${e.id}`}>
+                    {`Auf diesem Gerät erfasst am ${formatDateTime(e.createdAt)}. Der Server übernimmt diesen Zeitpunkt nicht. Sie können ohne Gerätezeit senden, dann gilt der Zeitpunkt der Übertragung. Oder Sie verwerfen den Eintrag und erfassen die Zeit neu.`}
+                  </AppText>
+                ) : null}
+                <AppText variant="small" tone="subtle" numeric>
+                  Erfasst {formatDateTime(e.createdAt)}, {e.attempts} {e.attempts === 1 ? 'Versuch' : 'Versuche'}
+                </AppText>
+                <Row wrap>
+                  {deviceTime ? (
+                    <Button label="Ohne Gerätezeit senden" size="lg" icon="ArrowsClockwise" disabled={!online} onPress={() => void retry(e.id, { withoutDeviceTime: true })} testID={`ohne-geraetezeit-${e.id}`} />
+                  ) : (
+                    <Button label="Erneut senden" size="lg" icon="ArrowsClockwise" disabled={!online} onPress={() => void retry(e.id)} testID={`erneut-${e.id}`} />
+                  )}
+                  <Button label="Verwerfen" size="lg" icon="Trash" onPress={() => setConfirmDiscard(e)} testID={`verwerfen-${e.id}`} />
+                  <Button label="Auftrag öffnen" variant="quiet" iconRight="CaretRight" onPress={() => router.push(routes.mechanic.workOrder(e.workOrderId) as Href)} />
+                </Row>
+              </View>
+            );
+          })}
         </Section>
       ) : null}
       {waiting.length > 0 ? (

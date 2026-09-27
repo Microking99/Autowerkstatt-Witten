@@ -256,9 +256,21 @@ export class Mapper {
     };
   }
 
+  /**
+   * Position wie die API: Mechaniker ohne Positions- und Teilepreise, Kunden ohne erfasste
+   * Zeit, laufende Zeit und Teile.
+   */
   workItem(i: DWorkItem, viewer: Viewer): WorkItem {
     const showPrices = viewer.role !== 'mechanic';
     const running = i.runningSince ? Math.max(0, Math.round((this.now.getTime() - Date.parse(i.runningSince)) / 60_000)) : 0;
+    const parts = i.parts.map((p) => ({
+      id: p.id,
+      partNumber: p.partNumber,
+      description: p.description,
+      quantity: p.quantity,
+      ...(showPrices ? { unitPriceCents: p.unitPriceCents } : {}),
+      recordedAt: p.recordedAt,
+    }));
     return {
       id: i.id,
       workOrderId: i.workOrderId,
@@ -280,7 +292,7 @@ export class Mapper {
       doneAt: i.doneAt,
       doneOdometerKm: i.doneOdometerKm,
       resultNotes: i.resultNotes,
-      ...(isStaff(viewer) ? { trackedMinutes: i.trackedMinutes + running } : {}),
+      ...(isStaff(viewer) ? { trackedMinutes: i.trackedMinutes + running, runningSince: i.runningSince, parts } : {}),
     };
   }
 

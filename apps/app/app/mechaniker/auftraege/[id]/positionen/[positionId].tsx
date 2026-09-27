@@ -3,10 +3,13 @@
  * Abschließen (Hauptaktionen mindestens 56 hoch). Wartungspositionen verlangen beim
  * Abschluss den km-Stand oder ausdrücklich "km-Stand unbekannt" und die Wahl des Intervalls
  * aus den Optionen der Wartungsart. Alles geht über die Offline-Warteschlange; ohne
- * Verbindung wird gespeichert und später übertragen. Nicht freigegebene Positionen sind
- * gesperrt ("Wartet auf Kundenfreigabe" bzw. "Abgelehnt, nicht ausführen").
+ * Verbindung wird gespeichert und später übertragen (mit dem Erfassungszeitpunkt auf dem
+ * Gerät). Nicht freigegebene Positionen sind gesperrt ("Wartet auf Kundenfreigabe" bzw.
+ * "Abgelehnt, nicht ausführen").
+ *
+ * Zeit und Teile kommen vom Server (`trackedMinutes`, `runningSince`, `parts`); lokal ergänzt
+ * wird nur, was noch nicht übertragen ist (src/screens/mechanic/timing.ts).
  */
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { routes, workItemAuthorizationLabels, workItemExecutionLabels, type MaintenanceType, type WorkItem, type WorkOrderDetail } from '@werkstatt/contracts';
 import { useLocalSearchParams, type Href } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
@@ -18,27 +21,21 @@ import type { QueueError } from '../../../../../src/offline/queueCore';
 import { useCachedQuery } from '../../../../../src/offline/useCachedQuery';
 import { QueryView } from '../../../../../src/screens/common';
 import { expectedExecution, PendingChip } from '../../../../../src/screens/mechanic/pending';
+import { itemTiming, partLabel, partRows } from '../../../../../src/screens/mechanic/timing';
 import { parseInteger, parseQuantity } from '../../../../../src/screens/workshop/shared';
 import { useTheme } from '../../../../../src/theme';
 import { AppText, Banner, Button, Checkbox, ConfirmDialog, Page, PageHeader, Row, Section, Select, Sheet, StatusChip, TextField, useToast } from '../../../../../src/ui';
 
-const timerKey = (itemId: string) => `werkstatt.zeitmessung.v1:${itemId}`;
-
-/** Laufende Zeit seit dem Start auf diesem Gerät (Minuten; der Server bucht die Zeit selbst). */
-function useLocalTimer(itemId: string, running: boolean): { since: string | null; minutes: number } {
-  const [since, setSince] = useState<string | null>(null);
-  const [now, setNow] = useState(Date.now());
+/** Aktuelle Uhrzeit, alle 15 Sekunden neu, solange `active` (Anzeige der laufenden Zeit). */
+function useNow(active: boolean): Date {
+  const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    AsyncStorage.getItem(timerKey(itemId))
-      .then((v) => setSince(v))
-      .catch(() => undefined);
-  }, [itemId, running]);
-  useEffect(() => {
-    if (!running) return;
-    const t = setInterval(() => setNow(Date.now()), 15_000);
+    setNow(new Date());
+    if (!active) return;
+    const t = setInterval(() => setNow(new Date()), 15_000);
     return () => clearInterval(t);
-  }, [running]);
-  return { since: running ? since : null, minutes: running && since ? Math.max(0, Math.round((now - Date.parse(since)) / 60_000)) : 0 };
+  }, [active]);
+  return now;
 }
 
 export default function MechanicWorkItem() {
@@ -47,7 +44,8 @@ export default function MechanicWorkItem() {
   const itemId = String(positionId);
   const query = useCachedQuery(`mechaniker:auftrag:${orderId}:position`, async (api) => {
     const [order, types] = await Promise.all([api.getWorkOrder(orderId), api.listMaintenanceTypes().catch(() => [] as MaintenanceType[])]);
-    return { order, types };
+    // Ladezeitpunkt auf dem Gerät: ab hier zählt die Anzeige die laufende Zeit weiter
+    return { order, types, fetchedAt: new Date().toISOString() };
   });
   const item = query.data?.order.items.find((i) => i.id === itemId);
   return (
@@ -61,17 +59,17 @@ export default function MechanicWorkItem() {
       />
       {query.cachedAt ? <Banner tone="info" message={`Ohne Verbindung. Stand vom ${formatTime(query.cachedAt)} Uhr; Aktionen werden gespeichert und später übertragen.`} /> : null}
       <QueryView query={query} loading="detail" notAvailableTitle="Position nicht verfügbar">
-        {({ order, types }) => {
+        {({ order, types, fetchedAt }) => {
           const i = order.items.find((x) => x.id === itemId);
           if (!i) return <Banner tone="neutral" title="Position nicht gefunden" message="Sie wurde möglicherweise zurückgezogen." />;
-          return <ItemView order={order} item={i} type={types.find((m) => m.id === i.maintenanceTypeId) ?? null} />;
+          return <ItemView order={order} item={i} type={types.find((m) => m.id === i.maintenanceTypeId) ?? null} fetchedAt={fetchedAt ?? null} />;
         }}
       </QueryView>
     </Page>
   );
 }
 
-function ItemView({ order, item, type }: { order: WorkOrderDetail; item: WorkItem; type: MaintenanceType | null }) {
+function ItemView({ order, item, type, fetchedAt }: { order: WorkOrderDetail; item: WorkItem; type: MaintenanceType | null; fetchedAt: string | null }) {
   const t = useTheme();
   const toast = useToast();
   const { submit, online } = useOfflineQueue();
@@ -81,15 +79,15 @@ function ItemView({ order, item, type }: { order: WorkOrderDetail; item: WorkIte
   const locked = item.authorization === 'pending_approval';
   const blocked = item.authorization === 'rejected' || item.authorization === 'withdrawn';
   const finished = status === 'done' || status === 'not_done';
-  const timer = useLocalTimer(item.id, status === 'in_progress');
+  const now = useNow(status === 'in_progress');
+  const timing = itemTiming(item, pending, fetchedAt, now);
   const [busy, setBusy] = useState(false);
   const [rejected, setRejected] = useState<QueueError | null>(null);
   const [finishOpen, setFinishOpen] = useState(false);
   const [notDoneOpen, setNotDoneOpen] = useState(false);
   const [partOpen, setPartOpen] = useState(false);
   const [notDoneReason, setNotDoneReason] = useState('');
-  const parts = pending.filter((e) => e.kind === 'addPart');
-  const [sessionParts, setSessionParts] = useState<{ id: string; text: string }[]>([]);
+  const parts = partRows(item.parts, pending);
 
   async function run(kind: 'startWorkItem' | 'pauseWorkItem' | 'finishWorkItem' | 'notDoneWorkItem' | 'addPart', payload: Record<string, unknown>, label: string, success: string) {
     setBusy(true);
@@ -101,8 +99,6 @@ function ItemView({ order, item, type }: { order: WorkOrderDetail; item: WorkIte
         setRejected(result.error);
         return false;
       }
-      if (kind === 'startWorkItem') await AsyncStorage.setItem(timerKey(item.id), new Date().toISOString()).catch(() => undefined);
-      if (kind !== 'startWorkItem' && kind !== 'addPart') await AsyncStorage.removeItem(timerKey(item.id)).catch(() => undefined);
       toast.show(result.type === 'queued' ? `${success} Gespeichert, wird übertragen, sobald eine Verbindung besteht.` : success, result.type === 'queued' ? 'info' : 'success');
       return true;
     } finally {
@@ -141,10 +137,18 @@ function ItemView({ order, item, type }: { order: WorkOrderDetail; item: WorkIte
       <View style={[styles.time, { borderColor: t.colors.border, backgroundColor: t.colors.surface, borderRadius: t.radius.panel }]}>
         <AppText variant="caption" tone="muted">Zeit</AppText>
         <AppText variant="title" numeric testID="position-zeit">
-          {(item.trackedMinutes ?? 0) + timer.minutes} min
+          {timing.minutes} min
         </AppText>
-        <AppText variant="small" tone="subtle">
-          {status === 'in_progress' ? (timer.since ? `Läuft seit ${formatTime(timer.since)} Uhr (auf diesem Gerät gestartet).` : 'Läuft (auf einem anderen Gerät gestartet).') : status === 'paused' ? 'Pausiert.' : finished ? `Abgeschlossen${item.doneAt ? ` ${formatDateTime(item.doneAt)}` : ''}.` : 'Noch nicht begonnen.'}
+        <AppText variant="small" tone="subtle" testID="position-zeit-hinweis">
+          {status === 'in_progress'
+            ? timing.since
+              ? `Läuft seit ${formatTime(timing.since)} Uhr${timing.sinceLocal ? ' (auf diesem Gerät gestartet, noch nicht übertragen)' : ''}.`
+              : 'Läuft.'
+            : status === 'paused'
+              ? 'Pausiert.'
+              : finished
+                ? `Abgeschlossen${item.doneAt ? ` ${formatDateTime(item.doneAt)}` : ''}.`
+                : 'Noch nicht begonnen.'}
         </AppText>
         {item.maintenanceTypeId ? <AppText variant="small" tone="subtle">Wartungsposition: {type?.name ?? 'Wartung'}. Abschluss mit km-Stand.</AppText> : null}
       </View>
@@ -168,18 +172,19 @@ function ItemView({ order, item, type }: { order: WorkOrderDetail; item: WorkIte
         <Banner tone="success" title={status === 'done' ? 'Erledigt' : 'Nicht durchgeführt'} message={item.resultNotes ?? (item.doneOdometerKm !== null ? `km-Stand ${formatKm(item.doneOdometerKm)}` : undefined)} />
       )}
       {!online ? <AppText variant="small" tone="subtle">Ohne Verbindung: Aktionen werden auf dem Gerät gespeichert und in dieser Reihenfolge übertragen.</AppText> : null}
-      <Section title="Verbaute Teile">
-        {parts.length === 0 && sessionParts.length === 0 ? <AppText tone="muted">Auf diesem Gerät noch keine Teile erfasst.</AppText> : null}
-        {sessionParts.map((p) => (
-          <AppText key={p.id}>{p.text}</AppText>
-        ))}
+      <Section title={`Verbaute Teile (${parts.length})`}>
+        {parts.length === 0 ? <AppText tone="muted">Noch keine Teile erfasst.</AppText> : null}
         {parts.map((p) => (
-          <Row key={p.id} gap={8}>
-            <AppText style={styles.flex}>{`${String((p.payload.input as { quantity?: number })?.quantity ?? 1).replace('.', ',')} × ${(p.payload.input as { description?: string })?.description ?? ''}`}</AppText>
-            <PendingChip entries={[p]} />
+          <Row key={p.key} wrap gap={8}>
+            <View style={styles.flex} testID={p.pending ? 'teil-wartend' : 'teil'}>
+              <AppText>{partLabel(p)}</AppText>
+              <AppText variant="small" tone="subtle" numeric>
+                {p.pending ? `Erfasst ${formatTime(p.recordedAt)} Uhr auf diesem Gerät, noch nicht übertragen` : `Erfasst ${formatDateTime(p.recordedAt)}`}
+              </AppText>
+            </View>
+            {p.pending ? <PendingChip entries={[p.pending.entry]} label="Nicht übertragen" /> : null}
           </Row>
         ))}
-        <AppText variant="small" tone="subtle">Die vollständige Teileliste der Position zeigt die Schnittstelle noch nicht an; erfasste Teile werden an den Service übertragen.</AppText>
       </Section>
       <FinishSheet
         visible={finishOpen}
@@ -217,10 +222,7 @@ function ItemView({ order, item, type }: { order: WorkOrderDetail; item: WorkIte
         busy={busy}
         onSave={async (input) => {
           const ok = await run('addPart', { input }, 'Teil', 'Teil erfasst.');
-          if (ok) {
-            setSessionParts((l) => (online ? [...l, { id: newClientId(), text: `${String(input.quantity).replace('.', ',')} × ${input.description}${input.partNumber ? ` (${input.partNumber})` : ''}` }] : l));
-            setPartOpen(false);
-          }
+          if (ok) setPartOpen(false);
         }}
       />
     </>
@@ -324,6 +326,7 @@ function PartSheet({ visible, onClose, onSave, busy }: { visible: boolean; onClo
       visible={visible}
       onClose={onClose}
       title="Verbautes Teil"
+      testID="teil-blatt"
       footer={
         <>
           <Button label="Abbrechen" onPress={onClose} />
@@ -331,13 +334,13 @@ function PartSheet({ visible, onClose, onSave, busy }: { visible: boolean; onClo
         </>
       }
     >
-      <TextField label="Bezeichnung" value={description} onChangeText={setDescription} required />
+      <TextField label="Bezeichnung" value={description} onChangeText={setDescription} required testID="teil-bezeichnung" />
       <Row wrap gap={12}>
         <View style={styles.grow}>
-          <TextField label="Teilenummer (freiwillig)" value={number} onChangeText={setNumber} autoCapitalize="characters" />
+          <TextField label="Teilenummer (freiwillig)" value={number} onChangeText={setNumber} autoCapitalize="characters" testID="teil-nummer" />
         </View>
         <View style={styles.grow}>
-          <TextField label="Menge" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" error={q > 0 ? null : 'Menge größer 0'} />
+          <TextField label="Menge" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" error={q > 0 ? null : 'Menge größer 0'} testID="teil-menge" />
         </View>
       </Row>
       <AppText variant="small" tone="subtle">Ohne Preise; die Abrechnung macht der Service.</AppText>

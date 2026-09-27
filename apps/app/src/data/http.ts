@@ -14,6 +14,7 @@ import {
   ApiErrorSchema,
   AppointmentSchema,
   ApprovalRequestSchema,
+  AssignableStaffSchema,
   AuditEntrySchema,
   ConversationSchema,
   CustomerDetailSchema,
@@ -243,6 +244,7 @@ export class HttpApi implements WerkstattApi {
 
   // Mitarbeiter ----------------------------------------------------------------
   listUsers: WerkstattApi['listUsers'] = () => this.call('listUsers', { schema: z.array(StaffUserSchema) });
+  listAssignableStaff: WerkstattApi['listAssignableStaff'] = () => this.call('listAssignableStaff', { schema: z.array(AssignableStaffSchema) });
   inviteUser: WerkstattApi['inviteUser'] = (input) => this.call('inviteUser', { body: input, schema: StaffUserSchema });
   getUser: WerkstattApi['getUser'] = (id) => this.call('getUser', { params: { id }, schema: StaffUserSchema });
   updateUser: WerkstattApi['updateUser'] = (id, input) => this.call('updateUser', { params: { id }, body: input, schema: StaffUserSchema });
@@ -327,10 +329,11 @@ export class HttpApi implements WerkstattApi {
   confirmIntake: WerkstattApi['confirmIntake'] = (id, input) => this.call('confirmIntake', { params: { id }, body: input, schema: IntakeSchema });
   addWorkItem: WerkstattApi['addWorkItem'] = (id, input) => this.call('addWorkItem', { params: { id }, body: input, schema: WorkItemSchema });
   updateWorkItem: WerkstattApi['updateWorkItem'] = (id, input) => this.call('updateWorkItem', { params: { id }, body: input, schema: WorkItemSchema });
-  startWorkItem: WerkstattApi['startWorkItem'] = (id, o: WriteOptions = {}) =>
-    this.call('startWorkItem', { params: { id }, schema: WorkItemSchema, idempotencyKey: o.idempotencyKey });
-  pauseWorkItem: WerkstattApi['pauseWorkItem'] = (id, o: WriteOptions = {}) =>
-    this.call('pauseWorkItem', { params: { id }, schema: WorkItemSchema, idempotencyKey: o.idempotencyKey });
+  // Ohne Gerätezeit kein Körper (wie bisher); mit Gerätezeit { occurredAt }
+  startWorkItem: WerkstattApi['startWorkItem'] = (id, input = {}, o: WriteOptions = {}) =>
+    this.call('startWorkItem', { params: { id }, body: input.occurredAt ? { occurredAt: input.occurredAt } : undefined, schema: WorkItemSchema, idempotencyKey: o.idempotencyKey });
+  pauseWorkItem: WerkstattApi['pauseWorkItem'] = (id, input = {}, o: WriteOptions = {}) =>
+    this.call('pauseWorkItem', { params: { id }, body: input.occurredAt ? { occurredAt: input.occurredAt } : undefined, schema: WorkItemSchema, idempotencyKey: o.idempotencyKey });
   // `odometerKm: null` wird mitgesendet (= km unbekannt); fehlt das Feld, verlangt die API den km-Stand.
   finishWorkItem: WerkstattApi['finishWorkItem'] = (id, input, o: WriteOptions = {}) =>
     this.call('finishWorkItem', { params: { id }, body: input, schema: WorkItemSchema, idempotencyKey: o.idempotencyKey });

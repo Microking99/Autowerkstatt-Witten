@@ -220,9 +220,22 @@ export interface DWorkItem {
   doneBy: string | null;
   doneOdometerKm: number | null;
   resultNotes: string | null;
+  /** Erfasste Minuten der abgeschlossenen Zeitabschnitte (der laufende zählt in der Ausgabe dazu) */
   trackedMinutes: number;
   runningSince: Iso | null;
-  parts: { partNumber: string | null; description: string; quantity: number; unitPriceCents: number | null }[];
+  /** Letzter erfasster Zeitpunkt (Beginn oder Ende eines Zeitabschnitts) für die Prüfung von `occurredAt` */
+  lastTimeAt?: Iso | null;
+  parts: DPart[];
+}
+
+/** Verbautes Teil einer Position (Preis nur von Service/Inhaber erfasst) */
+export interface DPart {
+  id: string;
+  partNumber: string | null;
+  description: string;
+  quantity: number;
+  unitPriceCents: number | null;
+  recordedAt: Iso;
 }
 
 export interface DIntake {
@@ -599,4 +612,4 @@ export interface DemoState {
 }
 
 /** Bei Änderungen am Zustandsmodell erhöhen: ältere Speicherstände werden verworfen. */
-export const DEMO_SCHEMA_VERSION = 3;
+export const DEMO_SCHEMA_VERSION = 4;

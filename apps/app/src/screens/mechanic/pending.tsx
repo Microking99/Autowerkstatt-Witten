@@ -36,10 +36,12 @@ export function expectedExecution(item: WorkItem, entries: readonly QueueEntry[]
   return status;
 }
 
-export function PendingChip({ entries, testID }: { entries: readonly QueueEntry[]; testID?: string }) {
+/** `label`: eigener Text für "nicht übertragen" (z. B. an einzelnen Teilen); Symbol und Farbe bleiben. */
+export function PendingChip({ entries, testID, label }: { entries: readonly QueueEntry[]; testID?: string; label?: string }) {
   if (entries.length === 0) return null;
   const conflict = entries.some((e) => e.state === 'conflict');
   // Gerade in Übertragung (mit Verbindung): kein Warnhinweis, nur der Zwischenstand
   if (!conflict && entries.every((e) => e.state === 'sending')) return <StatusChip status={sendingLabel} testID="wird-uebertragen" />;
-  return <StatusChip status={conflict ? conflictLabel : { ...unsyncedLabel, label: entries.length > 1 ? `Nicht synchronisiert (${entries.length})` : unsyncedLabel.label }} testID={testID ?? 'nicht-synchronisiert'} />;
+  const text = label ?? (entries.length > 1 ? `Nicht synchronisiert (${entries.length})` : unsyncedLabel.label);
+  return <StatusChip status={conflict ? conflictLabel : { ...unsyncedLabel, label: text }} testID={testID ?? 'nicht-synchronisiert'} />;
 }

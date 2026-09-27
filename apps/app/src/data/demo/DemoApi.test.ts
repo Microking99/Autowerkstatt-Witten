@@ -313,3 +313,72 @@ describe('DemoApi: Termine, Chat, Freigabelinks', () => {
     expect(again).toBeTruthy();
   });
 });
+
+describe('DemoApi: Mechaniker-Schnittstellen (API-3)', () => {
+  const minutes = (n: number) => new Date(NOW.getTime() + n * 60_000).toISOString();
+
+  it('zuweisbare Mitarbeiter: aktive und eingeladene, sortiert, ohne E-Mail; Mechaniker 403, Kunde 404', async () => {
+    const owner = await as(DEMO_EMAILS.owner);
+    const invited = await owner.inviteUser({ email: 'beispiel.neu@autowerkstatt-witten.example', displayName: 'Beispiel Neu', role: 'mechanic' });
+    const list = await owner.listAssignableStaff();
+    const ids = list.map((s) => s.userId);
+    expect(ids).toEqual(expect.arrayContaining([IDS.users.owner, IDS.users.service, IDS.users.emre, invited.id]));
+    expect(ids).not.toContain(IDS.users.jonas);
+    expect(ids).not.toContain(IDS.users.miriam);
+    const names = list.map((s) => s.displayName);
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, 'de')));
+    for (const s of list) expect(Object.keys(s).sort()).toEqual(['displayName', 'role', 'userId']);
+    expect((await (await as(DEMO_EMAILS.service)).listAssignableStaff()).length).toBeGreaterThan(0);
+    await expectError((await as(DEMO_EMAILS.mechanic)).listAssignableStaff(), 403);
+    await expectError((await as(DEMO_EMAILS.customer)).listAssignableStaff(), 404);
+  });
+
+  it('Teile und laufende Zeit: Service mit Preis, Mechaniker ohne Preis, Kunde weder Teile noch laufende Zeit', async () => {
+    const service = await as(DEMO_EMAILS.service);
+    const oil = (await service.getWorkOrder(IDS.workOrders.octaviaInspection)).items.find((i) => (i.parts?.length ?? 0) > 0)!;
+    expect(oil.parts?.map((p) => [p.description, p.unitPriceCents])).toEqual([
+      ['Ölfilter', 1_290],
+      ['Motoröl 5W-30', 1_490],
+    ]);
+    const mech = await as(DEMO_EMAILS.mechanic);
+    const oilM = (await mech.getWorkOrder(IDS.workOrders.octaviaInspection)).items.find((i) => i.id === oil.id)!;
+    expect(oilM.parts).toHaveLength(2);
+    for (const p of oilM.parts!) expect(p).not.toHaveProperty('unitPriceCents');
+    const customer = await as(DEMO_EMAILS.customer);
+    for (const i of (await customer.getWorkOrder(IDS.workOrders.octaviaInspection)).items) {
+      expect(i).not.toHaveProperty('parts');
+      expect(i).not.toHaveProperty('runningSince');
+    }
+
+    const item = (await mech.getWorkOrder(IDS.workOrders.yaris)).items.find((i) => i.executionStatus === 'planned')!;
+    const started = await mech.startWorkItem(item.id, { occurredAt: minutes(-30) });
+    expect(started).toMatchObject({ runningSince: minutes(-30), trackedMinutes: 30 });
+    const withPart = await mech.addPart(item.id, { description: 'Beispielteil', quantity: 2, unitPriceCents: 500 });
+    expect(withPart.parts).toHaveLength(1);
+    expect(withPart.parts![0]).toMatchObject({ description: 'Beispielteil', quantity: 2, recordedAt: NOW.toISOString() });
+    expect(withPart.parts![0]).not.toHaveProperty('unitPriceCents');
+    const paused = await mech.pauseWorkItem(item.id);
+    expect(paused).toMatchObject({ runningSince: null, trackedMinutes: 30 });
+  });
+
+  it('Gerätezeit: gleiche Grenzen wie die API, gilt für Zeit, Abschluss und km-Stand', async () => {
+    const api = await as(DEMO_EMAILS.mechanic);
+    const item = (await api.getWorkOrder(IDS.workOrders.yaris)).items.find((i) => i.maintenanceTypeId && i.executionStatus === 'planned')!;
+    await expectError(api.startWorkItem(item.id, { occurredAt: minutes(10) }), 422, ERROR_CODES.invalidOccurredAt);
+    await expectError(api.startWorkItem(item.id, { occurredAt: minutes(-73 * 60) }), 422, ERROR_CODES.invalidOccurredAt);
+    expect((await api.getWorkOrder(IDS.workOrders.yaris)).items.find((i) => i.id === item.id)?.executionStatus).toBe('planned');
+    await api.startWorkItem(item.id, { occurredAt: minutes(-120) });
+    await expectError(api.pauseWorkItem(item.id, { occurredAt: minutes(-180) }), 422, ERROR_CODES.invalidOccurredAt);
+    // Übergangsfehler zuerst (wie die API): Pause einer nicht laufenden Position mit ungültiger Zeit → 409
+    const other = (await api.getWorkOrder(IDS.workOrders.yaris)).items.find((i) => i.id !== item.id && i.executionStatus === 'planned')!;
+    await expectError(api.pauseWorkItem(other.id, { occurredAt: minutes(-100 * 60) }), 409, ERROR_CODES.invalidStatus);
+    const done = await api.finishWorkItem(item.id, { occurredAt: minutes(-60), odometerKm: 58_200 });
+    expect(done).toMatchObject({ executionStatus: 'done', doneAt: minutes(-60), trackedMinutes: 60, runningSince: null });
+    const owner = await api.login({ email: DEMO_EMAILS.owner, password: DEMO_PASSWORD });
+    api.setToken(owner.token);
+    const reading = (await api.listOdometer(IDS.vehicles.yaris)).find((r) => r.valueKm === 58_200);
+    expect(reading?.recordedAt).toBe(minutes(-60));
+    const audit = await api.listAudit({ entityId: item.id });
+    expect(audit.find((a) => a.action === 'work_item.finished')?.data).toMatchObject({ occurredAt: minutes(-60) });
+  });
+});

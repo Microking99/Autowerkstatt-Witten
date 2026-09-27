@@ -147,3 +147,41 @@ test.describe('Mechaniker: offline', () => {
     await expect(page.getByTestId(/^feststellung-/).filter({ visible: true }).filter({ hasText: 'Scheibenwischer vorne schmiert' })).toHaveCount(1);
   });
 });
+
+test.describe('Mechaniker: Teile und laufende Zeit (API-3)', () => {
+  test('Teil erfassen → Teileliste vom Server; offline "Nicht übertragen"; Service sieht Teile mit bzw. ohne Preis', async ({ page }) => {
+    await loginAs(page, 'mechanic', `/mechaniker/auftraege/${yaris}`);
+    await positionRow(page, /Bremsflüssigkeit/).click();
+    await byTestId(page, 'position-starten').click();
+    await expect(byTestId(page, 'position-status')).toContainText('In Arbeit');
+    await expect(byTestId(page, 'position-zeit-hinweis')).toContainText('Läuft seit');
+    await expectSynced(page);
+
+    await byTestId(page, 'teil-erfassen').click();
+    await byTestId(page, 'teil-bezeichnung').fill('Bremsflüssigkeit DOT 4 [TEST]');
+    await byTestId(page, 'teil-menge').fill('1,5');
+    await byTestId(page, 'teil-speichern').click();
+    await expect(page.getByTestId('teil').filter({ visible: true }).filter({ hasText: '1,5 × Bremsflüssigkeit DOT 4' })).toHaveCount(1);
+    await expectSynced(page);
+
+    // Ohne Verbindung: Teil bleibt als "Nicht übertragen" in der Liste, danach vom Server
+    await toggleOffline(page);
+    await byTestId(page, 'teil-erfassen').click();
+    await byTestId(page, 'teil-bezeichnung').fill('Entlüfterkappe [TEST]');
+    await byTestId(page, 'teil-speichern').click();
+    await expect(page.getByTestId('teil-wartend').filter({ visible: true }).filter({ hasText: 'Entlüfterkappe' })).toHaveCount(1);
+    await expect(visibleText(page, 'Nicht übertragen')).toBeVisible();
+    await toggleOffline(page);
+    await expect(page.getByTestId('teil').filter({ visible: true }).filter({ hasText: 'Entlüfterkappe' })).toHaveCount(1, { timeout: 30_000 });
+    await expectSynced(page);
+
+    // Service: Arbeiten zeigen die Teile; vom Mechaniker ohne Preis, Beispieldaten der Octavia mit Preis
+    await switchTo(page, 'service', `/werkstatt/auftraege/${yaris}/arbeiten`);
+    const parts = page.getByTestId(/^teile-position-/).filter({ visible: true }).filter({ hasText: 'Bremsflüssigkeit DOT 4' });
+    await expect(parts).toHaveCount(1);
+    await expect(parts).toContainText('Entlüfterkappe');
+    await expect(parts).toContainText('ohne Preis');
+    await page.goto(`/werkstatt/auftraege/${octavia}/arbeiten`);
+    await expect(page.getByTestId(/^teile-position-/).filter({ visible: true }).filter({ hasText: 'Ölfilter' }).first()).toContainText('12,90');
+  });
+});

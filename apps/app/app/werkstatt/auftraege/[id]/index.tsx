@@ -297,7 +297,7 @@ function nextHint(order: WorkOrderDetail, finished: boolean, pending: number): s
 }
 
 function AssignSheet({ order, visible, onClose }: { order: WorkOrderDetail; visible: boolean; onClose: () => void }) {
-  const { staff, complete } = useStaffDirectory(visible);
+  const { staff, status: staffStatus } = useStaffDirectory(visible);
   const toast = useToast();
   const [selected, setSelected] = useState<string[]>(order.assignees.map((a) => a.userId));
   useEffect(() => {
@@ -335,7 +335,8 @@ function AssignSheet({ order, visible, onClose }: { order: WorkOrderDetail; visi
       }
     >
       <AppText tone="muted">Zugewiesene Mechaniker sehen den Auftrag, die Annahme und die Fahrzeughistorie, solange der Auftrag läuft. Preise sehen sie nie.</AppText>
-      {!complete ? <Banner tone="info" message="Ohne Benutzerverwaltungsrecht werden nur Mitarbeiter angezeigt, die bereits Aufträgen zugewiesen sind." /> : null}
+      {staffStatus === 'loading' ? <AppText tone="muted">Mitarbeiter werden geladen.</AppText> : null}
+      {staffStatus === 'error' ? <Banner tone="warning" message="Die Liste der Mitarbeiter konnte nicht geladen werden. Bereits zugewiesene Mitarbeiter bleiben erhalten." /> : null}
       {options.map((s) => (
         <Checkbox
           key={s.id}
