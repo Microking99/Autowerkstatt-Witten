@@ -16,7 +16,8 @@
     "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "db:seed": "tsx --env-file-if-exists=.env scripts/seed.ts",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "e2e:server": "NODE_ENV=test tsx scripts/e2e-server.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
