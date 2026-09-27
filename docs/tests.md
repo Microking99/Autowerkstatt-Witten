@@ -33,8 +33,8 @@ läuft wie im Betrieb über Webhook und Statusabfrage.
 | Befehl | Ergebnis (27.09.2026, lokal, Linux) |
 |---|---|
 | `pnpm typecheck` | alle fünf Pakete ohne Fehler |
-| `pnpm test` | design-tokens 8, contracts 13, domain 247, app 99, api 142 Tests grün |
-| `pnpm --filter @werkstatt/app e2e` (Demo) | 104 bestanden, 2 übersprungen (Tastaturtests nur im Projekt "pc"); Lauf vom APP-2-Paket, nach dem Zusammenführen in CI grün |
+| `pnpm test` | design-tokens 8, contracts 13, domain 257, app 120, api 153 Tests grün |
+| `pnpm --filter @werkstatt/app e2e` (Demo) | 106 bestanden, 2 übersprungen (Tastaturtests nur im Projekt "pc") |
 | `pnpm --filter @werkstatt/app e2e:api` (echte API) | 15 bestanden |
 | GitHub Actions `CI` | Jobs "Typen und Tests", "App (Web-Export und Browser-Tests)" und "App gegen echte API" |
 
@@ -77,7 +77,7 @@ Anforderungen: R-ROLLE-2, R-ROLLE-3, R-ADM-1, R-MECH-3.
 | Ebene | Datei | Prüft | Status |
 |---|---|---|---|
 | Domain-Unit | `packages/domain/src/permissions/catalog.test.ts` (21) | Rollenstandards, gewährte und entzogene Rechte, nicht zuweisbare Rechte | grün (27.09.2026) |
-| API-Integration | `apps/api/test/t03-mitarbeiterrechte.test.ts` (6), `review-rechte.test.ts`, `kundenzugang.test.ts` (1) | Mechaniker nur zugewiesene Aufträge, keine Preise, keine Rechnungen; Service ohne `payments.refund` 403; nicht zuweisbare Rechte und Inhaber-Schutz; Deaktivierung beendet Sitzungen; gesperrter Kundenzugang nur mit Recht wieder frei | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t03-mitarbeiterrechte.test.ts` (6), `review-rechte.test.ts`, `kundenzugang.test.ts` (1), `mechaniker-schnittstellen.test.ts` (11) | Mechaniker nur zugewiesene Aufträge, keine Preise, keine Rechnungen; Service ohne `payments.refund` 403; nicht zuweisbare Rechte und Inhaber-Schutz; Deaktivierung beendet Sitzungen; gesperrter Kundenzugang nur mit Recht wieder frei | grün (27.09.2026) |
 | App-E2E Demo | `apps/app/e2e/zugang.spec.ts`, `w-werkstatt.spec.ts` | Fremder Rollenbereich leitet um; ohne Recht keine manuelle Zahlung und kein Stellen | grün (27.09.2026) |
 | App-E2E API | `apps/app/e2e-api/10-ablaeufe.spec.ts` Schritte 4 und 6, `20-werkstatt.spec.ts` Schritte 4 und 5 | Mechaniker sieht keine Preise; ohne Zuweisung kein Zugriff; Service ohne Recht erfasst keine Zahlung; interne Notiz für Kundin unsichtbar | grün (27.09.2026) |
 | Gerätetest | | Mechanikeransicht auf Telefon | blockiert: kein Build, keine Geräte, keine Konten |
@@ -181,8 +181,8 @@ Anforderungen: R-ARCH-9, R-ARCH-10, R-AUF-3.
 
 | Ebene | Datei | Prüft | Status |
 |---|---|---|---|
-| API-Integration | `apps/api/test/t12-neustart.test.ts` (1), `infrastruktur.test.ts` (12) | Daten nach Neustart der API; Wiederholung mit gleichem `Idempotency-Key` erzeugt nichts doppelt | grün (27.09.2026) |
-| App-Unit | `apps/app/src/offline/queue.test.ts` (11) | Reihenfolge, Idempotenz, Konflikte der Offline-Warteschlange | grün (27.09.2026) |
+| API-Integration | `apps/api/test/t12-neustart.test.ts` (1), `infrastruktur.test.ts` (12), `mechaniker-schnittstellen.test.ts` | Daten nach Neustart der API; Wiederholung mit gleichem `Idempotency-Key` erzeugt nichts doppelt; Gerätezeit offline erfasster Arbeit mit Grenzen | grün (27.09.2026) |
+| App-Unit | `apps/app/src/offline/queue.test.ts` (19) | Reihenfolge, Idempotenz, Konflikte, neuer Schlüssel je Wiederholung, Gerätezeit der Offline-Warteschlange | grün (27.09.2026) |
 | App-E2E Demo | `apps/app/e2e/w-werkstatt.spec.ts`, `m-mechaniker.spec.ts` | Auftragsentwurf übersteht Neuladen; Feststellung offline, danach übertragen | grün (27.09.2026) |
 | Gerätetest | | App offline beenden, neu starten, übertragen | blockiert: kein Build, keine Geräte, keine Konten |
 

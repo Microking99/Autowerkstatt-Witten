@@ -35,6 +35,11 @@ der Serverantwort wirksam und erzeugt nie selbst einen Serviceeintrag (ADR-008).
   Offline-Warteschlange für Statusänderungen.
 - Die konkrete Bibliothek legt P-05 fest. Beim Abmelden werden lokale Daten des Kontos
   gelöscht, nachdem der Benutzer auf nicht übertragene Einträge hingewiesen wurde.
+- **Abweichung in der Umsetzung (P-05, 27.09.2026):** Die Warteschlange liegt in AsyncStorage
+  (`werkstatt.offline.v1:<userId>`), nicht in SQLite. Für die erwarteten Mengen (einige Dutzend
+  Einträge je Schicht) genügt das; Fotos liegen als Dateien daneben. Im Browser werden
+  Offline-Fotos über 4 MB nicht dauerhaft gespeichert. Wechsel auf SQLite, sobald Gerätetests
+  Grenzen zeigen.
 
 ### Synchronisierung
 
@@ -46,7 +51,8 @@ der Serverantwort wirksam und erzeugt nie selbst einen Serviceeintrag (ADR-008).
 - Nach einer Ablehnung (Konflikt) sendet "Erneut senden" mit neuem `Idempotency-Key`
   (`<Client-UUID>.r<n>`): Die API speichert auch 4xx-Antworten je Schlüssel und würde sonst nur
   die alte Ablehnung wiederholen. Eine Ablehnung bedeutet, dass nichts ausgeführt wurde; bei
-  Verbindungsfehlern bleibt der Schlüssel gleich.
+  Verbindungsfehlern bleibt der Schlüssel gleich. Das gilt auch für Feststellungen, Fotos und
+  Nachrichten; deren Objekt-ID bleibt dabei gleich, eine Dublette ist ausgeschlossen.
 
 ### Gerätezeit (Ergänzung API-3, 27.09.2026)
 
@@ -62,7 +68,9 @@ der Serverantwort wirksam und erzeugt nie selbst einen Serviceeintrag (ADR-008).
   gleich in API und Demo-Modus.
 - Der Zeitpunkt gilt für den Zeitabschnitt (Beginn bzw. Ende), `doneAt` und den km-Stand beim
   Abschluss (`recordedAt`). Weicht er von der Serverzeit ab, steht er als `occurredAt` im
-  Audit-Protokoll. Ohne `occurredAt` (bzw. ohne Körper) gilt wie bisher die Serverzeit.
+  Audit-Protokoll. Ohne `occurredAt` (bzw. ohne Körper) gilt die Serverzeit, höchstens aber der
+  letzte erfasste Zeitpunkt der Position, falls dieser später liegt (sonst könnte nach einer
+  Gerätezeit bis 5 Minuten voraus ein Abschnitt mit Ende vor Beginn entstehen).
 - 422 `invalid_occurred_at` ist in der Warteschlange ein Konflikt. `/mechaniker/sync` zeigt den
   Grund und bietet "Ohne Gerätezeit senden" (neuer Schlüssel, kein `occurredAt`, es gilt der
   Zeitpunkt der Übertragung) oder "Verwerfen".
@@ -72,7 +80,7 @@ der Serverantwort wirksam und erzeugt nie selbst einen Serviceeintrag (ADR-008).
 - Die Gerätezeit gilt nur für Arbeitszeiten und Ausführungsstatus, nie für Freigaben oder
   Zahlungen (AGENTS.md Regel 10).
 - Anzeige: Laufende Zeit und Teileliste kommen vom Server (`runningSince`, `trackedMinutes`,
-  `parts`); lokal ergänzt wird nur, was noch in der Warteschlange steht (gekennzeichnet
+  `parts`; alle drei nur für Mitarbeiter, Kunden sehen sie nicht); lokal ergänzt wird nur, was noch in der Warteschlange steht (gekennzeichnet
   "Nicht übertragen" bzw. "noch nicht übertragen").
 
 ### Konflikte

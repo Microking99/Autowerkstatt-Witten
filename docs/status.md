@@ -17,9 +17,9 @@ Abschnitt 8, Testfälle T-01 bis T-13: `docs/tests.md`.
 | Projektgrundlage | Monorepo (pnpm 10, Node 22, TypeScript 6), `AGENTS.md`, `CLAUDE.md`, gepinnte Design-Skills | Sichtprüfung | vorhanden |
 | `packages/contracts` | Rollen, Rechte, Status, DTOs, Anfragen, Endpunktliste `/api/v1`, Fehlercodes, Routen und Deep Links, deutsche Bezeichnungen | Vitest, `pnpm typecheck` | 13 Tests grün (27.09.2026) |
 | `packages/design-tokens` | Farben hell/dunkel, Typografie, Abstände, Radien, App-Symbol | Vitest (Kontraste) | 8 Tests grün (27.09.2026) |
-| `packages/domain` | Rechte und Objektregeln, Arbeits-/Freigabe-/Zahlungsstatus, Freigabe-Hash (SHA-256), Annahme-Hash, SumUp-Abgleich, manuelle Zahlung, Servicehistorie mit Revisionen, Fälligkeiten (Zeit und km, gekennzeichnete Schätzung), Termine und Konflikte, Zeiterfassung, Freigaben für Dritte | Vitest | 247 Tests grün (27.09.2026) |
-| `apps/api` | Fastify 5, PostgreSQL 16 (Drizzle, 4 Migrationen), Anmeldung (argon2id, Sitzungstoken, Sperre), Rechte in jeder Route, Dateiablage, Idempotency-Key, Outbox für E-Mail und Push (Test-Adapter), WebSocket mit laufender Rechteprüfung, SumUp-Adapter mit Test-Anbieter, Webhook mit Statusabfrage, Servicehistorie nur aus Abschlussprüfung, QR und Freigabelinks, Datenexport (DSGVO Art. 15/20), CSV-Export | Vitest gegen PostgreSQL 16 | 142 Tests grün (27.09.2026), davon 76 Angriffstests (`review-*.test.ts`) |
-| `apps/app` | Expo SDK 57 (Expo Router): Kundenbereich (Klickwege A bis G), Werkstattbereich (Übersicht, Kalender, Kunden, Fahrzeuge, Aufträge mit Annahme, Arbeiten, Fotos, Dokumente, Chat, Freigaben, Rechnung, Verlauf; Nachrichten, Rechnungen, Wartungen, Benutzer, Einstellungen, Protokoll), Mechanikerbereich mit Offline-Warteschlange, Tastaturbedienung am PC, Demo-Modus mit Beispieldaten | Vitest; Playwright im Demo-Modus (Telefon 390x844, PC 1440x900); Playwright gegen die echte API | 99 Unit-Tests; 104 Browser-Tests im Demo-Modus; 15 Abläufe gegen die echte API (27.09.2026). **Nur Browser.** |
+| `packages/domain` | Rechte und Objektregeln, Arbeits-/Freigabe-/Zahlungsstatus, Freigabe-Hash (SHA-256), Annahme-Hash, SumUp-Abgleich, manuelle Zahlung, Servicehistorie mit Revisionen, Fälligkeiten (Zeit und km, gekennzeichnete Schätzung), Termine und Konflikte, Zeiterfassung mit geprüfter Gerätezeit, Feldfilter je Rolle, Freigaben für Dritte | Vitest | 257 Tests grün (27.09.2026) |
+| `apps/api` | Fastify 5, PostgreSQL 16 (Drizzle, 4 Migrationen), Anmeldung (argon2id, Sitzungstoken, Sperre), Rechte in jeder Route, Dateiablage, Idempotency-Key, Outbox für E-Mail und Push (Test-Adapter), WebSocket mit laufender Rechteprüfung, SumUp-Adapter mit Test-Anbieter, Webhook mit Statusabfrage, Servicehistorie nur aus Abschlussprüfung, QR und Freigabelinks, Datenexport (DSGVO Art. 15/20), CSV-Export | Vitest gegen PostgreSQL 16 | 153 Tests grün (27.09.2026), davon 76 Angriffstests (`review-*.test.ts`) |
+| `apps/app` | Expo SDK 57 (Expo Router): Kundenbereich (Klickwege A bis G), Werkstattbereich (Übersicht, Kalender, Kunden, Fahrzeuge, Aufträge mit Annahme, Arbeiten, Fotos, Dokumente, Chat, Freigaben, Rechnung, Verlauf; Nachrichten, Rechnungen, Wartungen, Benutzer, Einstellungen, Protokoll), Mechanikerbereich mit Offline-Warteschlange, Tastaturbedienung am PC, Demo-Modus mit Beispieldaten | Vitest; Playwright im Demo-Modus (Telefon 390x844, PC 1440x900); Playwright gegen die echte API | 120 Unit-Tests; 106 Browser-Tests im Demo-Modus; 15 Abläufe gegen die echte API (27.09.2026). **Nur Browser.** |
 | `apps/desktop` | Tauri-2-Hülle um den Web-Export, NSIS-Installer, CSP auf die API-Adresse beschränkt | `cargo check` unter Linux (auch Ziel `x86_64-pc-windows-msvc`) | kompiliert; **Windows-Build nie ausgeführt**, Installer unsigniert |
 | CI (`.github/workflows/ci.yml`) | Typen und Tests mit Postgres; Web-Export, native JS-Bundles (iOS/Android, kein nativer Build), Browser-Tests Demo; Browser-Tests gegen die echte API | GitHub Actions | grün seit Lauf 6 für die jeweils vorhandenen Jobs; Job "App gegen echte API" neu am 27.09.2026 |
 | `windows-desktop.yml`, `mobile-eas.yml` | Windows-Installer auf Windows-Runner, EAS-Builds | nur manuell auslösbar | **nie ausgeführt** (EAS braucht Expo-Konto) |
@@ -27,9 +27,8 @@ Abschnitt 8, Testfälle T-01 bis T-13: `docs/tests.md`.
 
 ## 2. In Arbeit
 
-| Paket | Inhalt | Stand |
-|---|---|---|
-| API-3 | Zuweisbare Mitarbeiter (`GET /staff/assignable`), Teile und laufende Zeit je Position, Gerätezeitpunkt für offline erfasste Zeiten | Vertrag festgelegt (`43f946f`); Umsetzung in API und App läuft, nicht zusammengeführt |
+Nichts. Alle Arbeitspakete sind zusammengeführt (`docs/zusammenarbeit.md` Abschnitt 8); offen
+sind nur blockierte Punkte (Abschnitt 5) und das Codex-Review.
 
 ## 3. Stand je Anforderungsbereich
 
@@ -49,7 +48,7 @@ Abschnitt 8, Testfälle T-01 bis T-13: `docs/tests.md`.
 | R-FZG Fahrzeugverwaltung | km-Historie mit Plausibilität, Halterzeiträume, Halterwechsel | Domain, API (T-10), E2E Demo | |
 | R-ANN Fahrzeugannahme | Annahme mit Inhalts-Hash, vor Ort oder in der Kunden-App bestätigt; danach Änderungen nur über Freigabe | Domain, API, E2E Demo | |
 | R-AUF Aufträge | Ablauf mit drei getrennten Status, Zuweisung, Abschlussprüfung, abholbereit, Storno | Domain, API, E2E Demo und API | |
-| R-MECH Mechaniker | Ausführung ohne Preise, Feststellungen mit Fotos, Offline-Warteschlange mit Idempotenz | Domain, API, App-Unit, E2E Demo und API | Checkliste nur lokal (O-10); Diktat nur über Gerätetastatur (O-9); Gerätezeitpunkt in API-3 |
+| R-MECH Mechaniker | Ausführung ohne Preise, Feststellungen mit Fotos, Teile und laufende Zeit vom Server, Offline-Warteschlange mit Idempotenz und Gerätezeit (höchstens 72 Stunden zurück) | Domain, API, App-Unit, E2E Demo und API | Checkliste nur lokal (O-10); Diktat nur über Gerätetastatur (O-9) |
 | R-DOK Dokumente, Buchhaltungsübersicht | private Dateiablage mit Freigabe für Kunden, CSV-Export der Rechnungen | API, E2E Demo | Dokumentvorlagen, Archivierung, DATEV (E-1 bis E-3) |
 | R-ADM Benutzer und Einstellungen | Einladungen, Rollen, Rechte je Person, Inhaber-Schutz, Werkstattdaten, Wartungsarten, Hebebühnen | API, E2E Demo | |
 | R-CHAT Chat | Gespräche je Auftrag, interne Notizen getrennt, Anhänge, Echtzeit | API, E2E Demo | |
@@ -65,7 +64,8 @@ Abschnitt 8, Testfälle T-01 bis T-13: `docs/tests.md`.
 
 ## 4. Bekannte Einschränkungen
 
-- Offline erfasste Zeiten bucht der Server bis zum Abschluss von API-3 zum Empfangszeitpunkt.
+- Offline erfasste Zeiten, die älter als 72 Stunden sind oder bei falsch gestellter Geräteuhr,
+  übernimmt der Server nicht automatisch; der Mechaniker sendet sie dann mit Serverzeit oder verwirft sie.
 - Offline-Warteschlange liegt in AsyncStorage statt SQLite (ADR-011); im Browser werden
   Offline-Fotos über 4 MB nicht dauerhaft gespeichert.
 - Datums- und Zeitfelder im Browser folgen der Sprache des Browsers.
