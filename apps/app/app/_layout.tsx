@@ -14,7 +14,8 @@ import { ApiProvider } from '../src/data/ApiProvider';
 import { DemoProvider, useDemo } from '../src/demo/DemoPanel';
 import { usePushNotifications } from '../src/notifications/push';
 import { ThemeProvider, fontFamily, useTheme } from '../src/theme';
-import { DemoBanner, ToastProvider } from '../src/ui';
+import { PREVIEW_FILE_EVENT } from '../src/lib/previewNotice';
+import { DemoBanner, ToastProvider, useToast } from '../src/ui';
 
 /** Globale Regeln für den Browser: sichtbarer Fokus, Silbentrennung, Hintergrund. */
 function WebGlobalStyles() {
@@ -38,10 +39,25 @@ function WebGlobalStyles() {
   return null;
 }
 
+/** Vorschau: Hinweis statt Datei (der Rahmen der Vorschau erlaubt keine Downloads). */
+function usePreviewFileNotice() {
+  const toast = useToast();
+  useEffect(() => {
+    if (!IS_PREVIEW || Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const onFile = (e: Event) => {
+      const name = (e as CustomEvent<{ fileName?: string }>).detail?.fileName ?? 'Datei';
+      toast.show(`In der fertigen App öffnet sich hier "${name}". In dieser Vorschau lassen sich keine Dateien öffnen oder herunterladen.`, 'info');
+    };
+    window.addEventListener(PREVIEW_FILE_EVENT, onFile);
+    return () => window.removeEventListener(PREVIEW_FILE_EVENT, onFile);
+  }, [toast]);
+}
+
 function Chrome({ children }: { children: ReactNode }) {
   const t = useTheme();
   const { openPanel } = useDemo();
   usePushNotifications();
+  usePreviewFileNotice();
   return (
     <View style={{ flex: 1, backgroundColor: t.colors.bg }}>
       {IS_DEMO ? <DemoBanner onOpenControls={openPanel} onOpenOverview={IS_PREVIEW ? () => router.push('/vorschau' as Href) : undefined} /> : null}

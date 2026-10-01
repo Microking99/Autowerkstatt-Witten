@@ -2,7 +2,9 @@
  * Browser: PDF und Bilder in neuem Tab anzeigen, andere Dateien (ZIP, CSV) herunterladen.
  * Blob-URLs werden nach kurzer Zeit freigegeben.
  */
+import { IS_PREVIEW } from '../config';
 import type { DownloadResult } from '../data/api';
+import { announcePreviewFile } from './previewNotice';
 
 function toBlobUrl(result: DownloadResult): { url: string; created: boolean } {
   if (!result.uri.startsWith('data:')) return { url: result.uri, created: false };
@@ -16,6 +18,10 @@ function toBlobUrl(result: DownloadResult): { url: string; created: boolean } {
 
 export async function openFile(result: DownloadResult, _title?: string): Promise<'opened' | 'unsupported'> {
   if (typeof window === 'undefined') return 'unsupported';
+  if (IS_PREVIEW) {
+    announcePreviewFile(result.fileName);
+    return 'opened';
+  }
   const { url, created } = toBlobUrl(result);
   const inline = result.mimeType === 'application/pdf' || result.mimeType.startsWith('image/');
   if (inline) {
@@ -35,6 +41,10 @@ export async function openFile(result: DownloadResult, _title?: string): Promise
 
 /** Text (z. B. CSV) als Datei speichern. */
 export async function saveTextFile(text: string, fileName: string, mimeType: string): Promise<void> {
+  if (IS_PREVIEW) {
+    announcePreviewFile(fileName);
+    return;
+  }
   const url = URL.createObjectURL(new Blob([text], { type: mimeType }));
   const a = document.createElement('a');
   a.href = url;
