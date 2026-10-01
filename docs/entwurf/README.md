@@ -37,6 +37,23 @@ kommen: Bestätigung, Abbruch oder doppelte Meldung des Zahlungsanbieters, Verbi
 Offline-Betrieb, Mitteilungen. Neuladen behält den Zustand, ein neuer Tab beginnt mit frischen
 Beispieldaten.
 
+## Vorschauseite zum Zeigen
+
+Für Vorführungen gibt es eine Vorschau mit Einstiegsseite `/vorschau`: Rollen wählen, vorgeschlagene
+Rundgänge mit einem Klick, Rückweg über "Übersicht" in der Leiste oben. Sie enthält zusätzliche
+Beispieldaten (12 Kunden, 16 Fahrzeuge, Aufträge in jedem Zustand, Kalender für heute, offene und
+überfällige Rechnungen, fällige Wartungen). Die E2E-Tests nutzen weiter den kleineren Grundbestand.
+
+```bash
+pnpm --filter @werkstatt/app export:preview
+# Ergebnis: apps/app/dist-preview/vorschau-seite.html (eine Datei, Skript eingebettet)
+```
+
+Die Datei ist für die Veröffentlichung als Seite in einem fremden Rahmen gebaut: Sie startet
+unabhängig vom Pfad bei der Einstiegsseite und läuft ohne `eval` und ohne nachgeladene Dateien.
+Erzeugt mit `apps/app/scripts/build-preview-page.mjs`; Konsistenz der Daten prüft
+`apps/app/src/data/demo/seedPreview.test.ts`.
+
 ## Klickwege
 
 Beschrieben in `docs/ablaeufe.md`, automatisiert in `apps/app/e2e/`:

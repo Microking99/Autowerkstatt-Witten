@@ -136,6 +136,8 @@ export interface DemoStorage {
 export interface DemoApiOptions {
   /** künstliche Antwortzeit, damit Ladezustände sichtbar werden */
   latencyMs?: number;
+  /** Zusätzliche Beispieldaten für die Vorschau (siehe `SeedOptions.extended`) */
+  extendedSeed?: boolean;
   storage?: DemoStorage | null;
   now?: () => Date;
   publicBaseUrl?: string;
@@ -211,8 +213,10 @@ export class DemoApi implements WerkstattApi {
   private readonly storage: DemoStorage | null;
   private readonly clock: () => Date;
   private readonly publicBase: string;
+  private readonly extendedSeed: boolean;
 
   constructor(options: DemoApiOptions = {}) {
+    this.extendedSeed = options.extendedSeed ?? false;
     this.latencyMs = options.latencyMs ?? 250;
     this.storage = options.storage ?? null;
     this.clock = options.now ?? (() => new Date());
@@ -234,7 +238,7 @@ export class DemoApi implements WerkstattApi {
     } catch {
       // defekter Speicherstand: neu beginnen
     }
-    return createSeed(this.clock());
+    return createSeed(this.clock(), { extended: this.extendedSeed });
   }
 
   private persist() {
@@ -2933,7 +2937,7 @@ export class DemoApi implements WerkstattApi {
     },
     reset: () => {
       this.storage?.clear();
-      this.state = createSeed(this.clock());
+      this.state = createSeed(this.clock(), { extended: this.extendedSeed });
       this.failNextFlag = false;
       this.offlineFlag = false;
       this.submittedCheckouts.clear();

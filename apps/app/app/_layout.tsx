@@ -3,13 +3,13 @@
  * Deep Links (autowerkstatt://kunde/rechnungen/<id>, https://<domain>/<pfad>) löst
  * Expo Router über dieselben Routen auf; die Bereiche prüfen die Anmeldung.
  */
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider as NavigationThemeProvider } from 'expo-router';
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider as NavigationThemeProvider, router, type Href } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, type ReactNode } from 'react';
 import { Platform, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { SessionProvider } from '../src/auth/session';
-import { IS_DEMO } from '../src/config';
+import { IS_DEMO, IS_PREVIEW } from '../src/config';
 import { ApiProvider } from '../src/data/ApiProvider';
 import { DemoProvider, useDemo } from '../src/demo/DemoPanel';
 import { usePushNotifications } from '../src/notifications/push';
@@ -44,7 +44,7 @@ function Chrome({ children }: { children: ReactNode }) {
   usePushNotifications();
   return (
     <View style={{ flex: 1, backgroundColor: t.colors.bg }}>
-      {IS_DEMO ? <DemoBanner onOpenControls={openPanel} /> : null}
+      {IS_DEMO ? <DemoBanner onOpenControls={openPanel} onOpenOverview={IS_PREVIEW ? () => router.push('/vorschau' as Href) : undefined} /> : null}
       <View style={{ flex: 1 }}>{children}</View>
     </View>
   );

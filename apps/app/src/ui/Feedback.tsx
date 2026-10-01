@@ -98,7 +98,7 @@ export function useToast() {
 }
 
 /** Dauerhaft sichtbare Leiste im Demo-Modus (docs/designsystem.md, Abschnitt 7). */
-export function DemoBanner({ onOpenControls }: { onOpenControls: () => void }) {
+export function DemoBanner({ onOpenControls, onOpenOverview }: { onOpenControls: () => void; /** Vorschau: zurück zur Rollenwahl */ onOpenOverview?: () => void }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const { device } = useBreakpoint();
@@ -111,8 +111,25 @@ export function DemoBanner({ onOpenControls }: { onOpenControls: () => void }) {
     >
       <Icon name="Flask" size={iconSize.md} color={t.colors.warning} />
       <AppText variant={compact ? 'caption' : 'small'} style={[styles.bannerText, { color: t.colors.text, fontWeight: '400' }]}>
-        Entwurf mit Beispieldaten. Keine echten Kunden, Zahlungen oder Nachrichten.
+        {onOpenOverview ? 'Vorschau mit Beispieldaten.' : 'Entwurf mit Beispieldaten.'} Keine echten Kunden, Zahlungen oder Nachrichten.
       </AppText>
+      {onOpenOverview ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Zur Übersicht der Vorschau"
+          onPress={onOpenOverview}
+          testID="vorschau-uebersicht"
+          hitSlop={4}
+          style={({ pressed }) => [styles.demoButton, { borderColor: t.colors.warning, borderRadius: t.radius.control }, compact ? styles.demoButtonCompact : null, pressed ? { opacity: 0.8 } : null]}
+        >
+          <Icon name="SquaresFour" size={compact ? iconSize.md : iconSize.sm} color={t.colors.text} />
+          {compact ? null : (
+            <AppText variant="small" style={{ fontWeight: '600' }}>
+              Übersicht
+            </AppText>
+          )}
+        </Pressable>
+      ) : null}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Demo-Steuerung öffnen"

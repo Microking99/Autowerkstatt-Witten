@@ -1,6 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
-import { API_URL, CHECK_API_RESPONSES, IS_DEMO, WEB_URL } from '../config';
+import { API_URL, CHECK_API_RESPONSES, IS_DEMO, IS_PREVIEW, WEB_URL } from '../config';
 import type { WerkstattApi } from './api';
 import { DemoApi, type DemoStorage } from './demo/DemoApi';
 import { HttpApi } from './http';
@@ -26,7 +26,7 @@ function webDemoStorage(): DemoStorage | null {
 export function createApi(): WerkstattApi {
   if (IS_DEMO) {
     const origin = Platform.OS === 'web' && typeof window !== 'undefined' ? window.location.origin : WEB_URL || undefined;
-    return new DemoApi({ storage: webDemoStorage(), latencyMs: 250, publicBaseUrl: origin });
+    return new DemoApi({ storage: webDemoStorage(), latencyMs: 250, publicBaseUrl: origin, extendedSeed: IS_PREVIEW });
   }
   return new HttpApi({
     baseUrl: API_URL,

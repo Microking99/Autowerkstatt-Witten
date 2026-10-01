@@ -11,6 +11,7 @@
     "demo": "cross-env EXPO_PUBLIC_DEMO=1 expo start --web",
     "export:web": "expo export --platform web --clear",
     "export:demo": "cross-env EXPO_PUBLIC_DEMO=1 expo export --platform web --output-dir dist-demo --clear",
+    "export:preview": "cross-env EXPO_PUBLIC_DEMO=1 EXPO_PUBLIC_PREVIEW=1 expo export --platform web --output-dir dist-preview --clear && node scripts/build-preview-page.mjs",
     "export:api-e2e": "cross-env EXPO_PUBLIC_API_URL=http://127.0.0.1:3100 EXPO_PUBLIC_CHECK_API=1 expo export --platform web --output-dir dist-api --clear",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

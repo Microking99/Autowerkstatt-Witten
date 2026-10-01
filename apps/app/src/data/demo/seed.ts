@@ -126,9 +126,24 @@ export const IDS = {
   shares: { valid: seedId(26, 1), expired: seedId(26, 2), revoked: seedId(26, 3) },
 } as const;
 
+/** Kennungen aus den Vorschau-Beispieldaten (SeedOptions.extended), für Rundgänge in /vorschau */
+export const PREVIEW_IDS = {
+  workOrders: { bmwToday: seedId(10, 102), i30Done: seedId(10, 103), aklasseReady: seedId(10, 104) },
+  invoices: { jumpyOverdue: seedId(22, 102) },
+} as const;
+
 const WORKSHOP = 'Autowerkstatt Witten';
 
-export function createSeed(nowDate: Date = new Date()): DemoState {
+export interface SeedOptions {
+  /**
+   * Zusätzliche Beispielkunden, -fahrzeuge und -vorgänge für die Vorschau (EXPO_PUBLIC_PREVIEW=1),
+   * damit Listen, Kalender und Übersicht wie im Alltag gefüllt sind. Die E2E-Tests nutzen den
+   * Grundbestand ohne diese Ergänzung.
+   */
+  extended?: boolean;
+}
+
+export function createSeed(nowDate: Date = new Date(), options: SeedOptions = {}): DemoState {
   const now = nowDate.getTime();
 
   /** Zeitpunkt relativ zu heute (Tage), Ortszeit hh:mm */
@@ -158,6 +173,7 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
   // -------------------------------------------------------------------------
   // Mitarbeiter und Konten
   // -------------------------------------------------------------------------
+  const customerAccountsExtra: { customerId: string; userId: string }[] = [];
   const users: DUser[] = [
     { id: IDS.users.owner, email: DEMO_EMAILS.owner, displayName: 'Ralf Lindemann', role: 'admin', status: 'active', passwordHash: pw, permissionOverrides: [], lastLoginAt: at(-1, 7, 42), createdAt: at(-900) },
     { id: IDS.users.service, email: DEMO_EMAILS.service, displayName: 'Petra Wiesmann', role: 'service', status: 'active', passwordHash: pw, permissionOverrides: [{ permission: 'payments.recordManual', granted: true }], lastLoginAt: at(0, 7, 15), createdAt: at(-880) },
@@ -789,6 +805,225 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
     ...[1, 2, 3, 4, 5].map((weekday) => ({ userId: U.lukas, weekday, startTime: '07:00', endTime: '15:30' })),
   ];
 
+  const counters = { workOrder: 193, invoice: 316, customer: 10245 };
+  if (options.extended) {
+    addPreviewData();
+    counters.customer = 10257;
+  }
+
+  /**
+   * Vorschau: weitere Kunden, Fahrzeuge und Vorgänge in allen Zuständen (heute im Kalender,
+   * Abschluss zu prüfen, abholbereit, offene und überfällige Rechnung, fällige Wartungen).
+   * Alles Beispieldaten (isTestData), Regeln wie im Grundbestand: Serviceeinträge nur aus
+   * fachlich abgeschlossenen Aufträgen, Rechnungsbeträge aus den ausgeführten Positionen.
+   */
+  function addPreviewData() {
+    const id = (group: number, n: number) => seedId(group, 100 + n);
+    const X = {
+      users: { sabine: id(1, 1), aylin: id(1, 2), elke: id(1, 3) },
+      customers: { sabine: id(2, 1), krause: id(2, 2), pflege: id(2, 3), aylin: id(2, 4), schulte: id(2, 5), elke: id(2, 6), feldmann: id(2, 7), nowak: id(2, 8) },
+      vehicles: { polo: id(3, 1), bmw: id(3, 2), fiat: id(3, 3), caddy1: id(3, 4), caddy2: id(3, 5), i30: id(3, 6), a4: id(3, 7), aklasse: id(3, 8), jumpy: id(3, 9), fiesta: id(3, 10) },
+      orders: { poloToday: id(10, 1), bmwToday: id(10, 2), i30Done: id(10, 3), aklasseReady: id(10, 4), jumpyBrakes: id(10, 5), caddy1Insp: id(10, 6), caddy2Hu: id(10, 7), a4Brakes: id(10, 8), fiestaHu: id(10, 9), poloInsp: id(10, 10), bmwOil: id(10, 11), fiatTires: id(10, 12) },
+      invoices: { aklasse: id(22, 1), jumpy: id(22, 2), caddy1: id(22, 3), fiesta: id(22, 4), polo: id(22, 5), bmw: id(22, 6), fiat: id(22, 7) },
+    };
+    const XU = X.users;
+    const XC = X.customers;
+    const XV = X.vehicles;
+    const XO = X.orders;
+    const XI = X.invoices;
+
+    users.push(
+      { id: XU.sabine, email: 's.hoffmann@kunden.example', displayName: 'Sabine Hoffmann', role: 'customer', status: 'active', passwordHash: pw, permissionOverrides: [], lastLoginAt: at(-2, 19, 40), createdAt: at(-400) },
+      { id: XU.aylin, email: 'a.demir@kunden.example', displayName: 'Aylin Demir', role: 'customer', status: 'active', passwordHash: pw, permissionOverrides: [], lastLoginAt: at(0, 7, 55), createdAt: at(-210) },
+      { id: XU.elke, email: 'e.brandt@kunden.example', displayName: 'Elke Brandt', role: 'customer', status: 'active', passwordHash: pw, permissionOverrides: [], lastLoginAt: at(-1, 18, 5), createdAt: at(-500) },
+    );
+
+    const cust = (p: Pick<DCustomer, 'id' | 'customerNumber' | 'kind' | 'lastName' | 'street' | 'postalCode'> & Partial<DCustomer>): DCustomer => ({
+      salutation: null, firstName: null, companyName: null, email: null, phone: null, mobile: null, city: 'Witten', country: 'DE', notesInternal: null, createdAt: at(-300), archivedAt: null, isTestData: true, ...p,
+    });
+    customers.push(
+      cust({ id: XC.sabine, customerNumber: 'K-10250', kind: 'private', salutation: 'Frau', firstName: 'Sabine', lastName: 'Hoffmann', email: 's.hoffmann@kunden.example', mobile: '0151 0233 4410', street: 'Hellweg 22', postalCode: '58455', createdAt: at(-400) }),
+      cust({ id: XC.krause, customerNumber: 'K-10251', kind: 'private', salutation: 'Herr', firstName: 'Dieter', lastName: 'Krause', phone: '02302 0 61 44 90', street: 'Ruhrdeich 7', postalCode: '58452', notesInternal: 'Zwei Fahrzeuge (BMW und Fiat der Tochter), Rechnung jeweils an ihn.', createdAt: at(-820) }),
+      cust({ id: XC.pflege, customerNumber: 'K-10252', kind: 'business', firstName: 'Claudia', lastName: 'Becker', companyName: 'Pflegedienst Ruhrtal GmbH', email: 'fuhrpark@pflegedienst-ruhrtal.example', phone: '02302 0 88 12 30', street: 'Bahnhofstraße 41', postalCode: '58452', notesInternal: 'Fuhrpark: Fahrzeuge werden morgens bis 7:30 Uhr gebracht, Ersatz nicht nötig.', createdAt: at(-640) }),
+      cust({ id: XC.aylin, customerNumber: 'K-10253', kind: 'private', salutation: 'Frau', firstName: 'Aylin', lastName: 'Demir', email: 'a.demir@kunden.example', mobile: '0176 0118 2290', street: 'Wiesenstraße 9', postalCode: '58453', createdAt: at(-210) }),
+      cust({ id: XC.schulte, customerNumber: 'K-10254', kind: 'private', salutation: 'Herr', firstName: 'Markus', lastName: 'Schulte', mobile: '0160 0447 1288', street: 'Herbeder Straße 120', postalCode: '58456', createdAt: at(-95) }),
+      cust({ id: XC.elke, customerNumber: 'K-10255', kind: 'private', salutation: 'Frau', firstName: 'Elke', lastName: 'Brandt', email: 'e.brandt@kunden.example', phone: '02302 0 27 63 15', street: 'Annenstraße 15', postalCode: '58453', createdAt: at(-500) }),
+      cust({ id: XC.feldmann, customerNumber: 'K-10256', kind: 'business', firstName: 'Jan', lastName: 'Feldmann', companyName: 'Bäckerei Feldmann', email: 'buero@baeckerei-feldmann.example', phone: '02302 0 51 70 02', street: 'Marktplatz 4', postalCode: '58452', notesInternal: 'Lieferwagen nur nachmittags verfügbar (Auslieferung bis 12 Uhr).', createdAt: at(-700) }),
+      cust({ id: XC.nowak, customerNumber: 'K-10257', kind: 'private', salutation: 'Herr', firstName: 'Peter', lastName: 'Nowak', phone: '02302 0 39 80 66', street: 'Crengeldanzstraße 30', postalCode: '58455', notesInternal: 'Kein App-Zugang gewünscht, Kontakt telefonisch.', createdAt: at(-760) }),
+    );
+    customerAccountsExtra.push({ customerId: XC.sabine, userId: XU.sabine }, { customerId: XC.aylin, userId: XU.aylin }, { customerId: XC.elke, userId: XU.elke });
+
+    const veh = (p: Pick<DVehicle, 'id' | 'licensePlate' | 'make' | 'model' | 'firstRegistration' | 'fuelType' | 'color'> & Partial<DVehicle>, n: number): DVehicle => ({
+      vin: null, hsn: null, tsn: null, variant: null, notesInternal: null, qrToken: `qr-vorschau-${n}-${p.licensePlate.replace(/\W/g, '').toLowerCase()}`, qrPublicViewEnabled: false, createdAt: at(-300), archivedAt: null, isTestData: true, ...p,
+    });
+    vehicles.push(
+      veh({ id: XV.polo, licensePlate: 'EN-SH 512', vin: 'WVWZZZAWZLU018427', make: 'Volkswagen', model: 'Polo', variant: '1.0 TSI', firstRegistration: '2020-05-12', fuelType: 'Benzin', color: 'Weiß', createdAt: at(-400) }, 1),
+      veh({ id: XV.bmw, licensePlate: 'EN-DK 330', vin: 'WBA8J11050K731946', make: 'BMW', model: '3er Touring', variant: '320d', firstRegistration: '2017-09-01', fuelType: 'Diesel', color: 'Schwarz', createdAt: at(-820) }, 2),
+      veh({ id: XV.fiat, licensePlate: 'EN-DK 45', make: 'Fiat', model: '500', variant: '1.2', firstRegistration: '2015-04-20', fuelType: 'Benzin', color: 'Rot', notesInternal: 'Fährt überwiegend die Tochter.', createdAt: at(-500) }, 3),
+      veh({ id: XV.caddy1, licensePlate: 'EN-PR 101', vin: 'WV1ZZZSKZMX104582', make: 'Volkswagen', model: 'Caddy', variant: '2.0 TDI', firstRegistration: '2021-01-15', fuelType: 'Diesel', color: 'Weiß', notesInternal: 'Fuhrpark Pflegedienst, Fahrzeug 1', createdAt: at(-640) }, 4),
+      veh({ id: XV.caddy2, licensePlate: 'EN-PR 102', vin: 'WV1ZZZSKZMX104611', make: 'Volkswagen', model: 'Caddy', variant: '2.0 TDI', firstRegistration: '2021-01-15', fuelType: 'Diesel', color: 'Weiß', notesInternal: 'Fuhrpark Pflegedienst, Fahrzeug 2', createdAt: at(-640) }, 5),
+      veh({ id: XV.i30, licensePlate: 'EN-AD 778', vin: 'TMAH381AAKJ027315', make: 'Hyundai', model: 'i30', variant: '1.4 T-GDI', firstRegistration: '2019-10-03', fuelType: 'Benzin', color: 'Blau', createdAt: at(-210) }, 6),
+      veh({ id: XV.a4, licensePlate: 'EN-MS 404', vin: 'WAUZZZF41HA058213', make: 'Audi', model: 'A4 Avant', variant: '2.0 TDI', firstRegistration: '2016-06-30', fuelType: 'Diesel', color: 'Grau', createdAt: at(-95) }, 7),
+      veh({ id: XV.aklasse, licensePlate: 'EN-EB 22', vin: 'WDD1770841J102384', make: 'Mercedes-Benz', model: 'A-Klasse', variant: 'A 180', firstRegistration: '2018-03-22', fuelType: 'Benzin', color: 'Silber', createdAt: at(-500) }, 8),
+      veh({ id: XV.jumpy, licensePlate: 'EN-BF 88', make: 'Citroën', model: 'Jumpy', variant: '2.0 BlueHDi', firstRegistration: '2017-11-08', fuelType: 'Diesel', color: 'Weiß', notesInternal: 'Kühlaufbau, nur nachmittags verfügbar.', createdAt: at(-700) }, 9),
+      veh({ id: XV.fiesta, licensePlate: 'EN-PN 919', make: 'Ford', model: 'Fiesta', variant: '1.25', firstRegistration: '2014-07-14', fuelType: 'Benzin', color: 'Grün', createdAt: at(-760) }, 10),
+    );
+    let own = 0;
+    const owns = (vehicleId: string, customerId: string, startedDays: number) => ownerships.push({ id: id(4, ++own), vehicleId, customerId, startedAt: at(startedDays), endedAt: null, note: null });
+    owns(XV.polo, XC.sabine, -400);
+    owns(XV.bmw, XC.krause, -820);
+    owns(XV.fiat, XC.krause, -500);
+    owns(XV.caddy1, XC.pflege, -640);
+    owns(XV.caddy2, XC.pflege, -640);
+    owns(XV.i30, XC.aylin, -210);
+    owns(XV.a4, XC.schulte, -95);
+    owns(XV.aklasse, XC.elke, -500);
+    owns(XV.jumpy, XC.feldmann, -700);
+    owns(XV.fiesta, XC.nowak, -760);
+
+    odometer.push(
+      odo(XV.polo, 31_220, at(-380, 8), 'intake', XO.poloInsp),
+      odo(XV.polo, 42_870, at(0, 7, 45), 'intake', XO.poloToday),
+      odo(XV.bmw, 168_400, at(-320, 8), 'intake', XO.bmwOil),
+      odo(XV.bmw, 181_950, at(0, 7, 55), 'intake', XO.bmwToday),
+      odo(XV.fiat, 96_310, at(-150, 8), 'intake', XO.fiatTires),
+      odo(XV.caddy1, 88_140, at(-40, 7, 20), 'intake', XO.caddy1Insp),
+      odo(XV.i30, 64_505, at(-1, 7, 50), 'intake', XO.i30Done),
+      odo(XV.aklasse, 72_880, at(-2, 8), 'intake', XO.aklasseReady),
+      odo(XV.jumpy, 203_115, at(-26, 13), 'intake', XO.jumpyBrakes),
+      odo(XV.fiesta, 118_760, at(-700, 8), 'intake', XO.fiestaHu),
+    );
+
+    workOrders.push(
+      wo({ id: XO.poloToday, orderNumber: 'A-2026-0182', customerId: XC.sabine, vehicleId: XV.polo, status: 'open', title: 'Ölwechsel und Bremsbeläge hinten', descriptionCustomer: 'Ölwechsel laut Serviceanzeige. Bremsen hinten quietschen beim Anhalten.', costLimitCents: 35_000, plannedStart: at(0, 12, 30), plannedEnd: at(0, 15, 30), assigneeIds: [U.lukas], createdAt: at(-4, 16), updatedAt: at(0, 7, 50) }),
+      wo({ id: XO.bmwToday, orderNumber: 'A-2026-0183', customerId: XC.krause, vehicleId: XV.bmw, status: 'in_progress', title: 'Motorkontrollleuchte, Fehlerspeicher auslesen', descriptionCustomer: 'Motorkontrollleuchte leuchtet seit Montag, Leistung normal.', costLimitCents: 15_000, plannedStart: at(0, 8), plannedEnd: at(0, 10), assigneeIds: [U.owner], createdAt: at(-2, 11), updatedAt: at(0, 8, 10) }),
+      wo({ id: XO.i30Done, orderNumber: 'A-2026-0181', customerId: XC.aylin, vehicleId: XV.i30, status: 'work_completed', title: 'Inspektion und Bremsflüssigkeit', descriptionCustomer: 'Inspektion nach Herstellervorgabe, Bremsflüssigkeit wechseln.', plannedStart: at(-1, 8), plannedEnd: at(0, 12), assigneeIds: [U.emre], createdAt: at(-6, 10), updatedAt: at(0, 8, 30) }),
+      wo({ id: XO.aklasseReady, orderNumber: 'A-2026-0180', customerId: XC.elke, vehicleId: XV.aklasse, status: 'completed', title: 'Klimaservice', descriptionCustomer: 'Klimaanlage kühlt nicht mehr richtig.', plannedStart: at(-2, 8), plannedEnd: at(-1, 15), completionReviewedAt: at(-1, 14, 30), completionReviewedBy: U.service, readyForPickupAt: at(-1, 14, 40), assigneeIds: [U.lukas], createdAt: at(-5, 9), updatedAt: at(-1, 14, 40) }),
+      wo({ id: XO.jumpyBrakes, orderNumber: 'A-2026-0168', customerId: XC.feldmann, vehicleId: XV.jumpy, status: 'picked_up', title: 'Bremsen vorne', createdAt: at(-27), completionReviewedAt: at(-25, 15), completionReviewedBy: U.service, readyForPickupAt: at(-25, 15), pickedUpAt: at(-25, 17), assigneeIds: [U.emre], updatedAt: at(-25, 17) }),
+      wo({ id: XO.caddy1Insp, orderNumber: 'A-2026-0159', customerId: XC.pflege, vehicleId: XV.caddy1, status: 'picked_up', title: 'Inspektion mit Ölwechsel', createdAt: at(-41), completionReviewedAt: at(-40, 15), completionReviewedBy: U.service, readyForPickupAt: at(-40, 15), pickedUpAt: at(-40, 16, 30), assigneeIds: [U.lukas], updatedAt: at(-40, 16, 30) }),
+      wo({ id: XO.caddy2Hu, orderNumber: 'A-2026-0184', customerId: XC.pflege, vehicleId: XV.caddy2, status: 'open', title: 'Hauptuntersuchung (HU/AU)', descriptionCustomer: 'HU fällig, Plakette läuft diesen Monat ab.', plannedStart: wd(2, 8), plannedEnd: wd(2, 10), assigneeIds: [U.emre], createdAt: at(-3, 9), updatedAt: at(-3, 9) }),
+      wo({ id: XO.a4Brakes, orderNumber: 'A-2026-0186', customerId: XC.schulte, vehicleId: XV.a4, status: 'open', title: 'Bremsen vorne und Inspektion', descriptionCustomer: 'Bremsen vorne schleifen, Inspektion ist fällig.', costLimitCents: 80_000, plannedStart: wd(3, 7, 30), plannedEnd: wd(3, 16), assigneeIds: [U.emre], createdAt: at(-2, 15), updatedAt: at(-2, 15) }),
+      wo({ id: XO.fiestaHu, orderNumber: 'A-2024-0402', customerId: XC.nowak, vehicleId: XV.fiesta, status: 'picked_up', title: 'Hauptuntersuchung und Ölwechsel', createdAt: at(-701), completionReviewedAt: at(-700, 15), completionReviewedBy: U.owner, readyForPickupAt: at(-700, 15), pickedUpAt: at(-700, 17), updatedAt: at(-700, 17) }),
+      wo({ id: XO.poloInsp, orderNumber: 'A-2025-0598', customerId: XC.sabine, vehicleId: XV.polo, status: 'picked_up', title: 'Inspektion', createdAt: at(-381), completionReviewedAt: at(-380, 15), completionReviewedBy: U.service, readyForPickupAt: at(-380, 15), pickedUpAt: at(-380, 17), assigneeIds: [U.emre], updatedAt: at(-380, 17) }),
+      wo({ id: XO.bmwOil, orderNumber: 'A-2025-0644', customerId: XC.krause, vehicleId: XV.bmw, status: 'picked_up', title: 'Ölwechsel', createdAt: at(-321), completionReviewedAt: at(-320, 12), completionReviewedBy: U.service, readyForPickupAt: at(-320, 12), pickedUpAt: at(-320, 16), assigneeIds: [U.lukas], updatedAt: at(-320, 16) }),
+      wo({ id: XO.fiatTires, orderNumber: 'A-2026-0072', customerId: XC.krause, vehicleId: XV.fiat, status: 'picked_up', title: 'Räderwechsel auf Sommerräder', createdAt: at(-151), completionReviewedAt: at(-150, 11), completionReviewedBy: U.service, readyForPickupAt: at(-150, 11), pickedUpAt: at(-150, 12), assigneeIds: [U.lukas], updatedAt: at(-150, 12) }),
+    );
+
+    workItems.push(
+      // Polo heute (geplant, Annahme bestätigt)
+      item({ workOrderId: XO.poloToday, position: 1, title: 'Ölwechsel inkl. Ölfilter', kind: 'flat_rate', unitPriceCents: 8_450, maintenanceTypeId: M.oil, intervalKm: 15_000, intervalMonths: 12, assignedTo: U.lukas }),
+      item({ workOrderId: XO.poloToday, position: 2, title: 'Bremsbeläge hinten erneuern', kind: 'flat_rate', unitPriceCents: 14_900, assignedTo: U.lukas }),
+      // BMW heute (Diagnose läuft)
+      item({ workOrderId: XO.bmwToday, position: 1, title: 'Fehlerspeicher auslesen und Diagnose', unitPriceCents: 7_800, quantity: 1, unit: 'Std.', assignedTo: U.owner, executionStatus: 'in_progress', runningSince: at(0, 8, 10), lastTimeAt: at(0, 8, 10) }),
+      // i30: Arbeit erledigt, Abschluss durch den Service steht aus (noch kein Serviceeintrag)
+      item({ workOrderId: XO.i30Done, position: 1, title: 'Inspektion nach Herstellervorgabe', unitPriceCents: 19_900, maintenanceTypeId: M.inspection, intervalKm: 15_000, intervalMonths: 12, ...done(U.emre, at(-1, 14), 64_505, 'Inspektion ohne Mängel.'), trackedMinutes: 110 }),
+      item({ workOrderId: XO.i30Done, position: 2, title: 'Bremsflüssigkeit wechseln', kind: 'flat_rate', unitPriceCents: 6_900, maintenanceTypeId: M.brakeFluid, intervalMonths: 24, ...done(U.emre, at(0, 8, 25), 64_505), trackedMinutes: 30 }),
+      // A-Klasse abholbereit
+      item({ workOrderId: XO.aklasseReady, position: 1, title: 'Klimaanlagen-Service mit Desinfektion', kind: 'flat_rate', unitPriceCents: 11_900, maintenanceTypeId: M.ac, intervalMonths: 24, ...done(U.lukas, at(-1, 11), 72_880, 'Kältemittel ergänzt, Anlage dicht.'), trackedMinutes: 70 }),
+      item({ workOrderId: XO.aklasseReady, position: 2, title: 'Innenraumfilter erneuern', kind: 'part', unitPriceCents: 2_890, ...done(U.lukas, at(-1, 11, 30), 72_880), trackedMinutes: 10 }),
+      // Jumpy Bremsen (Rechnung überfällig)
+      item({ workOrderId: XO.jumpyBrakes, position: 1, title: 'Bremsscheiben und -beläge vorne erneuern', kind: 'flat_rate', unitPriceCents: 38_900, ...done(U.emre, at(-25, 12), 203_115) }),
+      item({ workOrderId: XO.jumpyBrakes, position: 2, title: 'Arbeitszeit Bremsen', unitPriceCents: 7_800, quantity: 1.5, unit: 'Std.', ...done(U.emre, at(-25, 12, 30), 203_115) }),
+      // Caddy 1 Inspektion
+      item({ workOrderId: XO.caddy1Insp, position: 1, title: 'Inspektion nach Herstellervorgabe', unitPriceCents: 22_900, maintenanceTypeId: M.inspection, intervalKm: 30_000, intervalMonths: 24, ...done(U.lukas, at(-40, 11), 88_140) }),
+      item({ workOrderId: XO.caddy1Insp, position: 2, title: 'Ölwechsel inkl. Ölfilter', kind: 'flat_rate', unitPriceCents: 9_450, maintenanceTypeId: M.oil, intervalKm: 15_000, intervalMonths: 12, ...done(U.lukas, at(-40, 11, 30), 88_140) }),
+      // Caddy 2 HU (geplant)
+      item({ workOrderId: XO.caddy2Hu, position: 1, title: 'Hauptuntersuchung mit Abgasuntersuchung', kind: 'flat_rate', unitPriceCents: 13_900, maintenanceTypeId: M.hu, intervalMonths: 24, assignedTo: U.emre }),
+      // Audi geplant
+      item({ workOrderId: XO.a4Brakes, position: 1, title: 'Inspektion nach Herstellervorgabe', unitPriceCents: 24_900, maintenanceTypeId: M.inspection, intervalKm: 30_000, intervalMonths: 24, assignedTo: U.emre }),
+      item({ workOrderId: XO.a4Brakes, position: 2, title: 'Bremsscheiben und -beläge vorne erneuern', kind: 'flat_rate', unitPriceCents: 42_900, assignedTo: U.emre }),
+      // Historie
+      item({ workOrderId: XO.fiestaHu, position: 1, title: 'Hauptuntersuchung mit Abgasuntersuchung', kind: 'flat_rate', unitPriceCents: 12_900, maintenanceTypeId: M.hu, intervalMonths: 24, ...done(U.owner, at(-700, 11), 118_760, 'Ohne Mängel, Plakette erteilt.') }),
+      item({ workOrderId: XO.fiestaHu, position: 2, title: 'Ölwechsel inkl. Ölfilter', kind: 'flat_rate', unitPriceCents: 7_450, maintenanceTypeId: M.oil, intervalKm: 15_000, intervalMonths: 12, ...done(U.owner, at(-700, 10), 118_760) }),
+      item({ workOrderId: XO.poloInsp, position: 1, title: 'Inspektion nach Herstellervorgabe', unitPriceCents: 17_900, maintenanceTypeId: M.inspection, intervalKm: 15_000, intervalMonths: 12, ...done(U.emre, at(-380, 11), 31_220) }),
+      item({ workOrderId: XO.bmwOil, position: 1, title: 'Ölwechsel inkl. Ölfilter', kind: 'flat_rate', unitPriceCents: 10_450, maintenanceTypeId: M.oil, intervalKm: 15_000, intervalMonths: 12, ...done(U.lukas, at(-320, 10), 168_400) }),
+      item({ workOrderId: XO.fiatTires, position: 1, title: 'Räderwechsel auf Sommerräder inkl. Luftdruck', kind: 'flat_rate', unitPriceCents: 3_900, ...done(U.lukas, at(-150, 10), null) }),
+      item({ workOrderId: XO.fiatTires, position: 2, title: 'Einlagerung Winterräder', kind: 'flat_rate', unitPriceCents: 4_500, ...done(U.lukas, at(-150, 10, 15), null) }),
+    );
+
+    const newIntakes: DIntake[] = [
+      { id: id(12, 1), workOrderId: XO.poloToday, odometerKm: 42_870, fuelLevel: '1/2', customerComplaint: 'Serviceanzeige Ölwechsel. Bremsen hinten quietschen beim Anhalten.', damages: [], agreedServices: 'Ölwechsel mit Filter, Bremsbeläge hinten', costLimitCents: 35_000, notesInternal: 'Schlüssel am Brett Platz 3.', notesCustomer: null, confirmedAt: at(0, 7, 50), confirmationMethod: 'on_site_signature' as const, contentHash: '' },
+      { id: id(12, 2), workOrderId: XO.bmwToday, odometerKm: 181_950, fuelLevel: '3/4', customerComplaint: 'Motorkontrollleuchte leuchtet seit Montag.', damages: [{ area: 'Tür hinten rechts', description: 'Delle ca. 2 cm, vorhanden bei Annahme', photoId: null }], agreedServices: 'Fehlerspeicher auslesen, Diagnose bis 1 Stunde', costLimitCents: 15_000, notesInternal: null, notesCustomer: 'Vor Reparaturen bitte anrufen.', confirmedAt: at(0, 7, 58), confirmationMethod: 'on_site_signature' as const, contentHash: '' },
+      { id: id(12, 3), workOrderId: XO.i30Done, odometerKm: 64_505, fuelLevel: '1/4', customerComplaint: 'Inspektion fällig.', damages: [], agreedServices: 'Inspektion nach Herstellervorgabe, Bremsflüssigkeit', costLimitCents: null, notesInternal: null, notesCustomer: null, confirmedAt: at(-1, 7, 52), confirmationMethod: 'app' as const, contentHash: '' },
+    ];
+    for (const intake of newIntakes) {
+      intake.contentHash = computeIntakeHash({ ...intake, items: workItems.filter((i) => i.workOrderId === intake.workOrderId) });
+      intakes.push(intake);
+    }
+    findings.push({ id: id(13, 1), workOrderId: XO.bmwToday, workItemId: null, description: 'Fehler P0401 (Abgasrückführung, Durchfluss zu gering). AGR-Ventil verkokt, Reinigung oder Tausch prüfen.', severity: 'recommended' as const, status: 'new' as const, reportedBy: U.owner, dictated: false, photoIds: [], createdAt: at(0, 8, 50) });
+
+    serviceEntries.push(
+      entry({ vehicleId: XV.aklasse, workOrderId: XO.aklasseReady, workItemId: itemOf(XO.aklasseReady, 'Klimaanlagen-Service mit Desinfektion'), maintenanceTypeId: M.ac, performedOn: day(-1), odometerKm: 72_880, title: 'Klimaanlagen-Service', details: 'Kältemittel ergänzt, Anlage dicht.', intervalKm: null, intervalMonths: 24, createdBy: U.service, createdAt: at(-1, 14, 30) }),
+      entry({ vehicleId: XV.caddy1, workOrderId: XO.caddy1Insp, workItemId: itemOf(XO.caddy1Insp, 'Inspektion nach Herstellervorgabe'), maintenanceTypeId: M.inspection, performedOn: day(-40), odometerKm: 88_140, title: 'Inspektion', details: null, intervalKm: 30_000, intervalMonths: 24, createdBy: U.service, createdAt: at(-40, 15) }),
+      entry({ vehicleId: XV.caddy1, workOrderId: XO.caddy1Insp, workItemId: itemOf(XO.caddy1Insp, 'Ölwechsel inkl. Ölfilter'), maintenanceTypeId: M.oil, performedOn: day(-40), odometerKm: 88_140, title: 'Ölwechsel mit Filter', details: 'Motoröl 5W-30 nach VW 507.00.', intervalKm: 15_000, intervalMonths: 12, createdBy: U.service, createdAt: at(-40, 15) }),
+      entry({ vehicleId: XV.fiesta, workOrderId: XO.fiestaHu, workItemId: itemOf(XO.fiestaHu, 'Hauptuntersuchung mit Abgasuntersuchung'), maintenanceTypeId: M.hu, performedOn: day(-700), odometerKm: 118_760, title: 'Hauptuntersuchung (HU/AU)', details: 'Ohne Mängel, Plakette erteilt.', intervalKm: null, intervalMonths: 24, createdBy: U.owner, createdAt: at(-700, 15) }),
+      entry({ vehicleId: XV.fiesta, workOrderId: XO.fiestaHu, workItemId: itemOf(XO.fiestaHu, 'Ölwechsel inkl. Ölfilter'), maintenanceTypeId: M.oil, performedOn: day(-700), odometerKm: 118_760, title: 'Ölwechsel mit Filter', details: null, intervalKm: 15_000, intervalMonths: 12, createdBy: U.owner, createdAt: at(-700, 15) }),
+      entry({ vehicleId: XV.polo, workOrderId: XO.poloInsp, workItemId: itemOf(XO.poloInsp, 'Inspektion nach Herstellervorgabe'), maintenanceTypeId: M.inspection, performedOn: day(-380), odometerKm: 31_220, title: 'Inspektion', details: 'Inspektion nach Herstellervorgabe ohne Mängel.', intervalKm: 15_000, intervalMonths: 12, createdBy: U.service, createdAt: at(-380, 15) }),
+      entry({ vehicleId: XV.bmw, workOrderId: XO.bmwOil, workItemId: itemOf(XO.bmwOil, 'Ölwechsel inkl. Ölfilter'), maintenanceTypeId: M.oil, performedOn: day(-320), odometerKm: 168_400, title: 'Ölwechsel mit Filter', details: 'Motoröl 5W-30 Longlife-04.', intervalKm: 15_000, intervalMonths: 12, createdBy: U.service, createdAt: at(-320, 12) }),
+    );
+
+    const docFor = (docId: string, title: string, customerId: string, vehicleId: string, workOrderId: string, createdAt: string, fileName: string) =>
+      documents.push(doc({ id: docId, kind: 'invoice', title, customerId, vehicleId, workOrderId, visibility: 'customer', publishedAt: createdAt, createdAt, versions: [docVersion(pdf(fileName), createdAt)] }));
+    const XD = { aklasse: id(19, 1), jumpy: id(19, 2), caddy1: id(19, 3), fiesta: id(19, 4), polo: id(19, 5), bmw: id(19, 6), fiat: id(19, 7) };
+    docFor(XD.aklasse, 'Rechnung R-2026-0313', XC.elke, XV.aklasse, XO.aklasseReady, at(-1, 15), 'rechnung-R-2026-0313.pdf');
+    docFor(XD.jumpy, 'Rechnung R-2026-0279', XC.feldmann, XV.jumpy, XO.jumpyBrakes, at(-25, 16), 'rechnung-R-2026-0279.pdf');
+    docFor(XD.caddy1, 'Rechnung R-2026-0251', XC.pflege, XV.caddy1, XO.caddy1Insp, at(-40, 16), 'rechnung-R-2026-0251.pdf');
+    docFor(XD.fiesta, 'Rechnung R-2024-0947', XC.nowak, XV.fiesta, XO.fiestaHu, at(-700, 16), 'rechnung-R-2024-0947.pdf');
+    docFor(XD.polo, 'Rechnung R-2025-0611', XC.sabine, XV.polo, XO.poloInsp, at(-380, 16), 'rechnung-R-2025-0611.pdf');
+    docFor(XD.bmw, 'Rechnung R-2025-0688', XC.krause, XV.bmw, XO.bmwOil, at(-320, 13), 'rechnung-R-2025-0688.pdf');
+    docFor(XD.fiat, 'Rechnung R-2026-0119', XC.krause, XV.fiat, XO.fiatTires, at(-150, 12), 'rechnung-R-2026-0119.pdf');
+
+    invoices.push(
+      invoice({ id: XI.aklasse, invoiceNumber: 'R-2026-0313', workOrderId: XO.aklasseReady, customerId: XC.elke, issuedAt: at(-1, 15), dueDate: day(13), documentId: XD.aklasse }),
+      invoice({ id: XI.jumpy, invoiceNumber: 'R-2026-0279', workOrderId: XO.jumpyBrakes, customerId: XC.feldmann, issuedAt: at(-25, 16), dueDate: day(-11), documentId: XD.jumpy }),
+      invoice({ id: XI.caddy1, invoiceNumber: 'R-2026-0251', workOrderId: XO.caddy1Insp, customerId: XC.pflege, issuedAt: at(-40, 16), dueDate: day(-26), documentId: XD.caddy1 }),
+      invoice({ id: XI.fiesta, invoiceNumber: 'R-2024-0947', workOrderId: XO.fiestaHu, customerId: XC.nowak, issuedAt: at(-700, 16), dueDate: day(-686), documentId: XD.fiesta }),
+      invoice({ id: XI.polo, invoiceNumber: 'R-2025-0611', workOrderId: XO.poloInsp, customerId: XC.sabine, issuedAt: at(-380, 16), dueDate: day(-366), documentId: XD.polo }),
+      invoice({ id: XI.bmw, invoiceNumber: 'R-2025-0688', workOrderId: XO.bmwOil, customerId: XC.krause, issuedAt: at(-320, 13), dueDate: day(-306), documentId: XD.bmw }),
+      invoice({ id: XI.fiat, invoiceNumber: 'R-2026-0119', workOrderId: XO.fiatTires, customerId: XC.krause, issuedAt: at(-150, 12), dueDate: day(-136), documentId: XD.fiat }),
+    );
+    payments.push(
+      payment(XI.caddy1, 'bank_transfer', totalOf(XI.caddy1), at(-31, 10), U.service, 'R-2026-0251 Pflegedienst Ruhrtal'),
+      payment(XI.fiesta, 'cash', totalOf(XI.fiesta), at(-700, 17), U.owner, 'Barzahlung bei Abholung'),
+      payment(XI.polo, 'sumup_online', totalOf(XI.polo), at(-379, 20, 4), null, 'R-2025-0611-1'),
+      payment(XI.bmw, 'card_terminal', totalOf(XI.bmw), at(-320, 16), U.service, 'Kartenzahlung vor Ort'),
+      payment(XI.fiat, 'bank_transfer', totalOf(XI.fiat), at(-141, 9), U.service, 'R-2026-0119 Krause'),
+    );
+
+    messages.push(
+      msg(XO.poloToday, U.service, 'Guten Morgen Frau Hoffmann, Ihr Polo ist angenommen. Wir rechnen mit Fertigstellung gegen 15:30 Uhr.', at(0, 7, 55)),
+      msg(XO.i30Done, U.service, 'Hallo Frau Demir, die Arbeiten an Ihrem i30 sind erledigt. Wir melden uns, sobald er abholbereit ist.', at(0, 8, 35)),
+      msg(XO.i30Done, XU.aylin, 'Super, danke! Kann ich ihn heute gegen 17 Uhr abholen?', at(0, 8, 52)),
+      msg(XO.aklasseReady, U.service, 'Frau Brandt, Ihre A-Klasse ist fertig und kann abgeholt werden. Die Rechnung finden Sie im Kundenzugang.', at(-1, 14, 45)),
+    );
+    reads.push(
+      { workOrderId: XO.poloToday, userId: U.service, lastReadAt: at(0, 7, 56) },
+      { workOrderId: XO.i30Done, userId: U.service, lastReadAt: at(0, 8, 36) },
+      { workOrderId: XO.aklasseReady, userId: U.service, lastReadAt: at(-1, 14, 46) },
+      { workOrderId: XO.aklasseReady, userId: XU.elke, lastReadAt: at(-1, 18, 6) },
+    );
+
+    let apN = 0;
+    const apId = () => id(8, ++apN);
+    appointments.push(
+      appt({ id: apId(), kind: 'repair', status: 'confirmed', customerId: XC.krause, vehicleId: XV.bmw, workOrderId: XO.bmwToday, startsAt: at(0, 8), endsAt: at(0, 10), resourceId: IDS.resources.diagnosis, assigneeIds: [U.owner], confirmedAt: at(-2, 11), createdAt: at(-2, 11) }),
+      appt({ id: apId(), kind: 'service', status: 'confirmed', customerId: XC.sabine, vehicleId: XV.polo, workOrderId: XO.poloToday, startsAt: at(0, 12, 30), endsAt: at(0, 15, 30), resourceId: IDS.resources.lift2, assigneeIds: [U.lukas], requestedBy: 'customer', customerNote: 'Ich bringe ihn morgens vorbei.', confirmedAt: at(-4, 16), createdAt: at(-5, 20) }),
+      appt({ id: apId(), kind: 'other', status: 'confirmed', customerId: XC.aylin, vehicleId: XV.i30, workOrderId: XO.i30Done, startsAt: at(0, 16, 30), endsAt: at(0, 17), internalNote: 'Abholung, Kundin kommt nach der Arbeit.', confirmedAt: at(0, 9), createdAt: at(0, 9) }),
+      appt({ id: apId(), kind: 'other', status: 'confirmed', customerId: XC.elke, vehicleId: XV.aklasse, workOrderId: XO.aklasseReady, startsAt: wd(1, 8), endsAt: wd(1, 8, 30), confirmedAt: at(-1, 15), createdAt: at(-1, 15) }),
+      appt({ id: apId(), kind: 'inspection_hu', status: 'confirmed', customerId: XC.pflege, vehicleId: XV.caddy2, workOrderId: XO.caddy2Hu, startsAt: wd(2, 8), endsAt: wd(2, 10), resourceId: IDS.resources.lift1, assigneeIds: [U.emre], confirmedAt: at(-3, 9), createdAt: at(-3, 9) }),
+      appt({ id: apId(), kind: 'repair', status: 'confirmed', customerId: XC.schulte, vehicleId: XV.a4, workOrderId: XO.a4Brakes, startsAt: wd(3, 7, 30), endsAt: wd(3, 16), resourceId: IDS.resources.lift1, assigneeIds: [U.emre], confirmedAt: at(-2, 15), createdAt: at(-2, 15) }),
+      appt({ id: apId(), kind: 'service', status: 'requested', customerId: XC.nowak, vehicleId: XV.fiesta, startsAt: wd(5, 9), endsAt: wd(5, 10), requestedBy: 'staff', internalNote: 'Telefonisch angefragt: Ölwechsel und HU. Rückruf zur Bestätigung.', createdAt: at(0, 8, 15) }),
+      appt({ id: apId(), kind: 'tire_change', status: 'requested', customerId: XC.aylin, vehicleId: XV.i30, startsAt: wd(16, 8), endsAt: wd(16, 9), requestedBy: 'customer', customerNote: 'Winterräder montieren, gerne früh morgens.', createdAt: at(-1, 21) }),
+    );
+
+    notifications.push(
+      note(U.service, 'message.received', 'Neue Nachricht zu A-2026-0181', 'Aylin Demir: Kann ich ihn heute gegen 17 Uhr abholen?', `/werkstatt/auftraege/${XO.i30Done}/chat`, at(0, 8, 52)),
+      note(U.service, 'appointment.requested', 'Neue Terminanfrage', 'Aylin Demir, Hyundai i30: Räderwechsel.', `/werkstatt/kalender/anfragen`, at(-1, 21)),
+      note(XU.aylin, 'message.received', 'Neue Nachricht zu A-2026-0181', 'Autowerkstatt Witten hat Ihnen geschrieben.', `/kunde/auftraege/${XO.i30Done}/chat`, at(0, 8, 35)),
+    );
+    partDemands.push({ id: id(30, 1), workOrderId: XO.a4Brakes, description: 'Bremsscheiben und -beläge vorne (Audi A4 B9)', status: 'ordered', expectedAt: wd(2, 10) });
+  }
+
   return {
     schemaVersion: DEMO_SCHEMA_VERSION,
     seededAt,
@@ -817,6 +1052,7 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
       { customerId: C.miriam, userId: U.miriam },
       { customerId: C.guenter, userId: U.guenter },
       { customerId: C.brinkhoff, userId: U.tobias },
+      ...customerAccountsExtra,
     ],
     tokens,
     vehicles,
@@ -849,6 +1085,6 @@ export function createSeed(nowDate: Date = new Date()): DemoState {
     audit,
     partDemands,
     workingHours,
-    counters: { workOrder: 193, invoice: 316, customer: 10245 },
+    counters,
   };
 }
